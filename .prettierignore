@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+.next
+coverage
+apps/api/src/generated
+apps/mobile
+pnpm-lock.yaml
+package-lock.json

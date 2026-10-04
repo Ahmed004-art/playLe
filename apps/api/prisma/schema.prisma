@@ -1,0 +1,18 @@
+// PlayLe — Prisma schema
+//
+// Phase 1 intentionally defines no business models (no users, wallets,
+// matches, etc. — see docs/database/README.md). Only the datasource and
+// generator are configured here so migration tooling and the Prisma
+// client work end-to-end. Database connectivity is proven via a raw query
+// from the health check module, not a domain table. The full schema is
+// designed in the dedicated database phase.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

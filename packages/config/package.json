@@ -1,0 +1,12 @@
+{
+  "name": "@playle/config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared TypeScript tooling configuration (ESLint, Prettier, TypeScript base configs) for PlayLe's TypeScript applications.",
+  "main": "index.js",
+  "files": [
+    "eslint",
+    "prettier",
+    "typescript"
+  ]
+}
