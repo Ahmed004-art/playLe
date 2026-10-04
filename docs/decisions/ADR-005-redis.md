@@ -31,3 +31,11 @@ Use **Redis** as the shared cache and ephemeral-state store.
   data — the ledger remains exclusively in PostgreSQL.
 - Phase 1 only establishes connection, health check, and graceful shutdown;
   no queues, presence, or pub/sub logic is implemented yet.
+- The client is configured with `enableOfflineQueue: false` (see
+  `apps/api/src/redis/redis.service.ts`). ioredis's default behavior is to
+  queue commands indefinitely while disconnected, which makes a health
+  check (or any future Redis-dependent request) hang forever instead of
+  failing fast when Redis is unreachable — confirmed by testing against a
+  real, intentionally-unreachable Redis during Phase 1 verification. Any
+  future code calling into Redis must be written assuming commands can
+  reject immediately, not just slowly.

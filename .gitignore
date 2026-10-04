@@ -36,7 +36,6 @@ coverage/
 # --- Prisma ---
 apps/api/prisma/dev.db
 apps/api/prisma/*.db
-apps/api/src/generated/
 
 # --- Flutter / Dart ---
 apps/mobile/.dart_tool/

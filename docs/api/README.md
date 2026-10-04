@@ -45,6 +45,14 @@ Errors use a single standard shape across the whole API (see
 Validation failures (`class-validator`) populate `message` as an array of
 human-readable field errors.
 
+**Exception**: `GET /health` does not use this error envelope even when it
+returns a non-2xx status. It always returns its own
+`{ status, timestamp, checks }` shape (200 when healthy, 503 when
+degraded) by writing the response directly rather than throwing, because
+it's an infra status report, not an API error — see
+`apps/api/src/health/health.controller.ts` for why routing it through the
+global exception filter would discard the actual postgres/redis status.
+
 ## Validation
 
 Every endpoint's input is validated via a global `ValidationPipe`

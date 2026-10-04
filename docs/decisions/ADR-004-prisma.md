@@ -34,3 +34,21 @@ Use **Prisma** as the ORM and migration tool for the NestJS API.
 - Phase 1 establishes Prisma tooling and a minimal schema; the full
   business schema (wallet, ledger, matches, etc.) is designed in the
   dedicated database phase.
+- **Pinned to Prisma 6.x, not 7.x**: Prisma 7 made `datasource.url` in
+  `schema.prisma` a hard validation error, requiring a `prisma.config.ts`
+  file and a driver-adapter object passed to the `PrismaClient`
+  constructor instead. That's a deliberate, heavier architecture change
+  not warranted for a Phase 1 foundation (see Section 31 of the project
+  spec — avoid unnecessary complexity). `prisma`/`@prisma/client` are
+  pinned to `6.19.3`, the latest version still supporting the
+  conventional schema-based connection URL. Revisit deliberately, not
+  accidentally, when upgrading later.
+- The Prisma client generator uses its **default output location**
+  (`node_modules/@prisma/client`), not a custom `output` path. A custom
+  path under `apps/api/src/generated` was tried and reverted: `nest build`
+  only compiles `.ts` files into `dist/`, so pre-built `.js`/`.d.ts`
+  generated-client files placed under `src/` were never copied into
+  `dist/`, and the compiled app crashed on boot with
+  `ERR_MODULE_NOT_FOUND`. The default location resolves correctly via
+  `node_modules` regardless of whether the importing code runs from
+  `src/` (ts-node/Nest dev mode) or `dist/` (production build).

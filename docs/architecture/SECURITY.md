@@ -25,8 +25,17 @@ security program.
   framework defaults and documented; no endpoint accepts unbounded
   payloads.
 - **Rate-limiting architecture**: `@nestjs/throttler` is wired as global
-  infrastructure with a conservative default limit. No per-route tuning
-  has been done yet since there are no real endpoints to tune.
+  infrastructure with a conservative default limit (100 requests / 60s).
+  Verified live against a running instance: the 101st request within the
+  window receives `429 Too Many Requests` in the standard error shape. No
+  per-route tuning has been done yet since there are no real endpoints to
+  tune.
+- **Fail-fast dependency health**: the Redis client is configured with
+  `enableOfflineQueue: false` so that commands fail immediately when Redis
+  is unreachable instead of queuing indefinitely. Without this, a health
+  check (or any future Redis-dependent request) would hang forever rather
+  than reporting degraded status — discovered and fixed during Phase 1
+  verification against a real, intentionally-unreachable Redis.
 - **Authentication architecture (placeholder)**: module boundaries and
   request-lifecycle hooks (guards) exist for where authentication will be
   enforced; no real authentication (login, tokens, sessions) is
@@ -56,6 +65,32 @@ security program.
 - Dependency vulnerability scanning automation (can be added to CI later,
   e.g. `npm audit` / Dependabot).
 - Penetration testing / formal security review.
+
+### Dependency audit conclusion (Phase 1 verification)
+
+`npm audit` reports 8 remaining findings (down from 13 after removing the
+unused `@nestjs/mau` devDependency — see below). All 8 are transitive
+dev-tooling-only dependencies with no path into the production runtime:
+
+- 3 are inside the `prisma` CLI's own dependency chain
+  (`prisma` → `@prisma/config` → `deepmerge-ts`). The CLI is a
+  devDependency used only for local/CI schema generation and migrations;
+  `@prisma/client` (the package actually imported by the running
+  application) has zero dependencies and zero reported vulnerabilities.
+- 5 were inside `@nestjs/mau` (Nest's cloud-deploy CLI) → `inquirer` /
+  `undici` / `tmp` / `external-editor`. `@nestjs/mau` was never imported
+  or invoked anywhere in this codebase (Phase 1 does not deploy via Mau),
+  so it was removed entirely as dead weight, which also removed its 5
+  vulnerabilities outright — a genuine fix, not a suppression.
+- The remaining findings (`eslint-config-next` → `@next/eslint-plugin-next`
+  → `fast-glob` → `micromatch`/`braces`) are inside the admin app's lint
+  tooling, which only globs this repository's own trusted source files.
+
+`npm audit fix --force`'s suggested fixes for every remaining finding are
+major-version **downgrades** (e.g. `eslint-config-next` to a version that
+predates Next.js 16 support, `prisma` to an older 6.x patch) that would
+either break the build or provide no real benefit, since none of these
+packages process untrusted input in Phase 1. None were applied.
 
 ## Known Limitations
 

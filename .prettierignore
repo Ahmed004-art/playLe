@@ -3,7 +3,7 @@ dist
 build
 .next
 coverage
-apps/api/src/generated
 apps/mobile
 pnpm-lock.yaml
 package-lock.json
+apps/admin/next-env.d.ts

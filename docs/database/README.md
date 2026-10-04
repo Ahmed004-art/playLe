@@ -7,8 +7,12 @@
 - **Prisma** — ORM, schema definition, and migration tool
   ([ADR-004](../decisions/ADR-004-prisma.md)).
 
-Schema lives at `apps/api/prisma/schema.prisma`. Migrations live at
-`apps/api/prisma/migrations/`.
+Schema lives at `apps/api/prisma/schema.prisma`. Migrations will live at
+`apps/api/prisma/migrations/` once the first one is created — that
+directory does not exist yet in Phase 1, since there is no business
+schema to migrate. `prisma migrate deploy` against zero migrations
+succeeds trivially ("No pending migrations to apply"), which is the
+correct, verified behavior for this phase, not an error condition.
 
 ## Phase 1 Scope
 

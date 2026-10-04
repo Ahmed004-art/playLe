@@ -4,7 +4,7 @@
 
 | Tool | Notes |
 |---|---|
-| Node.js >= 20 | for `apps/api`, `apps/admin`, `packages/*` |
+| Node.js >= 22.22.2 | for `apps/api`, `apps/admin`, `packages/*` (the admin test tooling, `jsdom`, requires this floor) |
 | npm | comes with Node; this repo uses npm workspaces |
 | Flutter SDK (stable channel) | for `apps/mobile` |
 | Android SDK + an emulator or device | for Android builds |

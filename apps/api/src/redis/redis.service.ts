@@ -32,6 +32,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       port: redisConfig.port,
       password: redisConfig.password,
       lazyConnect: false,
+      connectTimeout: 5000,
+      // Fail commands immediately when disconnected instead of queuing them
+      // indefinitely — without this, a health check or shutdown call (ping,
+      // quit) hangs forever while Redis is unreachable rather than failing
+      // fast. Discovered during Phase 1 verification against a real,
+      // unreachable Redis.
+      enableOfflineQueue: false,
       retryStrategy: (times: number) => Math.min(times * 200, 2000),
     });
 
@@ -39,12 +46,19 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       this.logger.log('Redis connection established'),
     );
     this.client.on('error', (error: Error) =>
-      this.logger.error(`Redis error: ${error.message}`),
+      this.logger.error(`Redis error: ${error.message || String(error)}`),
     );
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.client.quit();
+    if (this.client.status === 'ready') {
+      await this.client.quit();
+    } else {
+      // Not connected (e.g. Redis was never reachable) — quit() would queue
+      // forever waiting for a connection that may never come. Close the
+      // socket and cancel any pending reconnect attempts immediately.
+      this.client.disconnect();
+    }
     this.logger.log('Redis connection closed');
   }
 
