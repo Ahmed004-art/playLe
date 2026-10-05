@@ -32,6 +32,7 @@ export class MatchmakingController {
   constructor(private readonly matchmakingService: MatchmakingService) {}
 
   @Post('join')
+  @HttpCode(HttpStatus.OK)
   @Throttle(MATCHES_THROTTLE)
   @ApiOperation({
     summary:

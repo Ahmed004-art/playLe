@@ -22,6 +22,32 @@ export class LedgerService {
    * caller-supplied transaction. Throws (rolling back the whole
    * transaction) if the invariant would be violated.
    */
+  /**
+   * Locks the wallet row (`FOR UPDATE`) and returns it. Callers that also
+   * insert a new row with a foreign key to this wallet (e.g.
+   * `Withdrawal`) within the same transaction **must** call this before
+   * that insert, not after: inserting first takes a shared key-lock on
+   * the wallet row for FK validation, and two concurrent transactions
+   * each holding that shared lock while waiting for the other's
+   * `FOR UPDATE` deadlocks (seen for real under concurrent withdrawal
+   * requests in CI, via a genuine Postgres `40P01` deadlock error, not
+   * a flake) — locking first establishes a strict, deadlock-free lock
+   * order.
+   */
+  async lockWallet(
+    tx: Prisma.TransactionClient,
+    walletId: string,
+  ): Promise<Wallet> {
+    const rows = await tx.$queryRaw<
+      Wallet[]
+    >`SELECT * FROM wallets WHERE id = ${walletId} FOR UPDATE`;
+    const locked = rows[0];
+    if (!locked) {
+      throw new NotFoundException('Wallet not found');
+    }
+    return locked;
+  }
+
   async applyEntry(
     tx: Prisma.TransactionClient,
     walletId: string,
@@ -33,14 +59,7 @@ export class LedgerService {
       );
     }
 
-    const rows = await tx.$queryRaw<
-      Wallet[]
-    >`SELECT * FROM wallets WHERE id = ${walletId} FOR UPDATE`;
-    const locked = rows[0];
-
-    if (!locked) {
-      throw new NotFoundException('Wallet not found');
-    }
+    const locked = await this.lockWallet(tx, walletId);
 
     const newAvailable =
       locked.availableBalanceMinor + params.availableDeltaMinor;

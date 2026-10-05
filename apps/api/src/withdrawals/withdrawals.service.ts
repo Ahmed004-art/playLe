@@ -48,6 +48,11 @@ export class WithdrawalsService {
           userId,
         );
 
+        // Lock the wallet before creating a row that references it — see
+        // LedgerService.lockWallet for why the order matters (deadlock
+        // avoidance under concurrent withdrawals against the same wallet).
+        await this.ledgerService.lockWallet(tx, walletId);
+
         const withdrawal = await tx.withdrawal.create({
           data: {
             userId,
