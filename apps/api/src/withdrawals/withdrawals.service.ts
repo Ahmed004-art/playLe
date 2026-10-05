@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { parseAmountMinor } from '../common/money.js';
+import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
@@ -57,8 +58,8 @@ export class WithdrawalsService {
           },
         });
 
-        // Atomically move funds from available to held so they can never
-        // be simultaneously withdrawn twice or spent elsewhere.
+        // Atomically move funds from available to held so they can
+        // never be simultaneously withdrawn twice or spent elsewhere.
         await this.ledgerService.applyEntry(tx, walletId, {
           type: 'HOLD',
           availableDeltaMinor: -amountMinor,
@@ -67,7 +68,7 @@ export class WithdrawalsService {
         });
 
         return withdrawal;
-      });
+      }, FINANCIAL_TRANSACTION_OPTIONS);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -153,7 +154,7 @@ export class WithdrawalsService {
         where: { id: withdrawal.id },
         data: { status: 'CANCELLED', cancelledAt: new Date() },
       });
-    });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   async approve(
@@ -202,7 +203,7 @@ export class WithdrawalsService {
           reviewReason: reason,
         },
       });
-    });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   /** Funds permanently leave the system — the admin confirms the payout was sent. */
@@ -235,7 +236,7 @@ export class WithdrawalsService {
           providerReference,
         },
       });
-    });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   async fail(adminId: string, id: string, reason: string): Promise<Withdrawal> {
@@ -261,7 +262,7 @@ export class WithdrawalsService {
           reviewReason: reason,
         },
       });
-    });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   private assertTransition(

@@ -16,6 +16,7 @@ import {
   type WebhookDepositPayload,
 } from '../payments/ports/payment-provider.port.js';
 import { parseAmountMinor } from '../common/money.js';
+import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
@@ -175,7 +176,7 @@ export class DepositsService {
           providerReference: providerReference ?? existing.providerReference,
         },
       });
-    });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   async markFailed(depositId: string, reason: string): Promise<Deposit> {

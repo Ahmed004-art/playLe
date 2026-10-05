@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { parseAmountMinor } from '../common/money.js';
+import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 
 @Injectable()
 export class AdminFinanceService {
@@ -41,6 +42,6 @@ export class AdminFinanceService {
       });
 
       return wallet;
-    });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 }
