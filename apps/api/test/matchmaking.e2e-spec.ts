@@ -43,7 +43,18 @@ describe('Matchmaking (e2e, real Redis)', () => {
     prisma = moduleFixture.get(PrismaService);
     redisService = moduleFixture.get(RedisService);
 
-    const healthy = await redisService.isHealthy();
+    // RedisService.onModuleInit() doesn't await the initial connection
+    // (by design — see RedisService, "fail fast" for real request
+    // traffic), so isHealthy() can report false for the first few
+    // milliseconds after app.init() even when Redis is genuinely up,
+    // purely because the socket hasn't finished connecting yet. Retry
+    // briefly before concluding Redis is actually unreachable, rather
+    // than skipping this entire suite over a cold-start race.
+    let healthy = false;
+    for (let attempt = 0; attempt < 10 && !healthy; attempt++) {
+      healthy = await redisService.isHealthy();
+      if (!healthy) await new Promise((r) => setTimeout(r, 300));
+    }
     if (!healthy) {
       throw new Error(
         'Redis is not reachable — matchmaking e2e tests require a real Redis instance (see docs/development/SETUP.md).',
