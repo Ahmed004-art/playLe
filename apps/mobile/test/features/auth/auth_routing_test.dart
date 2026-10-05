@@ -3,13 +3,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/auth/auth_controller.dart';
 import 'package:playle_mobile/core/routing/app_router.dart';
 import 'package:playle_mobile/core/theme/app_theme.dart';
+import 'package:playle_mobile/core/wallet/wallet_controller.dart';
 
 import '../../core/auth/fake_auth_repository.dart';
+import '../../core/wallet/fake_wallet_repository.dart';
 
-Widget buildTestApp(AuthController controller) {
+Widget buildTestApp(AuthController controller, [WalletController? wallet]) {
   return MaterialApp.router(
     theme: AppTheme.dark,
-    routerConfig: buildAppRouter(controller),
+    routerConfig: buildAppRouter(
+      controller,
+      wallet ?? WalletController(FakeWalletRepository()),
+    ),
   );
 }
 
@@ -31,7 +36,10 @@ void main() {
     final controller = AuthController(repo);
     await controller.bootstrap();
 
-    final router = buildAppRouter(controller);
+    final router = buildAppRouter(
+      controller,
+      WalletController(FakeWalletRepository()),
+    );
     router.go('/login');
 
     await tester.pumpWidget(
@@ -49,7 +57,10 @@ void main() {
       final controller = AuthController(FakeAuthRepository());
       await controller.bootstrap();
 
-      final router = buildAppRouter(controller);
+      final router = buildAppRouter(
+        controller,
+        WalletController(FakeWalletRepository()),
+      );
       router.go('/account');
 
       await tester.pumpWidget(

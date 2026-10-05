@@ -62,9 +62,17 @@ class ApiClient {
     }
   }
 
-  Future<Response<T>> post<T>(String path, {Object? data}) async {
+  Future<Response<T>> post<T>(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? headers,
+  }) async {
     try {
-      return await _dio.post<T>(path, data: data);
+      return await _dio.post<T>(
+        path,
+        data: data,
+        options: headers != null ? Options(headers: headers) : null,
+      );
     } on DioException catch (e) {
       throw _toNetworkException(e);
     }

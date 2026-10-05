@@ -2,6 +2,13 @@ import type { ApiErrorResponse } from '@playle/shared';
 import { appConfig } from './config';
 import { tokenStorage } from './token-storage';
 import type { AdminUser, AuthResponse } from './auth-types';
+import type {
+  AdminWallet,
+  AdminLedgerEntry,
+  AdminDeposit,
+  AdminWithdrawal,
+  CursorPage,
+} from './wallet-types';
 
 /**
  * API client abstraction. Admin UI code calls functions from this module
@@ -77,4 +84,68 @@ export async function logout(): Promise<void> {
   ).catch(() => {
     // Best-effort — the local session is cleared by the caller regardless.
   });
+}
+
+// --- Financial admin visibility (Phase 3) ---
+// All of these hit `/admin/...` routes, which the API guards with
+// `JwtAuthGuard` + `RolesGuard` + `@Roles('ADMIN')` — the same primitives
+// as every other authenticated route. This UI's own role check
+// (`useAuth` rejecting non-admin logins) is defense in depth, not the
+// real authorization boundary.
+
+export function fetchWallet(userId: string): Promise<AdminWallet> {
+  return request<AdminWallet>(`/admin/wallets/${userId}`, {}, true);
+}
+
+export function fetchLedger(userId: string): Promise<CursorPage<AdminLedgerEntry>> {
+  return request<CursorPage<AdminLedgerEntry>>(
+    `/admin/ledger?userId=${encodeURIComponent(userId)}`,
+    {},
+    true,
+  );
+}
+
+export function fetchDeposits(userId: string): Promise<CursorPage<AdminDeposit>> {
+  return request<CursorPage<AdminDeposit>>(
+    `/admin/deposits?userId=${encodeURIComponent(userId)}`,
+    {},
+    true,
+  );
+}
+
+export function listWithdrawals(status?: string): Promise<CursorPage<AdminWithdrawal>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<CursorPage<AdminWithdrawal>>(`/admin/withdrawals${query}`, {}, true);
+}
+
+export function approveWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
+  return request<AdminWithdrawal>(
+    `/admin/withdrawals/${id}/approve`,
+    { method: 'POST', body: JSON.stringify({ reason }) },
+    true,
+  );
+}
+
+export function rejectWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
+  return request<AdminWithdrawal>(
+    `/admin/withdrawals/${id}/reject`,
+    { method: 'POST', body: JSON.stringify({ reason }) },
+    true,
+  );
+}
+
+export function completeWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
+  return request<AdminWithdrawal>(
+    `/admin/withdrawals/${id}/complete`,
+    { method: 'POST', body: JSON.stringify({ reason }) },
+    true,
+  );
+}
+
+export function failWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
+  return request<AdminWithdrawal>(
+    `/admin/withdrawals/${id}/fail`,
+    { method: 'POST', body: JSON.stringify({ reason }) },
+    true,
+  );
 }

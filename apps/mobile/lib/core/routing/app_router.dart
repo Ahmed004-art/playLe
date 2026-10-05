@@ -2,10 +2,14 @@ import 'package:go_router/go_router.dart';
 
 import '../auth/auth_controller.dart';
 import '../auth/auth_state.dart';
+import '../wallet/wallet_controller.dart';
 import '../../features/auth/account_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/register_screen.dart';
 import '../../features/auth/welcome_screen.dart';
+import '../../features/wallet/deposit_screen.dart';
+import '../../features/wallet/wallet_screen.dart';
+import '../../features/wallet/withdraw_screen.dart';
 
 const _publicRoutes = {'/', '/login', '/register'};
 
@@ -13,8 +17,14 @@ const _publicRoutes = {'/', '/login', '/register'};
 /// [authController] notifies (it's a [ChangeNotifier]), via
 /// `refreshListenable` — so logging in/out automatically moves the user
 /// between the public (welcome/login/register) and authenticated areas
-/// without each screen having to navigate manually.
-GoRouter buildAppRouter(AuthController authController) {
+/// without each screen having to navigate manually. `/wallet` and its
+/// sub-routes need no extra redirect logic — they're simply not in
+/// `_publicRoutes`, so the existing "anything else requires auth" rule
+/// already protects them.
+GoRouter buildAppRouter(
+  AuthController authController,
+  WalletController walletController,
+) {
   return GoRouter(
     initialLocation: '/',
     refreshListenable: authController,
@@ -50,6 +60,21 @@ GoRouter buildAppRouter(AuthController authController) {
         path: '/account',
         builder: (context, state) =>
             AccountScreen(authController: authController),
+      ),
+      GoRoute(
+        path: '/wallet',
+        builder: (context, state) =>
+            WalletScreen(walletController: walletController),
+      ),
+      GoRoute(
+        path: '/wallet/deposit',
+        builder: (context, state) =>
+            DepositScreen(walletController: walletController),
+      ),
+      GoRoute(
+        path: '/wallet/withdraw',
+        builder: (context, state) =>
+            WithdrawScreen(walletController: walletController),
       ),
     ],
   );

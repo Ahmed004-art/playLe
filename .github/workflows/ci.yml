@@ -54,6 +54,20 @@ jobs:
       # register/login calls in quick succession don't trip the throttle.
       AUTH_THROTTLE_LIMIT: 1000
       AUTH_THROTTLE_TTL_MS: 60000
+      # The global 'default' throttler (ThrottlerGuard is an APP_GUARD, so
+      # it applies to every request) is also raised well above its 100
+      # production default — the wallet/deposits/withdrawals e2e suite
+      # alone makes far more than 100 requests in well under 60s.
+      THROTTLE_LIMIT: 1000
+      THROTTLE_TTL_MS: 60000
+      # No real Monime credentials ever go into CI — the active provider
+      # is the network-call-free ManualProvider (see ADR-013). The e2e
+      # webhook tests use a separately-bound test double, not this
+      # setting. Also raised above the production default for the same
+      # reason as AUTH/THROTTLE above.
+      PAYMENTS_PROVIDER: manual
+      PAYMENTS_THROTTLE_LIMIT: 1000
+      PAYMENTS_THROTTLE_TTL_MS: 60000
 
     steps:
       - uses: actions/checkout@v4

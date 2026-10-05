@@ -5,8 +5,8 @@ playle/
   apps/
     mobile/                   Flutter application (Android first, iOS-ready)
       lib/
-        core/                 Cross-cutting foundations (env, DI, routing, theme, logging, auth)
-        features/             Feature modules (auth: welcome/login/register/account)
+        core/                 Cross-cutting foundations (env, DI, routing, theme, logging, auth, wallet)
+        features/             Feature modules (auth: welcome/login/register/account; wallet: balance/deposit/withdraw)
       test/
       android/
       ios/
@@ -23,15 +23,21 @@ playle/
         realtime/                WebSocket gateway foundation (connection lifecycle only)
         users/                   UsersService (safe serialization, lookups)
         auth/                    Registration, login, sessions, guards — see ADR-011
+        ledger/                  LedgerService — sole writer of wallet balances/ledger rows (ADR-012)
+        wallet/                  Wallet balance + transaction-history reads
+        payments/                PaymentProviderPort + Manual/Monime providers (ADR-013)
+        deposits/                Deposit lifecycle + provider webhook handling
+        withdrawals/             Withdrawal lifecycle + admin approval state machine
+        admin/                   Financial admin visibility + withdrawal review
       prisma/
-        schema.prisma            Prisma schema (User, RefreshToken)
+        schema.prisma            Prisma schema (User, RefreshToken, Wallet, LedgerEntry, Deposit, Withdrawal, ProviderEvent)
         migrations/
-      test/                      e2e tests
+      test/                      e2e tests (auth.e2e-spec.ts, wallet.e2e-spec.ts)
 
     admin/                     Next.js admin application
       src/
-        app/                     App Router pages (dashboard shell + /login)
-        lib/                     API client, auth context/token storage, config
+        app/                     App Router pages (dashboard, /login, /withdrawals, /wallets)
+        lib/                     API client, auth context/token storage, config, wallet types/formatting
         components/              Shared UI components (AuthGuard, HealthStatus)
 
   packages/

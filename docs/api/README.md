@@ -103,8 +103,42 @@ Protected routes return `401` for a missing/invalid/expired token and
 `403` for a valid token whose role doesn't satisfy a `@Roles(...)`
 requirement on that route.
 
-## Phase 2 Scope
+## Wallet, Deposits & Withdrawals Endpoints (Phase 3)
 
-Authentication/identity endpoints exist (above). No other business API
-(wallet, games, matchmaking, social, etc.) is implemented yet — see
-`CLAUDE.md` for the full "do not build yet" list.
+Full architecture: [ADR-012](../decisions/ADR-012-financial-architecture.md),
+[ADR-013](../decisions/ADR-013-payment-provider-abstraction.md). All
+amounts in requests/responses are **decimal strings of integer minor
+units** (1 SLE = 100 minor units) — e.g. `"50000"` = Le500.00 — never a
+JSON number. All routes below require `Authorization: Bearer <accessToken>`
+unless noted.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/wallet` | Own balances (`availableBalanceMinor`, `heldBalanceMinor`, `totalBalanceMinor`, `currency`). |
+| `GET /api/v1/wallet/transactions` | Own ledger history, newest first, cursor-paginated. |
+| `POST /api/v1/deposits` | Requires `Idempotency-Key` header. Minimum Le5 (`500` minor units), enforced server-side. |
+| `GET /api/v1/deposits`, `GET /api/v1/deposits/:id` | Own deposits. |
+| `POST /api/v1/withdrawals` | Requires `Idempotency-Key` header. Minimum Le5; holds the amount immediately (`availableBalanceMinor -= amount`, `heldBalanceMinor += amount`); requires admin approval before any payout. |
+| `GET /api/v1/withdrawals`, `GET /api/v1/withdrawals/:id` | Own withdrawals. |
+| `POST /api/v1/withdrawals/:id/cancel` | Only while `PENDING_REVIEW`; releases the hold. |
+| `POST /api/v1/payments/webhooks/monime` | No auth guard (external caller) — authenticity via provider signature verification instead, which currently always rejects for the real Monime path (see ADR-013). |
+
+A deposit only reaches `COMPLETED` (crediting the ledger) via a verified
+provider event — never from a client call claiming success.
+
+### Admin financial endpoints (require `role: 'ADMIN'`)
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/admin/wallets/:userId` | Any user's balances. |
+| `GET /api/v1/admin/ledger?userId=` | Ledger entries, optionally filtered by user. |
+| `GET /api/v1/admin/deposits`, `GET /api/v1/admin/withdrawals` | Optionally filtered by `userId`/`status`. |
+| `POST /api/v1/admin/withdrawals/:id/approve` \| `/reject` \| `/complete` \| `/fail` | Each requires `{ reason }` (≥10 chars), recorded against the acting admin. |
+| `POST /api/v1/admin/wallets/:userId/adjustments` | `{ direction: 'CREDIT'\|'DEBIT', amountMinor, reason }` — the **only** balance-editing path besides deposits/withdrawals; a `DEBIT` cannot drive the balance negative. |
+
+## Phase 3 Scope
+
+Authentication/identity (Phase 2) and wallet/ledger/deposits/withdrawals
+(Phase 3, above) exist. Games, matchmaking, betting/prize-pool
+settlement, social, and production Monime payments are not implemented
+yet — see `CLAUDE.md` for the full "do not build yet" list.

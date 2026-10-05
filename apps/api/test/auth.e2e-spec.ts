@@ -74,7 +74,20 @@ describe('Auth (e2e)', () => {
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({ where: { email: { contains: runId } } });
+    // Every registered user now also owns a Wallet (created atomically in
+    // AuthService.register — see docs/decisions/ADR-012-financial-architecture.md),
+    // and Wallet→User is `onDelete: Restrict`, so the wallet (and anything
+    // referencing it) must be cleared before the user can be deleted.
+    const users = await prisma.user.findMany({
+      where: { email: { contains: runId } },
+      select: { id: true },
+    });
+    const userIds = users.map((u) => u.id);
+    await prisma.ledgerEntry.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.withdrawal.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.deposit.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.wallet.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await app.close();
   });
 

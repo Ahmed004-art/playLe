@@ -50,4 +50,21 @@ describe('validate (environment variables)', () => {
       validate({ ...validEnv, JWT_ACCESS_SECRET: 'too-short' }),
     ).toThrow();
   });
+
+  it('defaults PAYMENTS_PROVIDER to manual', () => {
+    const result = validate(validEnv);
+    expect(result.PAYMENTS_PROVIDER).toBe('manual');
+  });
+
+  it('rejects an unknown PAYMENTS_PROVIDER', () => {
+    expect(() =>
+      validate({ ...validEnv, PAYMENTS_PROVIDER: 'stripe' }),
+    ).toThrow();
+  });
+
+  it('accepts monime as a PAYMENTS_PROVIDER value', () => {
+    expect(() =>
+      validate({ ...validEnv, PAYMENTS_PROVIDER: 'monime' }),
+    ).not.toThrow();
+  });
 });

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/auth/auth_state.dart';
@@ -67,6 +68,11 @@ class AccountScreen extends StatelessWidget {
                     _InfoRow(label: 'Phone', value: user.phoneNumber!),
                   _InfoRow(label: 'Role', value: user.role),
                   _InfoRow(label: 'Status', value: user.status),
+                  const SizedBox(height: 24),
+                  FilledButton(
+                    onPressed: () => context.push('/wallet'),
+                    child: const Text('Wallet'),
+                  ),
                   const Spacer(),
                   OutlinedButton(
                     onPressed: () => authController.logout(),

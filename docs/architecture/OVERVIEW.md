@@ -68,13 +68,19 @@ be extracted into its own service later if real scale requires it.
 |---|---|
 | Auth | Registration, login, sessions (access/refresh tokens), guards — see [ADR-011](../decisions/ADR-011-authentication.md) |
 | Users | Core user accounts, safe serialization |
+| Ledger | Immutable financial transaction log — the only writer of balance changes, see [ADR-012](../decisions/ADR-012-financial-architecture.md) |
+| Wallet | User balances (derived from Ledger), transaction history |
+| Payments | Payment-provider abstraction (Manual/Monime) — see [ADR-013](../decisions/ADR-013-payment-provider-abstraction.md) |
+| Deposits | Deposit lifecycle, provider webhook handling |
+| Withdrawals | Withdrawal requests + admin approval workflow |
+| Admin | Financial admin visibility + withdrawal review (narrow slice — not a general admin system yet) |
 
 ## Future Module Boundaries (Not Yet Implemented)
 
 The backend is expected to grow the following modules, built on the
 foundation Phase 1 established (config, health, database, cache,
-real-time, exception handling, validation) and the identity layer Phase 2
-added:
+real-time, exception handling, validation), the identity layer Phase 2
+added, and the financial foundation Phase 3 added:
 
 | Module | Responsibility (future) |
 |---|---|
@@ -83,14 +89,9 @@ added:
 | Games | Game catalog/definitions and rules |
 | GameSessions | Live match/session state |
 | Matchmaking | Queueing and opponent matching |
-| Wallet | User balances (derived from Ledger) |
-| Ledger | Immutable financial transaction log |
-| Betting | Stake/prize-pool handling for a match |
-| Payments | Mobile-money deposit integrations |
-| Withdrawals | Withdrawal requests + admin approval workflow |
+| Betting | Stake/prize-pool handling for a match (ledger types `PRIZE`/`PLATFORM_FEE` already reserved for this) |
 | Notifications | Push/in-app notifications |
 | Chat | In-match/social messaging |
-| Admin | Administrative operations and controls |
 | Fraud | Fraud detection/review |
 | Audit | Audit log of sensitive actions |
 | Analytics | Platform/business analytics |
@@ -108,8 +109,11 @@ See [GAME_ENGINE.md](GAME_ENGINE.md) for the full authoritative game loop
 and [ADR-006](../decisions/ADR-006-realtime.md) for the WebSocket transport
 decision. Phase 1 only implements connection lifecycle, not game events.
 
-## Financial Flow (Future)
+## Financial Flow
 
-See [ADR-009](../decisions/ADR-009-financial-ledger.md) and
-`docs/database/README.md`. Phase 1 only implements documentation, not the
-schema or business logic.
+See [ADR-009](../decisions/ADR-009-financial-ledger.md),
+[ADR-012](../decisions/ADR-012-financial-architecture.md),
+[ADR-013](../decisions/ADR-013-payment-provider-abstraction.md), and
+`docs/database/README.md`. Wallet, ledger, deposits, and withdrawals are
+implemented as of Phase 3. Betting/prize-pool settlement is still
+future — see CLAUDE.md "What NOT to Build Yet".

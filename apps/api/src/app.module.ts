@@ -10,6 +10,12 @@ import { HealthModule } from './health/health.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { UsersModule } from './users/users.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { LedgerModule } from './ledger/ledger.module.js';
+import { WalletModule } from './wallet/wallet.module.js';
+import { PaymentsModule } from './payments/payments.module.js';
+import { DepositsModule } from './deposits/deposits.module.js';
+import { WithdrawalsModule } from './withdrawals/withdrawals.module.js';
+import { AdminModule } from './admin/admin.module.js';
 
 @Module({
   imports: [
@@ -34,6 +40,13 @@ import { AuthModule } from './auth/auth.module.js';
             ttl: configService.get('auth.throttleTtlMs', { infer: true }),
             limit: configService.get('auth.throttleLimit', { infer: true }),
           },
+          {
+            // Separately-configurable limit for deposit/withdrawal creation —
+            // see docs/decisions/ADR-012-financial-architecture.md.
+            name: 'payments',
+            ttl: configService.get('payments.throttleTtlMs', { infer: true }),
+            limit: configService.get('payments.throttleLimit', { infer: true }),
+          },
         ],
       }),
     }),
@@ -43,6 +56,12 @@ import { AuthModule } from './auth/auth.module.js';
     RealtimeModule,
     UsersModule,
     AuthModule,
+    LedgerModule,
+    WalletModule,
+    PaymentsModule,
+    DepositsModule,
+    WithdrawalsModule,
+    AdminModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

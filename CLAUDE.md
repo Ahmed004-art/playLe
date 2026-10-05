@@ -79,10 +79,13 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 2 — Identity, Authentication & User Foundation.**
-See `docs/development/WORKFLOW.md` for the phase pipeline and
-[ADR-011](docs/decisions/ADR-011-authentication.md) for the authentication
-architecture. Phase 1 (foundation/scaffold) is complete.
+**Current phase: Phase 3 — Wallet, Ledger & Financial Foundation.**
+See `docs/development/WORKFLOW.md` for the phase pipeline,
+[ADR-012](docs/decisions/ADR-012-financial-architecture.md) for the
+wallet/ledger/concurrency architecture, and
+[ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md) for the
+payment-provider abstraction and honest Monime status. Phase 1
+(foundation/scaffold) and Phase 2 (identity/authentication) are complete.
 
 ## Repository Structure
 
@@ -154,8 +157,12 @@ receives Le180. The same 10% fee model applies to 3- and 4-player matches.
 **Never implement financial operations as a simple mutable balance
 calculation.** Every financial operation must go through an auditable,
 append-only ledger inside an atomic database transaction. See
-`docs/decisions/ADR-009-financial-ledger.md` for the full model. This is
-documentation-only until the dedicated financial implementation phase.
+`docs/decisions/ADR-009-financial-ledger.md` for the full model and
+[ADR-012](docs/decisions/ADR-012-financial-architecture.md) for its
+Phase 3 implementation (`LedgerService.applyEntry`). The specific
+prize-pool/platform-fee math above is still documentation-only — betting
+settlement is a future phase; Phase 3 only reserves the `PRIZE`/
+`PLATFORM_FEE` ledger types for it.
 
 ## Commands
 
@@ -185,18 +192,24 @@ flutter test
 flutter build apk --debug
 ```
 
-## What NOT to Build Yet (Phase 2)
+## What NOT to Build Yet (Phase 3)
 
-Games, game sessions/engine logic, matchmaking, betting/stakes, wallet,
-ledger, deposits/withdrawals, mobile-money integrations, prize pools,
-platform fees, social following/friends, user-to-user transfers, in-game
-chat, notifications, KYC/identity verification, real admin financial
-operations, fraud systems, ratings/rankings, and external game
-integrations. Email/SMS verification has a schema placeholder
-(`emailVerifiedAt`/`phoneVerifiedAt`) but no provider integration or OTP
-flow — see [ADR-011](docs/decisions/ADR-011-authentication.md). See
-`README.md` roadmap for the full list. These belong to later, explicitly
-approved phases.
+Games, game sessions/engine logic, matchmaking, betting/stakes,
+prize-pool settlement, platform-fee collection (the `PRIZE`/
+`PLATFORM_FEE` ledger types are reserved but never produced yet), social
+following/friends, user-to-user transfers, in-game chat, notifications,
+KYC/identity verification (including verifying a withdrawal destination
+belongs to the requesting user), a general admin operations system
+beyond the narrow financial-visibility slice in `src/admin/`, fraud
+systems, ratings/rankings, and external game integrations. Real Monime
+(or any other) payment-provider integration is also not implemented —
+see [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md)
+and `docs/development/MONIME_SETUP.md`. Email/SMS verification has a
+schema placeholder (`emailVerifiedAt`/`phoneVerifiedAt`) but no provider
+integration or OTP flow — see
+[ADR-011](docs/decisions/ADR-011-authentication.md). See `README.md`
+roadmap for the full list. These belong to later, explicitly approved
+phases.
 
 ## Stop Conditions
 

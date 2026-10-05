@@ -27,6 +27,15 @@ export interface AppConfiguration {
     throttleLimit: number;
     throttleTtlMs: number;
   };
+  payments: {
+    provider: 'manual' | 'monime';
+    monimeApiKey?: string;
+    monimeWebhookSecret?: string;
+    minDepositMinor: bigint;
+    minWithdrawalMinor: bigint;
+    throttleLimit: number;
+    throttleTtlMs: number;
+  };
 }
 
 export default (): AppConfiguration => ({
@@ -55,5 +64,19 @@ export default (): AppConfiguration => ({
     minAgeYears: parseInt(process.env.AUTH_MIN_AGE_YEARS ?? '16', 10),
     throttleLimit: parseInt(process.env.AUTH_THROTTLE_LIMIT ?? '5', 10),
     throttleTtlMs: parseInt(process.env.AUTH_THROTTLE_TTL_MS ?? '60000', 10),
+  },
+  payments: {
+    provider: process.env.PAYMENTS_PROVIDER === 'monime' ? 'monime' : 'manual',
+    monimeApiKey: process.env.MONIME_API_KEY || undefined,
+    monimeWebhookSecret: process.env.MONIME_WEBHOOK_SECRET || undefined,
+    minDepositMinor: BigInt(process.env.WALLET_MIN_DEPOSIT_MINOR ?? '500'),
+    minWithdrawalMinor: BigInt(
+      process.env.WALLET_MIN_WITHDRAWAL_MINOR ?? '500',
+    ),
+    throttleLimit: parseInt(process.env.PAYMENTS_THROTTLE_LIMIT ?? '10', 10),
+    throttleTtlMs: parseInt(
+      process.env.PAYMENTS_THROTTLE_TTL_MS ?? '60000',
+      10,
+    ),
   },
 });

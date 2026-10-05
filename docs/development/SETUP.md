@@ -54,6 +54,11 @@ the API refuses to boot otherwise). Generate one:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
+Phase 3 adds `PAYMENTS_PROVIDER` (defaults to `manual` — no real payment
+gateway is connected; see [ADR-013](../decisions/ADR-013-payment-provider-abstraction.md)
+and `docs/development/MONIME_SETUP.md`). No action is needed for local
+development — the defaults work out of the box.
+
 ## 4. Generate the Prisma Client and Run Migrations
 
 ```bash

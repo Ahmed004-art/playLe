@@ -8,7 +8,10 @@ import type { AppConfiguration } from './config/configuration.js';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // `rawBody: true` preserves the raw request bytes (`req.rawBody`) needed
+  // to verify a payment provider's webhook signature — see
+  // src/deposits/webhooks.controller.ts. Nothing else in the app uses it.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const configService = app.get(ConfigService<AppConfiguration, true>);
 
   const port = configService.get('port', { infer: true });

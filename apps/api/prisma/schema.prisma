@@ -52,6 +52,12 @@ model User {
   updatedAt DateTime @updatedAt
 
   refreshTokens RefreshToken[]
+  wallet        Wallet?
+  deposits      Deposit[]
+  withdrawals   Withdrawal[]
+
+  ledgerAdjustmentsAuthored LedgerEntry[] @relation("LedgerAdjustmentAdmin")
+  withdrawalReviewsAuthored Withdrawal[]  @relation("WithdrawalReviewAdmin")
 
   @@map("users")
 }
@@ -82,4 +88,238 @@ model RefreshToken {
   @@index([userId])
   @@index([familyId])
   @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Wallet, Ledger & Financial Foundation
+//
+// Money is always an integer count of minor units (1 SLE = 100 minor units,
+// i.e. cents) stored as `BigInt`/Postgres `bigint`. Never a float. See
+// docs/decisions/ADR-012-financial-architecture.md for the full reasoning.
+//
+// The only code path allowed to change a Wallet's balances or insert a
+// LedgerEntry is `LedgerService.applyEntry` (apps/api/src/ledger/ledger.service.ts).
+// No other service may call `wallet.update(...)` or `ledgerEntry.create(...)`
+// directly. Financial relations use `onDelete: Restrict` — a user with any
+// financial history can never be deleted, by design.
+// ---------------------------------------------------------------------------
+
+enum LedgerEntryType {
+  DEPOSIT
+  WITHDRAWAL
+  HOLD
+  RELEASE
+  REFUND
+  ADJUSTMENT
+  /// Reserved for the future betting/settlement phase. Never produced by
+  /// Phase 3 code — see CLAUDE.md "what not to build yet".
+  PRIZE
+  /// Reserved for the future betting/settlement phase. Never produced by
+  /// Phase 3 code — see CLAUDE.md "what not to build yet".
+  PLATFORM_FEE
+}
+
+enum DepositStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum WithdrawalStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ProviderEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  REJECTED
+}
+
+/// One unified wallet per user. `availableBalanceMinor` can be spent/
+/// withdrawn; `heldBalanceMinor` is reserved (e.g. a pending withdrawal)
+/// and cannot. Both are enforced non-negative at the application layer
+/// (LedgerService) and at the database layer (CHECK constraints added by
+/// hand to the generated migration).
+model Wallet {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  availableBalanceMinor BigInt @default(0)
+  heldBalanceMinor      BigInt @default(0)
+  currency              String @default("SLE")
+
+  ledgerEntries LedgerEntry[]
+  deposits      Deposit[]
+  withdrawals   Withdrawal[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("wallets")
+}
+
+/// Immutable, append-only financial audit log. Every row is one atomic
+/// balance-affecting event. `availableDeltaMinor`/`heldDeltaMinor` are
+/// signed and may both be non-zero in the same row (e.g. a HOLD moves
+/// money from available to held in one event). `*BalanceAfterMinor` is a
+/// snapshot of the resulting wallet state, so a row is self-describing
+/// without needing to replay history. Never updated or deleted after
+/// creation — there is deliberately no update/delete method for this
+/// model anywhere in the service layer.
+model LedgerEntry {
+  id       String @id @default(uuid())
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  userId   String
+
+  type LedgerEntryType
+
+  availableDeltaMinor BigInt
+  heldDeltaMinor      BigInt
+
+  availableBalanceAfterMinor BigInt
+  heldBalanceAfterMinor      BigInt
+
+  currency String
+
+  /// Required (enforced in LedgerService) for ADJUSTMENT entries; optional
+  /// free-text context for all other types.
+  reason String?
+
+  relatedDepositId    String?
+  deposit             Deposit?    @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
+  relatedWithdrawalId String?
+  withdrawal          Withdrawal? @relation(fields: [relatedWithdrawalId], references: [id], onDelete: SetNull)
+
+  providerReference String?
+
+  /// Set only for ADJUSTMENT entries — the admin who authorized it.
+  createdByAdminId String?
+  createdByAdmin   User?   @relation("LedgerAdjustmentAdmin", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([walletId])
+  @@index([type])
+  @@map("ledger_entries")
+}
+
+/// Deposit lifecycle. Becomes COMPLETED (and credits the ledger) only
+/// through `DepositsService.completeFromProviderEvent`, never from a
+/// client-supplied "payment succeeded" claim.
+model Deposit {
+  id       String @id @default(uuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  amountMinor BigInt
+  currency    String @default("SLE")
+
+  status DepositStatus @default(PENDING)
+
+  /// "MANUAL" (default, no live provider) or "MONIME".
+  provider          String
+  providerReference String?
+
+  /// Client-supplied idempotency key (required header on creation). The
+  /// unique constraint below is itself the idempotency mechanism — a
+  /// retried create with the same key returns the original row.
+  idempotencyKey String
+
+  failureReason String?
+
+  completedAt DateTime?
+  failedAt    DateTime?
+  cancelledAt DateTime?
+
+  ledgerEntries  LedgerEntry[]
+  providerEvents ProviderEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, idempotencyKey])
+  @@index([status])
+  @@index([providerReference])
+  @@map("deposits")
+}
+
+/// Withdrawal lifecycle. A hold is created atomically at request time
+/// (PENDING_REVIEW); admin approval is required before funds actually
+/// leave the system (COMPLETED). See
+/// docs/decisions/ADR-012-financial-architecture.md for the state machine.
+model Withdrawal {
+  id       String @id @default(uuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  amountMinor BigInt
+  currency    String @default("SLE")
+
+  status WithdrawalStatus @default(PENDING_REVIEW)
+
+  /// Abstracted payout destination (e.g. mobile money provider + number).
+  /// Not identity-verified in Phase 3 — see CLAUDE.md KYC exclusion.
+  destinationDetails Json
+
+  idempotencyKey String
+
+  reviewedByAdminId String?
+  reviewedByAdmin   User?   @relation("WithdrawalReviewAdmin", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  reviewedAt        DateTime?
+  reviewReason      String?
+
+  providerReference String?
+  failureReason     String?
+
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+  cancelledAt DateTime?
+
+  ledgerEntries LedgerEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, idempotencyKey])
+  @@index([status])
+  @@map("withdrawals")
+}
+
+/// Raw record of every inbound payment-provider webhook delivery attempt
+/// (valid or not), keyed for idempotent processing of retried deliveries.
+/// `payload` must never contain secrets (signing secrets are config, not
+/// webhook body content) — see docs/architecture/SECURITY.md.
+model ProviderEvent {
+  id              String @id @default(uuid())
+  provider        String
+  providerEventId String
+  eventType       String
+  payload         Json
+
+  status ProviderEventStatus @default(RECEIVED)
+
+  relatedDepositId String?
+  deposit          Deposit? @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
+
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([provider, providerEventId])
+  @@map("provider_events")
 }

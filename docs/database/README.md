@@ -10,10 +10,9 @@
 Schema lives at `apps/api/prisma/schema.prisma`. Migrations live at
 `apps/api/prisma/migrations/`.
 
-## Current Schema (Phase 2)
+## Current Schema
 
-Two real domain models exist, added in Phase 2 — see
-[ADR-011](../decisions/ADR-011-authentication.md) for the reasoning:
+### Identity (Phase 2 — see [ADR-011](../decisions/ADR-011-authentication.md))
 
 - **`User`** — the account record: `email` (unique), `phoneNumber`
   (unique, optional), `username` (unique), `passwordHash`, `role`
@@ -28,16 +27,45 @@ Two real domain models exist, added in Phase 2 — see
   `expiresAt`, plus `userAgent`/`ipAddress` for future session-management
   UI. Cascade-deletes with its `User`.
 
+### Financial (Phase 3 — see [ADR-012](../decisions/ADR-012-financial-architecture.md))
+
+All monetary fields are `BigInt` (minor units; 1 SLE = 100 minor units) —
+never a float. Financial relations to `User` use `onDelete: Restrict`
+(not cascade) — financial history blocks user deletion by design.
+
+- **`Wallet`** — one per `User` (`userId` unique). `availableBalanceMinor`,
+  `heldBalanceMinor`, `currency`. CHECK constraints (hand-added to the
+  migration) enforce both `>= 0` at the database layer, below the
+  application-level checks in `LedgerService`.
+- **`LedgerEntry`** — immutable, append-only. `type` (`DEPOSIT`,
+  `WITHDRAWAL`, `HOLD`, `RELEASE`, `REFUND`, `ADJUSTMENT`, plus
+  reserved-but-unused `PRIZE`/`PLATFORM_FEE` for a future betting phase),
+  signed `availableDeltaMinor`/`heldDeltaMinor`, `*BalanceAfterMinor`
+  snapshots, optional `relatedDepositId`/`relatedWithdrawalId`/
+  `providerReference`/`createdByAdminId`. Only `LedgerService.applyEntry`
+  ever writes this table.
+- **`Deposit`** — `amountMinor`, `status` (`PENDING`/`COMPLETED`/
+  `FAILED`/`CANCELLED`), `provider`, `providerReference`,
+  `idempotencyKey` (`@@unique([userId, idempotencyKey])` — this
+  constraint *is* the client-retry idempotency mechanism).
+- **`Withdrawal`** — `amountMinor`, `status` (`PENDING_REVIEW`/
+  `APPROVED`/`REJECTED`/`COMPLETED`/`FAILED`/`CANCELLED`),
+  `destinationDetails` (JSON, abstracted/unverified — no KYC yet),
+  `idempotencyKey`, admin review fields (`reviewedByAdminId`,
+  `reviewReason`).
+- **`ProviderEvent`** — raw inbound webhook audit/idempotency record,
+  `@@unique([provider, providerEventId])` — the webhook-retry idempotency
+  mechanism and the audit trail of every delivery attempt.
+
 Phase 1's `schema.prisma` intentionally contained no business models;
 connectivity was proven via a raw `SELECT 1` instead. That raw query is
-still what the health check uses — `User`/`RefreshToken` are real
-business models now, not a connectivity probe.
+still what the health check uses.
 
-## Phase 2 Scope
+## Phase Scope
 
-Phase 2 establishes identity/session data only. It does not yet create
-wallet, ledger, match, or social-graph tables — those are designed in
-their own dedicated phases, informed by the financial ledger model in
+Phase 2 established identity/session data. Phase 3 added the financial
+foundation above. Match, social-graph, and betting-settlement tables are
+still designed in their own dedicated future phases, informed by
 [ADR-009](../decisions/ADR-009-financial-ledger.md).
 
 ## Local Development Database
@@ -98,16 +126,14 @@ npm run db:studio            # open Prisma Studio
 
 ## Future Schema Direction
 
-See [ADR-009](../decisions/ADR-009-financial-ledger.md). The eventual
-schema will include (non-exhaustive, designed in each dedicated phase):
+See [ADR-009](../decisions/ADR-009-financial-ledger.md). The remaining
+future schema (non-exhaustive, designed in each dedicated phase):
 
-- `Wallet` (derived/cached balance) + `LedgerEntry` (immutable, append-only)
 - `Match`, `MatchPlayer`, `GameSession`
-- `Deposit`, `Withdrawal`, `Refund`, `AdminAdjustment`
 - `AuditLogEntry`
 - Verification tokens/OTP records (email/SMS verification — not yet
   designed; `User.emailVerifiedAt`/`phoneVerifiedAt` already reserve the
   fields that will be set once this lands)
 
-`User` and `RefreshToken` (above) are no longer "future" — they exist as
-of Phase 2.
+`User`, `RefreshToken`, `Wallet`, `LedgerEntry`, `Deposit`, `Withdrawal`,
+and `ProviderEvent` are no longer "future" — they exist as of Phase 3.

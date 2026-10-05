@@ -62,15 +62,22 @@ export class AuthService {
 
     let user: User;
     try {
-      user = await this.prisma.user.create({
-        data: {
-          email,
-          phoneNumber,
-          username: dto.username,
-          passwordHash,
-          dateOfBirth,
-          lastLoginAt: new Date(),
-        },
+      user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            phoneNumber,
+            username: dto.username,
+            passwordHash,
+            dateOfBirth,
+            lastLoginAt: new Date(),
+          },
+        });
+        // Every user gets exactly one wallet from the moment they
+        // register — see docs/decisions/ADR-012-financial-architecture.md.
+        // No code elsewhere needs to handle a "wallet doesn't exist yet".
+        await tx.wallet.create({ data: { userId: created.id } });
+        return created;
       });
     } catch (error) {
       throw this.mapUniqueConstraintError(error);

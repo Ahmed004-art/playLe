@@ -40,6 +40,10 @@ describe('AuthService', () => {
       create: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
     };
+    wallet: {
+      create: ReturnType<typeof vi.fn>;
+    };
+    $transaction: ReturnType<typeof vi.fn>;
   };
   let usersService: {
     findByIdentifier: ReturnType<typeof vi.fn>;
@@ -59,7 +63,17 @@ describe('AuthService', () => {
   let service: AuthService;
 
   beforeEach(() => {
-    prisma = { user: { create: vi.fn(), update: vi.fn() } };
+    prisma = {
+      user: { create: vi.fn(), update: vi.fn() },
+      wallet: { create: vi.fn() },
+      // `register()` wraps user+wallet creation in `$transaction`; the
+      // fake just runs the callback against the same mocked `prisma`
+      // object, since the asserted calls (`prisma.user.create(...)`)
+      // are identical either way.
+      $transaction: vi.fn((callback: (tx: unknown) => unknown) =>
+        callback(prisma),
+      ),
+    };
     usersService = { findByIdentifier: vi.fn(), updateLastLogin: vi.fn() };
     passwordService = {
       hash: vi.fn().mockResolvedValue('hashed'),

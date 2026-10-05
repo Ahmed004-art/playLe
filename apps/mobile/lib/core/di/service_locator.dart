@@ -7,6 +7,8 @@ import '../network/api_client.dart';
 import '../network/websocket_client.dart';
 import '../storage/local_storage.dart';
 import '../storage/secure_storage.dart';
+import '../wallet/wallet_controller.dart';
+import '../wallet/wallet_repository.dart';
 
 /// Dependency injection strategy: a single `get_it` service locator.
 ///
@@ -48,5 +50,12 @@ Future<void> setupServiceLocator() async {
   );
   sl.registerLazySingleton<AuthController>(
     () => AuthController(sl<AuthRepository>()),
+  );
+
+  sl.registerLazySingleton<WalletRepository>(
+    () => HttpWalletRepository(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<WalletController>(
+    () => WalletController(sl<WalletRepository>()),
   );
 }

@@ -79,6 +79,33 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1)
   AUTH_THROTTLE_TTL_MS: number = 60000;
+
+  @IsIn(['manual', 'monime'])
+  PAYMENTS_PROVIDER: string = 'manual';
+
+  @IsOptional()
+  @IsString()
+  MONIME_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  MONIME_WEBHOOK_SECRET?: string;
+
+  @IsInt()
+  @Min(1)
+  WALLET_MIN_DEPOSIT_MINOR: number = 500;
+
+  @IsInt()
+  @Min(1)
+  WALLET_MIN_WITHDRAWAL_MINOR: number = 500;
+
+  @IsInt()
+  @Min(1)
+  PAYMENTS_THROTTLE_LIMIT: number = 10;
+
+  @IsInt()
+  @Min(1)
+  PAYMENTS_THROTTLE_TTL_MS: number = 60000;
 }
 
 export function validate(

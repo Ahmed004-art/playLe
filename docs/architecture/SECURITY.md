@@ -1,9 +1,10 @@
 # Security Foundation
 
-This document describes the security posture established through Phase 2
+This document describes the security posture established through Phase 3
 and the security work that remains for later phases. **The application is
-not production-secure after Phase 2.** This is a foundation, not a
-completed security program.
+not production-secure after Phase 3** — in particular, no real money can
+move yet (see ADR-013). This is a foundation, not a completed security
+program.
 
 ## Implemented in Phase 1
 
@@ -93,7 +94,59 @@ Full architecture and reasoning: [ADR-011](../decisions/ADR-011-authentication.m
   logged back out of the admin app) — defense in depth on top of the
   server-side enforcement above, which remains the real boundary.
 
-## Explicitly NOT Implemented Through Phase 2
+## Implemented in Phase 3 — Financial Foundation
+
+Full architecture and reasoning:
+[ADR-012](../decisions/ADR-012-financial-architecture.md),
+[ADR-013](../decisions/ADR-013-payment-provider-abstraction.md).
+
+- **No bare mutable balance, ever.** Every balance change goes through
+  `LedgerService.applyEntry`, the only method permitted to write a
+  `Wallet` or `LedgerEntry` row — verified by code review (no other
+  `wallet.update`/`ledgerEntry.create` call site exists) and by e2e tests
+  asserting every mutation produces a matching ledger row.
+- **Concurrency safety**: pessimistic row locking (`SELECT ... FOR UPDATE`
+  inside a Prisma transaction) serializes concurrent mutations against
+  the same wallet — verified with a real concurrency test (two
+  simultaneous withdrawal requests together exceeding the balance;
+  exactly one succeeds against the real database, not a mock).
+- **Financial invariants enforced twice**: application-level checks in
+  `LedgerService` reject any operation that would drive a balance
+  negative, *and* database-level `CHECK` constraints on `wallets`/
+  `deposits`/`withdrawals` enforce the same thing as defense in depth.
+- **Idempotency**: client-request idempotency via
+  `@@unique([userId, idempotencyKey])` on `Deposit`/`Withdrawal`
+  (verified: a retried create with the same key returns the original
+  record, not a duplicate); provider-event idempotency via
+  `@@unique([provider, providerEventId])` on `ProviderEvent` (verified: a
+  duplicate webhook delivery credits the wallet exactly once).
+- **No client-asserted payment success**: a deposit only becomes
+  `COMPLETED` via a verified provider event, never from a client call —
+  verified live and in e2e tests.
+- **IDOR protection**: a user's deposits/withdrawals are scoped to their
+  own `userId`; e2e-verified that another authenticated user gets `404`
+  (not `403`, which would confirm existence) for someone else's
+  withdrawal.
+- **Admin financial authorization**: every `/admin/...` financial route
+  uses the same `JwtAuthGuard` + `RolesGuard` + `@Roles('ADMIN')` as
+  Phase 2 — no second authorization mechanism. Verified: a non-admin
+  token gets a real `403` against every admin finance route.
+- **Narrow, audited admin adjustment**: the only balance-editing path
+  besides deposits/withdrawals requires a reason (≥10 characters), is
+  attributed to the acting admin in the ledger row, and still cannot
+  drive a balance negative (same invariant check as every other path).
+- **Webhook authenticity fails closed**: `MonimeProvider.verifyWebhookSignature`
+  always returns `invalid` — Monime's real signature scheme is
+  unverified, so nothing is trusted by default (see ADR-013). The
+  `PaymentProviderPort.initiateDeposit` real-network-call path is also
+  inert for Monime regardless of configured credentials, closing off any
+  accidental call to an unverified endpoint.
+- **No secrets in webhook/ledger logs**: `ProviderEvent.payload` stores
+  the provider's event body, not configured signing secrets; grepped for
+  any log statement that could leak `MONIME_API_KEY`/
+  `MONIME_WEBHOOK_SECRET` — none found.
+
+## Explicitly NOT Implemented Through Phase 3
 
 - Email/SMS verification delivery (schema fields exist, no provider
   integration or OTP flow — see ADR-011).
@@ -102,8 +155,14 @@ Full architecture and reasoning: [ADR-011](../decisions/ADR-011-authentication.m
 - Multi-factor authentication.
 - Device/session management UI (sessions are revocable at the data layer
   via refresh-token rotation, but there's no "your active sessions" UI).
-- KYC.
-- Any financial operation or fraud detection.
+- KYC / identity verification of withdrawal destinations (`destinationDetails`
+  is stored as unverified metadata — see ADR-012).
+- Real-money deposits or payouts — `ManualProvider` is active and makes
+  no network call; `MonimeProvider` is an inert boundary pending verified
+  Monime access (see ADR-013, `docs/development/MONIME_SETUP.md`).
+- Betting/prize-pool settlement, platform fees (ledger types reserved,
+  not produced yet).
+- Fraud detection.
 - Secret management via a vault/KMS (local `.env` files only, appropriate
   for local development, not production).
 - Dependency vulnerability scanning automation (can be added to CI later,
@@ -136,6 +195,13 @@ predates Next.js 16 support, `prisma` to an older 6.x patch) that would
 either break the build or provide no real benefit, since none of these
 packages process untrusted input in Phase 1. None were applied.
 
+**Phase 3 update**: the financial foundation (wallet, ledger, deposits,
+withdrawals, payment-provider abstraction) introduced **zero new npm or
+Dart dependencies** — it's built entirely on packages already present
+from Phase 1/2 (Prisma, NestJS, class-validator) plus Node's built-in
+`crypto`/`BigInt`. `npm audit` after Phase 3 reports the same 8 findings,
+unchanged.
+
 ## Known Limitations
 
 - The development database and Redis instances run with default/simple
@@ -148,15 +214,24 @@ packages process untrusted input in Phase 1. None were applied.
 - No automated secret-scanning is wired into CI yet; the current
   safeguard is `.gitignore` plus manual review before every commit.
 - **The admin app stores session tokens in `localStorage`**, which is
-  readable by any script on the page (XSS risk). Acceptable for now since
-  the admin app has no real operations to protect; a hardened build
-  should move to httpOnly, SameSite cookies set by the API (see
-  `apps/admin/src/lib/token-storage.ts` and ADR-011).
+  readable by any script on the page (XSS risk). This was accepted in
+  Phase 2 because there were no real operations to protect; **that is no
+  longer true** — the admin app now approves/rejects withdrawals and
+  adjusts wallet balances. This is flagged explicitly as a gap that must
+  be closed (move to httpOnly, SameSite cookies set by the API — see
+  `apps/admin/src/lib/token-storage.ts` and ADR-011) before any of this
+  is used against real money in production.
 - No password-reset or email/SMS verification flow exists yet — an
   account with a forgotten password currently has no self-service
   recovery path.
 - `JWT_ACCESS_SECRET` is a single static secret per environment with no
   rotation mechanism.
+- `Withdrawal.destinationDetails` (e.g. a mobile-money phone number) is
+  stored as-given, with no verification that it belongs to the
+  requesting user — KYC/destination-ownership verification is explicitly
+  future work (see ADR-012).
+- No real payment provider is connected — see "Explicitly NOT
+  Implemented" above and ADR-013.
 
 ## Future Security Requirements (Later Phases)
 
@@ -164,9 +239,12 @@ packages process untrusted input in Phase 1. None were applied.
   future staff roles beyond the current USER/ADMIN split.
 - Email/SMS verification delivery, password reset, multi-factor
   authentication, session/device management UI.
-- Financial security: idempotency keys, transaction signing/verification
-  where applicable, reconciliation jobs, anomaly detection (Fraud module).
-- KYC integration ahead of/alongside withdrawal automation.
+- Financial security: a real Monime (or other provider) webhook
+  signature implementation once documentation/credentials are verified,
+  reconciliation jobs, anomaly detection (Fraud module). Idempotency
+  itself is implemented as of Phase 3 (see above).
+- KYC integration ahead of/alongside withdrawal automation and
+  destination-account verification.
 - Payment provider credential handling via a proper secrets manager, not
   `.env` files, once deployed.
 - Structured audit logging for every authentication, financial, and

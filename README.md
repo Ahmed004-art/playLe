@@ -6,15 +6,19 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 2 — IDENTITY, AUTHENTICATION & USER FOUNDATION**
+> **CURRENT PHASE: PHASE 3 — WALLET, LEDGER & FINANCIAL FOUNDATION**
 >
-> Phase 1 (repository structure, development environment, architectural
-> scaffolding) is complete. Phase 2 adds real user accounts, email/phone +
-> password authentication, access/refresh sessions, roles, a basic
-> profile, and the authorization primitives later phases build on — see
-> [ADR-011](docs/decisions/ADR-011-authentication.md). No games, betting,
-> wallet, payments, social features, matchmaking, chat, KYC, or real admin
-> operations are implemented yet. See "Roadmap" and `CLAUDE.md` for what's
+> Phase 1 (foundation) and Phase 2 (identity/authentication) are complete.
+> Phase 3 adds a unified wallet, an immutable ledger, deposits,
+> withdrawals with admin approval, idempotency, concurrency-safe balance
+> updates, and a payment-provider abstraction — see
+> [ADR-012](docs/decisions/ADR-012-financial-architecture.md) and
+> [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md). No
+> real payment provider is connected yet (Monime integration is a
+> documented, inert boundary pending verified access — see
+> `docs/development/MONIME_SETUP.md`). No games, betting/prize-pool
+> settlement, social features, matchmaking, chat, KYC, or user-to-user
+> transfers are implemented yet. See "Roadmap" and `CLAUDE.md` for what's
 > in scope.
 
 ## Overview
@@ -40,7 +44,8 @@ Core commitments:
 - **Server-authoritative** game and financial state
   ([ADR-008](docs/decisions/ADR-008-server-authoritative.md)).
 - **Immutable, auditable financial ledger** — never a bare mutable balance
-  ([ADR-009](docs/decisions/ADR-009-financial-ledger.md)).
+  ([ADR-009](docs/decisions/ADR-009-financial-ledger.md),
+  implemented per [ADR-012](docs/decisions/ADR-012-financial-architecture.md)).
 - **Modular monolith** backend, not microservices
   ([ADR-001](docs/decisions/ADR-001-backend.md)).
 
@@ -148,15 +153,23 @@ this repository.
 
 - **Phase 1 — Foundation** ✅ complete. Repository structure, development
   environment, architectural scaffolding.
-- **Phase 2 — Identity, Authentication & User Foundation** (current).
+- **Phase 2 — Identity, Authentication & User Foundation** ✅ complete.
   Accounts, email/phone + password auth, access/refresh sessions, roles,
   basic profile. See [ADR-011](docs/decisions/ADR-011-authentication.md).
+- **Phase 3 — Wallet, Ledger & Financial Foundation** (current). Unified
+  wallet, immutable ledger, deposits, withdrawals with admin approval,
+  idempotency, concurrency-safe balance updates, payment-provider
+  abstraction. See
+  [ADR-012](docs/decisions/ADR-012-financial-architecture.md) and
+  [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md). Real
+  Monime (or other provider) integration is pending verified
+  credentials/documentation — see `docs/development/MONIME_SETUP.md`.
 - Later phases (not yet scheduled/implemented) are expected to cover, in
-  order of dependency: the wallet/ledger system, matchmaking and direct
-  challenges, the game engine and initial games, payments/mobile-money
-  integration, admin operational tooling, social features, and
-  notifications. Each phase will be specified explicitly before
-  implementation begins — see `CLAUDE.md`, "Phase Discipline".
+  order of dependency: matchmaking and direct challenges, the game
+  engine and initial games, betting/prize-pool settlement, admin
+  operational tooling, social features, and notifications. Each phase
+  will be specified explicitly before implementation begins — see
+  `CLAUDE.md`, "Phase Discipline".
 
 ## Contribution / Development Workflow
 
