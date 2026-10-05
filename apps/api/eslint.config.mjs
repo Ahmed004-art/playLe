@@ -43,6 +43,9 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
+      // Same reasoning as the three rules above — calling `.some()`/
+      // `.map()` on supertest's `any`-typed `response.body` arrays.
+      '@typescript-eslint/no-unsafe-call': 'off',
     },
   },
 );

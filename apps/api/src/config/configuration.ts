@@ -36,6 +36,13 @@ export interface AppConfiguration {
     throttleLimit: number;
     throttleTtlMs: number;
   };
+  matches: {
+    throttleLimit: number;
+    throttleTtlMs: number;
+    challengeExpiryMs: number;
+    abandonGraceMs: number;
+    timeoutSweepIntervalMs: number;
+  };
 }
 
 export default (): AppConfiguration => ({
@@ -76,6 +83,19 @@ export default (): AppConfiguration => ({
     throttleLimit: parseInt(process.env.PAYMENTS_THROTTLE_LIMIT ?? '10', 10),
     throttleTtlMs: parseInt(
       process.env.PAYMENTS_THROTTLE_TTL_MS ?? '60000',
+      10,
+    ),
+  },
+  matches: {
+    throttleLimit: parseInt(process.env.MATCHES_THROTTLE_LIMIT ?? '30', 10),
+    throttleTtlMs: parseInt(process.env.MATCHES_THROTTLE_TTL_MS ?? '60000', 10),
+    challengeExpiryMs: parseInt(
+      process.env.CHALLENGE_EXPIRY_MS ?? '120000',
+      10,
+    ),
+    abandonGraceMs: parseInt(process.env.MATCH_ABANDON_GRACE_MS ?? '30000', 10),
+    timeoutSweepIntervalMs: parseInt(
+      process.env.MATCH_TIMEOUT_SWEEP_INTERVAL_MS ?? '10000',
       10,
     ),
   },

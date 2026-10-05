@@ -5,9 +5,8 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/theme/app_colors.dart';
 
-/// The authenticated landing screen. Intentionally minimal — just proves
-/// the session is live and gives a way to log out. Game/social/wallet UI
-/// belong to later phases.
+/// The authenticated landing screen — a minimal hub linking out to
+/// Games and Wallet. Social features are still a later phase.
 ///
 /// Takes [authController] explicitly (rather than pulling it from the
 /// global service locator itself) so it always renders the same
@@ -69,6 +68,11 @@ class AccountScreen extends StatelessWidget {
                   _InfoRow(label: 'Role', value: user.role),
                   _InfoRow(label: 'Status', value: user.status),
                   const SizedBox(height: 24),
+                  FilledButton(
+                    onPressed: () => context.push('/games'),
+                    child: const Text('Games'),
+                  ),
+                  const SizedBox(height: 12),
                   FilledButton(
                     onPressed: () => context.push('/wallet'),
                     child: const Text('Wallet'),

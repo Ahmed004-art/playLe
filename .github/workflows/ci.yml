@@ -68,6 +68,16 @@ jobs:
       PAYMENTS_PROVIDER: manual
       PAYMENTS_THROTTLE_LIMIT: 1000
       PAYMENTS_THROTTLE_TTL_MS: 60000
+      # Raised for the same reason as THROTTLE_LIMIT above — the matches/
+      # matchmaking/challenges e2e suites make far more than the
+      # production default (30) in well under 60s. Grace/sweep intervals
+      # shortened so the abandonment-sweep e2e assertions don't need to
+      # wait a real 30s.
+      MATCHES_THROTTLE_LIMIT: 1000
+      MATCHES_THROTTLE_TTL_MS: 60000
+      CHALLENGE_EXPIRY_MS: 120000
+      MATCH_ABANDON_GRACE_MS: 5000
+      MATCH_TIMEOUT_SWEEP_INTERVAL_MS: 2000
 
     steps:
       - uses: actions/checkout@v4

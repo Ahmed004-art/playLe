@@ -17,14 +17,15 @@ function DashboardContent() {
       <div className="card">
         <h1>PlayLe Admin</h1>
         <p className="statusLine">Signed in as {user?.username} (ADMIN).</p>
-        <p className="statusLine">
-          Match, social, and dispute management are implemented in later phases.
-        </p>
+        <p className="statusLine">Social and dispute management are implemented in later phases.</p>
         <p style={{ marginTop: 16 }}>
           <Link href="/withdrawals">Withdrawals →</Link>
         </p>
         <p style={{ marginTop: 8 }}>
           <Link href="/wallets">Wallet lookup →</Link>
+        </p>
+        <p style={{ marginTop: 8 }}>
+          <Link href="/matches">Matches →</Link>
         </p>
       </div>
       <div className="card">

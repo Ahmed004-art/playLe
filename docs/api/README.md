@@ -8,9 +8,10 @@ Both `apps/mobile` (Flutter) and `apps/admin` (Next.js) talk to `apps/api`
 - **REST over HTTPS** for request/response operations, documented via
   OpenAPI/Swagger (served at `/api/docs` in development — see
   `apps/api/src/main.ts`).
-- **WebSockets (Socket.IO)** for real-time match state, per
-  [ADR-006](../decisions/ADR-006-realtime.md). Not implemented for actual
-  game events in Phase 1 — connection lifecycle only.
+- **WebSockets (Socket.IO)** for real-time match/matchmaking/challenge
+  push, per [ADR-006](../decisions/ADR-006-realtime.md) and
+  [ADR-014](../decisions/ADR-014-realtime-command-transport.md)
+  (implemented as of Phase 4 — see below).
 
 Because Flutter/Dart cannot consume the TypeScript `packages/shared`
 contracts, the mobile app's request/response models are (in Phase 1 and
@@ -136,9 +137,57 @@ provider event — never from a client call claiming success.
 | `POST /api/v1/admin/withdrawals/:id/approve` \| `/reject` \| `/complete` \| `/fail` | Each requires `{ reason }` (≥10 chars), recorded against the acting admin. |
 | `POST /api/v1/admin/wallets/:userId/adjustments` | `{ direction: 'CREDIT'\|'DEBIT', amountMinor, reason }` — the **only** balance-editing path besides deposits/withdrawals; a `DEBIT` cannot drive the balance negative. |
 
-## Phase 3 Scope
+## Game Platform & Matchmaking Endpoints (Phase 4)
 
-Authentication/identity (Phase 2) and wallet/ledger/deposits/withdrawals
-(Phase 3, above) exist. Games, matchmaking, betting/prize-pool
-settlement, social, and production Monime payments are not implemented
+Full architecture: [ADR-014](../decisions/ADR-014-realtime-command-transport.md),
+[ADR-015](../decisions/ADR-015-game-module-architecture.md). All routes
+below require `Authorization: Bearer <accessToken>` unless noted. A
+match command (a move) travels over REST, not WebSocket — WebSocket is
+used only for server→client push and for joining a match's room.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/games` | The game catalog (currently one row: Tic-Tac-Toe). |
+| `GET /api/v1/games/:id` | A single game's catalog entry. |
+| `POST /api/v1/matchmaking/join` | `{ gameId }`. Returns `QUEUED` or, if an opponent was already waiting, `MATCHED` with the new `matchId` immediately. |
+| `POST /api/v1/matchmaking/leave` | `{ gameId }`. Removes the caller from the queue. |
+| `POST /api/v1/challenges` | `{ gameId, opponentUserId }`. Rejects self-challenge and a duplicate pending challenge between the same two users for the same game. |
+| `GET /api/v1/challenges` | Own sent + received challenges. |
+| `POST /api/v1/challenges/:id/accept` \| `/decline` \| `/cancel` | Atomic conditional transition (`PENDING` -> target status); exactly one of two concurrent accept attempts succeeds. Accept creates the `Match`. |
+| `GET /api/v1/matches` | Own match history, cursor-paginated. |
+| `GET /api/v1/matches/:id` | A single match, including players, state, and result. `404` (not `403`) for a non-participant. |
+| `POST /api/v1/matches/:id/commands` | `{ commandId, payload }` — `commandId` is a client-generated UUID, the idempotency key; a retried submission with the same id returns the original result rather than reapplying the move. |
+
+### Admin match endpoints (require `role: 'ADMIN'`)
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/admin/matches` | All matches, optionally filtered by `gameId`/`status`. |
+| `GET /api/v1/admin/matches/:id` | A single match. Read-only — there is no endpoint to set or override a result; the server is the sole authority over outcomes (ADR-008). |
+
+### WebSocket events (Socket.IO, server→client push only)
+
+The client authenticates on connect via `handshake.auth.token` and
+receives an explicit `connected` acknowledgment before it is safe to
+emit anything else (closes a connect-vs-authentication race found during
+Phase 4 testing). A client emits `match:join` with a `matchId` to
+subscribe to that match's room; the server re-verifies real match
+membership server-side before adding the socket to the room — it never
+trusts the client's claim.
+
+| Event | Payload | When |
+|---|---|---|
+| `connected` | `{ userId }` | Right after a successful authenticated connection. |
+| `match:found` | `{ matchId }` | Pushed to both players' personal rooms when matchmaking forms a match. |
+| `match:state` | `{ matchId }` | After any accepted command; the client re-fetches `GET /matches/:id` rather than trusting a pushed state blob. |
+| `match:completed` | `{ matchId }` | When a match reaches a terminal status. |
+| `challenge:received` / `challenge:resolved` | `{ challengeId }` | On challenge create / accept / decline / cancel / expire. |
+| `player:left` / `player:reconnected` | `{ matchId, userId }` | On disconnect/reconnect of a match participant. |
+
+## Phase Scope
+
+Authentication/identity (Phase 2), wallet/ledger/deposits/withdrawals
+(Phase 3), and the game platform/matchmaking/challenges/real-time layer
+(Phase 4, above) exist. Betting/prize-pool settlement, additional games,
+social features, and production Monime payments are not implemented
 yet — see `CLAUDE.md` for the full "do not build yet" list.

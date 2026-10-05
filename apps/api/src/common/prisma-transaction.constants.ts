@@ -17,3 +17,14 @@ export const FINANCIAL_TRANSACTION_OPTIONS = {
   maxWait: 5000,
   timeout: 10000,
 } as const;
+
+/**
+ * Same reasoning and same values as `FINANCIAL_TRANSACTION_OPTIONS`,
+ * named separately for the match-command row lock
+ * (`MatchesService.submitCommand`'s `SELECT ... FOR UPDATE` on `Match`)
+ * so each call site documents which lock it's actually waiting on.
+ */
+export const MATCH_TRANSACTION_OPTIONS = {
+  maxWait: 5000,
+  timeout: 10000,
+} as const;

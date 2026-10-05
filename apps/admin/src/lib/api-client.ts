@@ -9,6 +9,7 @@ import type {
   AdminWithdrawal,
   CursorPage,
 } from './wallet-types';
+import type { AdminMatch } from './match-types';
 
 /**
  * API client abstraction. Admin UI code calls functions from this module
@@ -148,4 +149,17 @@ export function failWithdrawal(id: string, reason: string): Promise<AdminWithdra
     { method: 'POST', body: JSON.stringify({ reason }) },
     true,
   );
+}
+
+// --- Match visibility (Phase 4) ---
+// Read-only: there is no endpoint to set or override a match result. The
+// server is the sole authority over outcomes (ADR-008).
+
+export function listMatches(status?: string): Promise<CursorPage<AdminMatch>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<CursorPage<AdminMatch>>(`/admin/matches${query}`, {}, true);
+}
+
+export function fetchMatch(id: string): Promise<AdminMatch> {
+  return request<AdminMatch>(`/admin/matches/${encodeURIComponent(id)}`, {}, true);
 }

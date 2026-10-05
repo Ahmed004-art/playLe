@@ -1,8 +1,14 @@
-# Game Engine Architecture (Future — Not Implemented in Phase 1)
+# Game Engine Architecture
 
-This document describes the intended architecture for PlayLe's game engine.
-**No game logic is implemented in Phase 1.** This is design documentation
-only, so later phases can build games without restructuring the platform.
+**Implemented as of Phase 4.** This document originally described the
+intended architecture before any game logic existed (Phase 1); the
+conceptual model below held up and is now the real, running
+implementation, refined into a concrete contract — see
+[ADR-015](../decisions/ADR-015-game-module-architecture.md) for the exact
+interface and [ADR-014](../decisions/ADR-014-realtime-command-transport.md)
+for how a player's move actually reaches the server. One game,
+Tic-Tac-Toe, is implemented end-to-end; the contract is designed so
+additional games are new modules, not platform changes.
 
 ## Conceptual Model
 
@@ -51,26 +57,37 @@ Clients
 
 ## Why a Common Rules Interface
 
-Every game (Dice, Checkers, Tic-Tac-Toe, Penalty, Ice Hockey, a
-G-Switch-style game, Ludo, Find the Marble, and future games) will
-implement the same abstract contract, roughly:
+Every game (Tic-Tac-Toe today; Dice, Checkers, Penalty, Ice Hockey, a
+G-Switch-style game, Ludo, Find the Marble, and future games later) implements
+the same contract — the real, implemented `GameModule<TState, TMove>`
+interface (`apps/api/src/games/contracts/game-module.interface.ts`):
 
-```
-interface GameRules {
-  createInitialState(players): GameState
-  validateAction(state, action, playerId): ValidationResult
-  applyAction(state, action): GameState
-  isComplete(state): boolean
-  getResult(state): MatchResult   // winner(s), for prize-pool settlement
+```ts
+interface GameModule<TState = unknown, TMove = unknown> {
+  readonly gameId: string;
+  readonly version: number;
+  readonly minPlayers: number;
+  readonly maxPlayers: number;
+  createInitialState(playerUserIds: string[]): TState;
+  currentTurnUserId(state: TState): string | null;
+  validateMove(state: TState, userId: string, move: unknown): MoveValidationResult;
+  applyMove(state: TState, userId: string, move: TMove): TState;
+  isFinished(state: TState): boolean;
+  getResult(state: TState): GameResult | null; // winner(s)/draw, for future prize-pool settlement
+  serializeState(state: TState): Prisma.JsonValue;
+  deserializeState(json: Prisma.JsonValue): TState;
 }
 ```
 
-This lets `GameSessions` (the future session-management module) stay
-game-agnostic: it drives any game through the same lifecycle
-(create -> accept actions -> validate -> apply -> check completion ->
-settle) without knowing Checkers rules differ from Ludo rules. Adding a new
-game means implementing this interface, not modifying the session/platform
-core.
+A `GameRegistry` (DI multi-provider token `GAME_MODULES`) collects every
+bound module into a `Map<gameId, GameModule>`. `MatchesService` is the
+game-agnostic driver: it looks up the right module by `Match.gameId` and
+runs every match through the same lifecycle (create -> accept a command ->
+validate -> apply -> check completion) without ever branching on which
+game it is. Adding a new game means implementing this interface and
+registering it — never modifying `MatchesService` itself. See
+`apps/api/src/games/tic-tac-toe/tic-tac-toe.module-impl.ts` for the
+reference implementation.
 
 ## Server Authority
 
@@ -78,27 +95,39 @@ Per [ADR-008](../decisions/ADR-008-server-authoritative.md), every action
 is validated server-side and every resulting state change is computed
 server-side. A client is never trusted to report its own outcome, score,
 or a match result. This is non-negotiable given real-money staking.
+Concretely: a move is submitted over REST
+(`POST /matches/:id/commands`), validated and applied inside a
+row-locked, atomic transaction (`MatchesService.submitCommand`), and the
+resulting state is pushed to both clients over WebSocket — a client
+never computes or asserts the outcome itself (see
+[ADR-014](../decisions/ADR-014-realtime-command-transport.md)).
 
 ## Relationship to the Financial System
 
-When a Game Session completes, its result (`getResult()`) is what
-eventually drives settlement in the future Betting/Ledger modules: the
-winner(s) and the prize-pool math (see `CLAUDE.md`, "Financial Rule", and
-[ADR-009](../decisions/ADR-009-financial-ledger.md)). The game engine
-itself never touches money directly — it only produces a result that a
-separate, dedicated settlement process consumes inside an atomic,
-auditable transaction.
+When a match completes, its result (`getResult()` / `Match.winnerUserId`/
+`resultIsDraw`) is what will eventually drive settlement in a future
+Betting/Ledger integration: the winner(s) and the prize-pool math (see
+`CLAUDE.md`, "Financial Rule", and
+[ADR-009](../decisions/ADR-009-financial-ledger.md)). **As of Phase 4,
+the game engine does not touch money at all** — matches have no stakes,
+holds, or prize pools, and the `PRIZE`/`PLATFORM_FEE` ledger types remain
+reserved but unproduced. Wiring a match result into the wallet/ledger is
+explicitly out of scope until a dedicated, explicitly-approved phase.
 
-## Planned Initial Games (Not Implemented Yet)
+## Games
 
-1. Dice
-2. Checkers
-3. Tic-Tac-Toe
+1. **Tic-Tac-Toe** — implemented (Phase 4), the reference game proving the
+   `GameModule` contract end-to-end.
+2. Dice
+3. Checkers
 4. Penalty
 5. Ice Hockey
 6. Stickman / G-Switch-style game
 7. Ludo
 8. Find the Marble
+
+2-8 remain planned for later phases, built on the same `GameModule`
+contract Tic-Tac-Toe already proves out.
 
 ## External Games (Future, Separate Concern)
 

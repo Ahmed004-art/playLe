@@ -16,6 +16,10 @@ import { PaymentsModule } from './payments/payments.module.js';
 import { DepositsModule } from './deposits/deposits.module.js';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module.js';
 import { AdminModule } from './admin/admin.module.js';
+import { GamesModule } from './games/games.module.js';
+import { MatchesModule } from './matches/matches.module.js';
+import { MatchmakingModule } from './matchmaking/matchmaking.module.js';
+import { ChallengesModule } from './challenges/challenges.module.js';
 
 @Module({
   imports: [
@@ -47,6 +51,14 @@ import { AdminModule } from './admin/admin.module.js';
             ttl: configService.get('payments.throttleTtlMs', { infer: true }),
             limit: configService.get('payments.throttleLimit', { infer: true }),
           },
+          {
+            // Separately-configurable limit for matchmaking/challenge/
+            // command endpoints — see
+            // docs/decisions/ADR-015-game-module-architecture.md.
+            name: 'matches',
+            ttl: configService.get('matches.throttleTtlMs', { infer: true }),
+            limit: configService.get('matches.throttleLimit', { infer: true }),
+          },
         ],
       }),
     }),
@@ -62,6 +74,10 @@ import { AdminModule } from './admin/admin.module.js';
     DepositsModule,
     WithdrawalsModule,
     AdminModule,
+    GamesModule,
+    MatchesModule,
+    MatchmakingModule,
+    ChallengesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

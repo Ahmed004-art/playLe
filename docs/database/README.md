@@ -61,11 +61,46 @@ Phase 1's `schema.prisma` intentionally contained no business models;
 connectivity was proven via a raw `SELECT 1` instead. That raw query is
 still what the health check uses.
 
+### Game Platform (Phase 4 — see [ADR-015](../decisions/ADR-015-game-module-architecture.md))
+
+No financial relation here uses `onDelete: Restrict` — match participation
+isn't financial history, so these cascade/null out normally.
+
+- **`Game`** — the catalog. `id` (slug, e.g. `"tic_tac_toe"`),
+  `displayName`, `description`, `minPlayers`, `maxPlayers`, `enabled`,
+  `version`, `iconKey`. Seeded with exactly one row (hand-added `INSERT`
+  in the migration, the same pattern Phase 3 used for hand-added `CHECK`
+  constraints).
+- **`Match`** — `gameId` (FK → `Game`), `gameVersion` (snapshot at
+  creation), `status` (`MatchStatus`: `WAITING, READY, ACTIVE, COMPLETED,
+  CANCELLED, EXPIRED, ABANDONED`), `stateVersion` (incremented on every
+  accepted command), `state` (`Json`, opaque to the platform — only the
+  owning `GameModule` interprets it), `winnerUserId` (FK → `User`,
+  `onDelete: SetNull`), `resultIsDraw`, `terminationReason`
+  (`MatchTerminationReason`, nullable), `createdAt`/`readyAt`/
+  `startedAt`/`completedAt`/`expiresAt`.
+- **`MatchPlayer`** — `matchId` (FK → `Match`, Cascade), `userId` (FK →
+  `User`, Cascade), `seat` (stable 0-based index — the game module
+  decides what each seat means), `disconnectedAt`/`leftAt`.
+  `@@unique([matchId, userId])`, `@@unique([matchId, seat])`.
+- **`MatchCommand`** — the idempotency + audit record for a submitted
+  command. **`id` is client-supplied** (composite PK
+  `@@id([matchId, id])` — the id itself is the dedup key, not a separate
+  idempotency-key column). `userId`, `type` (currently always `"MOVE"`),
+  `payload` (`Json`), `resultStatus` (`"ACCEPTED"`/`"REJECTED"`),
+  `rejectionReason`, `stateVersionAfter`, `createdAt`.
+- **`Challenge`** — `gameId` (FK → `Game`), `challengerId`/`opponentId`
+  (FK → `User`, named relations, Cascade), `status` (`ChallengeStatus`:
+  `PENDING, ACCEPTED, DECLINED, EXPIRED, CANCELLED`), `matchId`
+  (nullable, FK → `Match`, `onDelete: SetNull`, set once accepted),
+  `expiresAt`, `createdAt`, `respondedAt`.
+
 ## Phase Scope
 
 Phase 2 established identity/session data. Phase 3 added the financial
-foundation above. Match, social-graph, and betting-settlement tables are
-still designed in their own dedicated future phases, informed by
+foundation above. Phase 4 added the game platform above. Social-graph and
+betting-settlement tables (wiring a match result into the wallet/ledger)
+are still designed in their own dedicated future phases, informed by
 [ADR-009](../decisions/ADR-009-financial-ledger.md).
 
 ## Local Development Database
@@ -129,11 +164,15 @@ npm run db:studio            # open Prisma Studio
 See [ADR-009](../decisions/ADR-009-financial-ledger.md). The remaining
 future schema (non-exhaustive, designed in each dedicated phase):
 
-- `Match`, `MatchPlayer`, `GameSession`
+- Betting/settlement fields or tables linking a completed `Match` to a
+  `LedgerEntry` (stake holds, `PRIZE`/`PLATFORM_FEE` payout rows).
+- Social-graph tables (follows/friends).
 - `AuditLogEntry`
 - Verification tokens/OTP records (email/SMS verification — not yet
   designed; `User.emailVerifiedAt`/`phoneVerifiedAt` already reserve the
   fields that will be set once this lands)
 
 `User`, `RefreshToken`, `Wallet`, `LedgerEntry`, `Deposit`, `Withdrawal`,
-and `ProviderEvent` are no longer "future" — they exist as of Phase 3.
+`ProviderEvent` (Phase 3), and `Game`, `Match`, `MatchPlayer`,
+`MatchCommand`, `Challenge` (Phase 4) are no longer "future" — they
+exist.

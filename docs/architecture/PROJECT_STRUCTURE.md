@@ -5,8 +5,12 @@ playle/
   apps/
     mobile/                   Flutter application (Android first, iOS-ready)
       lib/
-        core/                 Cross-cutting foundations (env, DI, routing, theme, logging, auth, wallet)
-        features/             Feature modules (auth: welcome/login/register/account; wallet: balance/deposit/withdraw)
+        core/                 Cross-cutting foundations: env, DI, routing, theme, logging, auth, wallet,
+                               games (catalog), match (generic match-state controller), matchmaking,
+                               challenges, realtime (connection manager + WebSocket client)
+        features/             Feature modules: auth (welcome/login/register/account), wallet
+                               (balance/deposit/withdraw), games (catalog/lobby/match screens),
+                               tic_tac_toe (board + screen — the only game-specific UI)
       test/
       android/
       ios/
@@ -20,24 +24,34 @@ playle/
         health/                  Health check module (DB + Redis)
         prisma/                  PrismaService + module
         redis/                   Redis connection service + module
-        realtime/                WebSocket gateway foundation (connection lifecycle only)
-        users/                   UsersService (safe serialization, lookups)
+        realtime/                WebSocket gateway: authenticated connections, presence, match-room
+                                  membership, server→client push (ADR-006, ADR-014)
+        users/                   UsersService (safe serialization, lookups, username lookup endpoint)
         auth/                    Registration, login, sessions, guards — see ADR-011
         ledger/                  LedgerService — sole writer of wallet balances/ledger rows (ADR-012)
         wallet/                  Wallet balance + transaction-history reads
         payments/                PaymentProviderPort + Manual/Monime providers (ADR-013)
         deposits/                Deposit lifecycle + provider webhook handling
         withdrawals/             Withdrawal lifecycle + admin approval state machine
-        admin/                   Financial admin visibility + withdrawal review
+        games/                   Game catalog + GameModule/GameRegistry contract; tic-tac-toe/ holds
+                                  the reference game's pure rule logic — see ADR-015
+        matches/                 Match lifecycle/persistence, command submission, timeout sweep
+        matchmaking/             Redis-backed opponent queueing, atomic match formation
+        challenges/              Direct player-to-player challenge create/accept/decline/cancel/expire
+        admin/                   Financial admin visibility + withdrawal review, read-only match visibility
       prisma/
-        schema.prisma            Prisma schema (User, RefreshToken, Wallet, LedgerEntry, Deposit, Withdrawal, ProviderEvent)
+        schema.prisma            Prisma schema (User, RefreshToken, Wallet, LedgerEntry, Deposit,
+                                  Withdrawal, ProviderEvent, Game, Match, MatchPlayer, MatchCommand,
+                                  Challenge)
         migrations/
-      test/                      e2e tests (auth.e2e-spec.ts, wallet.e2e-spec.ts)
+      test/                      e2e tests (auth, wallet, matches, matchmaking, realtime)
 
     admin/                     Next.js admin application
       src/
-        app/                     App Router pages (dashboard, /login, /withdrawals, /wallets)
-        lib/                     API client, auth context/token storage, config, wallet types/formatting
+        app/                     App Router pages (dashboard, /login, /withdrawals, /wallets,
+                                  /matches, /matches/[id])
+        lib/                     API client, auth context/token storage, config, wallet/match types,
+                                  formatting
         components/              Shared UI components (AuthGuard, HealthStatus)
 
   packages/

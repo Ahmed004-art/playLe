@@ -106,6 +106,26 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1)
   PAYMENTS_THROTTLE_TTL_MS: number = 60000;
+
+  @IsInt()
+  @Min(1)
+  MATCHES_THROTTLE_LIMIT: number = 30;
+
+  @IsInt()
+  @Min(1)
+  MATCHES_THROTTLE_TTL_MS: number = 60000;
+
+  @IsInt()
+  @Min(1)
+  CHALLENGE_EXPIRY_MS: number = 120000;
+
+  @IsInt()
+  @Min(1)
+  MATCH_ABANDON_GRACE_MS: number = 30000;
+
+  @IsInt()
+  @Min(1)
+  MATCH_TIMEOUT_SWEEP_INTERVAL_MS: number = 10000;
 }
 
 export function validate(

@@ -6,20 +6,22 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 3 — WALLET, LEDGER & FINANCIAL FOUNDATION**
+> **CURRENT PHASE: PHASE 4 — GAME PLATFORM CORE, MATCHMAKING, REAL-TIME
+> MULTIPLAYER & TIC-TAC-TOE REFERENCE GAME**
 >
-> Phase 1 (foundation) and Phase 2 (identity/authentication) are complete.
-> Phase 3 adds a unified wallet, an immutable ledger, deposits,
-> withdrawals with admin approval, idempotency, concurrency-safe balance
-> updates, and a payment-provider abstraction — see
-> [ADR-012](docs/decisions/ADR-012-financial-architecture.md) and
-> [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md). No
-> real payment provider is connected yet (Monime integration is a
-> documented, inert boundary pending verified access — see
-> `docs/development/MONIME_SETUP.md`). No games, betting/prize-pool
-> settlement, social features, matchmaking, chat, KYC, or user-to-user
-> transfers are implemented yet. See "Roadmap" and `CLAUDE.md` for what's
-> in scope.
+> Phases 1-3 (foundation, identity/authentication, wallet/ledger/financial
+> foundation) are complete. Phase 4 adds the reusable multiplayer game
+> platform — a generic game-module contract and registry, match
+> lifecycle/persistence, matchmaking, direct challenges, presence, and
+> real-time push over Socket.IO (commands travel over REST, pushes over
+> WebSocket) — proven with one fully playable, server-authoritative
+> Tic-Tac-Toe game. See
+> [ADR-014](docs/decisions/ADR-014-realtime-command-transport.md) and
+> [ADR-015](docs/decisions/ADR-015-game-module-architecture.md). Matches
+> have **no stakes, holds, or prize pools** — the financial system from
+> Phase 3 is untouched. No betting/prize-pool settlement, additional
+> games, social features, chat, KYC, or user-to-user transfers are
+> implemented yet. See "Roadmap" and `CLAUDE.md` for what's in scope.
 
 ## Overview
 
@@ -29,9 +31,12 @@ receives the remaining 90%.
   withdrawals require admin approval initially.
 - **Platforms**: Android first; iOS-ready architecture from day one.
 - **Match sizes**: 2, 3, and 4 players initially; architected for more.
-- **Games (planned, later phases)**: Dice, Checkers, Tic-Tac-Toe, Penalty,
-  Ice Hockey, a G-Switch-style game, Ludo, Find the Marble — plus future
-  support for organizing competitions around external games.
+- **Games**: Tic-Tac-Toe is implemented as the reference game (Phase 4).
+  Dice, Checkers, Penalty, Ice Hockey, a G-Switch-style game, Ludo, Find
+  the Marble, and support for organizing competitions around external
+  games remain planned for later phases, built on the same generic
+  game-module contract (see
+  [ADR-015](docs/decisions/ADR-015-game-module-architecture.md)).
 
 ## Architecture
 
@@ -156,7 +161,7 @@ this repository.
 - **Phase 2 — Identity, Authentication & User Foundation** ✅ complete.
   Accounts, email/phone + password auth, access/refresh sessions, roles,
   basic profile. See [ADR-011](docs/decisions/ADR-011-authentication.md).
-- **Phase 3 — Wallet, Ledger & Financial Foundation** (current). Unified
+- **Phase 3 — Wallet, Ledger & Financial Foundation** ✅ complete. Unified
   wallet, immutable ledger, deposits, withdrawals with admin approval,
   idempotency, concurrency-safe balance updates, payment-provider
   abstraction. See
@@ -164,12 +169,21 @@ this repository.
   [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md). Real
   Monime (or other provider) integration is pending verified
   credentials/documentation — see `docs/development/MONIME_SETUP.md`.
+- **Phase 4 — Game Platform Core, Matchmaking, Real-Time Multiplayer &
+  Tic-Tac-Toe** (current). A generic game-module contract/registry,
+  match lifecycle and persistence, matchmaking, direct challenges,
+  presence, and real-time push over Socket.IO, proven with one
+  server-authoritative Tic-Tac-Toe game. See
+  [ADR-014](docs/decisions/ADR-014-realtime-command-transport.md) and
+  [ADR-015](docs/decisions/ADR-015-game-module-architecture.md). No
+  stakes, holds, or prize pools — matches and the financial system
+  remain fully isolated.
 - Later phases (not yet scheduled/implemented) are expected to cover, in
-  order of dependency: matchmaking and direct challenges, the game
-  engine and initial games, betting/prize-pool settlement, admin
-  operational tooling, social features, and notifications. Each phase
-  will be specified explicitly before implementation begins — see
-  `CLAUDE.md`, "Phase Discipline".
+  order of dependency: betting/prize-pool settlement (wiring Phase 3's
+  wallet into Phase 4's matches), additional games on the same
+  game-module contract, admin operational tooling, social features, and
+  notifications. Each phase will be specified explicitly before
+  implementation begins — see `CLAUDE.md`, "Phase Discipline".
 
 ## Contribution / Development Workflow
 

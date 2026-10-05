@@ -1,10 +1,10 @@
 # Security Foundation
 
-This document describes the security posture established through Phase 3
+This document describes the security posture established through Phase 4
 and the security work that remains for later phases. **The application is
-not production-secure after Phase 3** — in particular, no real money can
-move yet (see ADR-013). This is a foundation, not a completed security
-program.
+not production-secure after Phase 4** — in particular, no real money can
+move yet (see ADR-013), and matches have no financial stakes. This is a
+foundation, not a completed security program.
 
 ## Implemented in Phase 1
 
@@ -146,7 +146,70 @@ Full architecture and reasoning:
   any log statement that could leak `MONIME_API_KEY`/
   `MONIME_WEBHOOK_SECRET` — none found.
 
-## Explicitly NOT Implemented Through Phase 3
+## Implemented in Phase 4 — Game Platform, Matchmaking & Real-Time
+
+Full architecture and reasoning:
+[ADR-014](../decisions/ADR-014-realtime-command-transport.md),
+[ADR-015](../decisions/ADR-015-game-module-architecture.md).
+
+- **Server authority over outcomes, enforced, not just documented.** A
+  move is only ever accepted via `POST /matches/:id/commands`, validated
+  by the owning `GameModule` against the current server-held state
+  inside a row-locked transaction — a client can never assert a move's
+  validity, whose turn it is, or a match's result. Verified by e2e tests
+  covering out-of-turn moves, moves on an occupied cell, moves after
+  completion, and moves by a non-participant — all rejected server-side.
+- **No "set winner" admin override of any kind.** `AdminMatchesController`
+  is read-only (`GET` only); there is no endpoint, in the API or the
+  admin UI, that lets anyone set or change a match's result — verified by
+  code review (no mutating route exists) and by an admin-UI test
+  asserting no such control is rendered.
+- **Concurrency safety**: the same pessimistic row-locking pattern as
+  Phase 3's wallet (`SELECT ... FOR UPDATE` inside a Prisma transaction)
+  serializes concurrent command submissions against the same match —
+  verified with a real concurrent-request e2e test (two simultaneous
+  move submissions; exactly one is accepted, the other correctly
+  rejected against the now-current state, against the real database).
+  Matchmaking's queue-pop is a single atomic Redis Lua script, preventing
+  two concurrent `join` calls from forming two matches from the same
+  players.
+- **Idempotency**: `MatchCommand.id` is client-supplied and is itself the
+  dedup key (`@@unique([matchId, id])`); a retried submission returns the
+  original result rather than reapplying the move — verified by e2e
+  tests submitting the same command twice.
+- **IDOR protection**: `GET /matches/:id` returns `404` (not `403`) for a
+  match the requesting user isn't a participant in — e2e-verified,
+  matching the Phase 3 precedent for withdrawals.
+- **WebSocket authentication**: the gateway authenticates every
+  connection via the same `TokenService`/`UsersService` status check
+  `JwtAuthGuard` uses for REST, and disconnects the socket on failure. A
+  `match:join` room-subscription request is re-verified against real
+  `MatchPlayer` membership server-side — the gateway never trusts a
+  client's claim to be part of a match. A real race between the
+  transport-level `connect` event and the server's async authentication
+  completing was found during e2e testing (a client could emit
+  `match:join` before the server had finished identifying it) and fixed
+  with an explicit server-emitted `connected` acknowledgment the client
+  waits for — see ADR-014.
+- **Presence is best-effort and narrowly exposed**: presence data is
+  only ever surfaced for a user's own current match opponent (via the
+  match detail response), never as a general lookup-any-user endpoint; a
+  Redis outage degrades presence silently rather than blocking any
+  match/matchmaking/challenge flow.
+- **Rate limiting**: a dedicated `matches` throttler covers matchmaking,
+  challenge, and command endpoints, the same `@nestjs/throttler`
+  infrastructure as every other named throttler.
+- **Suspended/disabled users rejected on every match route** — the same
+  per-request `JwtAuthGuard` status re-check as Phase 2/3, verified by
+  e2e tests specific to matches/matchmaking/challenges.
+- **Financial isolation verified, not just claimed**: no code path in
+  `games/`, `matches/`, `matchmaking/`, or `challenges/` calls
+  `LedgerService`, touches `Wallet`, or references the `PRIZE`/
+  `PLATFORM_FEE` ledger types — verified by code review (grep for any
+  cross-import from the financial modules; none found outside the
+  pre-existing Phase 3 code).
+
+## Explicitly NOT Implemented Through Phase 4
 
 - Email/SMS verification delivery (schema fields exist, no provider
   integration or OTP flow — see ADR-011).
@@ -161,7 +224,13 @@ Full architecture and reasoning:
   no network call; `MonimeProvider` is an inert boundary pending verified
   Monime access (see ADR-013, `docs/development/MONIME_SETUP.md`).
 - Betting/prize-pool settlement, platform fees (ledger types reserved,
-  not produced yet).
+  not produced yet; a match has no stake, hold, or payout).
+- Additional games beyond Tic-Tac-Toe (the `GameModule` contract is
+  designed to support them without platform changes, but none are
+  implemented).
+- Match-level anti-cheat/anomaly detection (e.g. detecting a player
+  deliberately disconnecting to avoid a loss) beyond the disconnect
+  grace-period forfeit rule already implemented.
 - Fraud detection.
 - Secret management via a vault/KMS (local `.env` files only, appropriate
   for local development, not production).
@@ -202,6 +271,16 @@ from Phase 1/2 (Prisma, NestJS, class-validator) plus Node's built-in
 `crypto`/`BigInt`. `npm audit` after Phase 3 reports the same 8 findings,
 unchanged.
 
+**Phase 4 update**: the game platform introduced exactly one new
+dependency, `socket.io-client` (`apps/api`, **devDependency only**,
+matching the server's already-present `socket.io` version), used solely
+by `test/realtime.e2e-spec.ts` to drive a real WebSocket client against
+the gateway in tests — it is never imported by any runtime (`src/`) code.
+No new runtime dependency was added anywhere (API, admin, or mobile);
+the generic game-module/matchmaking/challenge/real-time layer is built
+entirely on NestJS, Prisma, `ioredis`, and `@nestjs/websockets`/
+`socket.io`, all already present since Phase 1.
+
 ## Known Limitations
 
 - The development database and Redis instances run with default/simple
@@ -232,6 +311,14 @@ unchanged.
   future work (see ADR-012).
 - No real payment provider is connected — see "Explicitly NOT
   Implemented" above and ADR-013.
+- The matchmaking concurrency/atomicity guarantee (the Redis Lua
+  queue-pop script) is exercised by `test/matchmaking.e2e-spec.ts`, which
+  requires a real Redis instance (normally provided by
+  `npm run docker:up`, see `docs/development/SETUP.md`). In this
+  particular development environment Docker/WSL were unavailable, so
+  that suite was verified via a real GitHub Actions CI run (which
+  provisions a genuine Redis service container) rather than locally —
+  an environment-specific gap, not a gap in the test itself.
 
 ## Future Security Requirements (Later Phases)
 

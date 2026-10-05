@@ -1,0 +1,14 @@
+import { Module } from '@nestjs/common';
+import { ChallengesService } from './challenges.service.js';
+import { ChallengesController } from './challenges.controller.js';
+import { GamesModule } from '../games/games.module.js';
+import { MatchesModule } from '../matches/matches.module.js';
+import { RealtimeModule } from '../realtime/realtime.module.js';
+import { AuthModule } from '../auth/auth.module.js';
+
+@Module({
+  imports: [AuthModule, GamesModule, MatchesModule, RealtimeModule],
+  controllers: [ChallengesController],
+  providers: [ChallengesService],
+})
+export class ChallengesModule {}

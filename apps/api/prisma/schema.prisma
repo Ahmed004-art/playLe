@@ -59,6 +59,12 @@ model User {
   ledgerAdjustmentsAuthored LedgerEntry[] @relation("LedgerAdjustmentAdmin")
   withdrawalReviewsAuthored Withdrawal[]  @relation("WithdrawalReviewAdmin")
 
+  matchPlayers         MatchPlayer[]
+  matchesWon           Match[]       @relation("MatchWinner")
+  matchCommands        MatchCommand[]
+  challengesSent       Challenge[]   @relation("ChallengeChallenger")
+  challengesReceived   Challenge[]   @relation("ChallengeOpponent")
+
   @@map("users")
 }
 
@@ -322,4 +328,179 @@ model ProviderEvent {
 
   @@unique([provider, providerEventId])
   @@map("provider_events")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Game Platform Core, Matchmaking, Real-Time Multiplayer
+//
+// Server-authoritative game/match model — see docs/architecture/GAME_ENGINE.md,
+// docs/decisions/ADR-014-realtime-command-transport.md, and
+// docs/decisions/ADR-015-game-module-architecture.md. `Match.state` is an
+// opaque (to the platform) JSON blob owned entirely by the game module
+// named in `Match.gameId` — the generic match/command pipeline never
+// branches on game type. No relation here ever touches a Phase 3
+// financial model.
+// ---------------------------------------------------------------------------
+
+enum MatchStatus {
+  WAITING
+  READY
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  /// Reserved for a future non-Match use (e.g. Challenge reuses the same
+  /// naming); Match itself currently reaches an expired WAITING match via
+  /// CANCELLED + terminationReason=WAITING_TIMEOUT instead of this value.
+  EXPIRED
+  ABANDONED
+}
+
+enum MatchTerminationReason {
+  WAITING_TIMEOUT
+  CANCELLED_BY_PLAYER
+  ABANDONED_DISCONNECT
+}
+
+enum ChallengeStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+/// The game catalog. One row per playable game; Phase 4 seeds exactly one
+/// (Tic-Tac-Toe). Disabling a game (`enabled = false`) hides it from the
+/// catalog without deleting match history that references it.
+model Game {
+  id          String  @id
+  displayName String
+  description String
+  minPlayers  Int
+  maxPlayers  Int
+  enabled     Boolean @default(true)
+  version     Int     @default(1)
+  iconKey     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  matches    Match[]
+  challenges Challenge[]
+
+  @@map("games")
+}
+
+/// A single match instance. `state`/`stateVersion` are the authoritative,
+/// server-only game state — never trust a client-supplied value for any
+/// of these fields (see ADR-008). `gameVersion` snapshots `Game.version`
+/// at creation so a later rule-version bump never retroactively changes
+/// an in-flight or historical match.
+model Match {
+  id          String @id @default(uuid())
+  gameId      String
+  game        Game   @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  gameVersion Int
+
+  status       MatchStatus @default(WAITING)
+  stateVersion Int         @default(0)
+  state        Json
+
+  winnerUserId String?
+  winner       User?   @relation("MatchWinner", fields: [winnerUserId], references: [id], onDelete: SetNull)
+  resultIsDraw Boolean @default(false)
+
+  terminationReason MatchTerminationReason?
+
+  createdAt   DateTime  @default(now())
+  readyAt     DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  expiresAt   DateTime?
+
+  players  MatchPlayer[]
+  commands MatchCommand[]
+  challenge Challenge?
+
+  @@index([status])
+  @@index([gameId])
+  @@map("matches")
+}
+
+/// One row per participant in a match. `seat` is a stable 0-based index
+/// that the game module interprets (e.g. seat 0 = X, seat 1 = O for
+/// Tic-Tac-Toe) — the platform itself assigns no meaning to it beyond
+/// ordering. `disconnectedAt` is set on WS disconnect and cleared on
+/// reconnect; the timeout sweep (`MatchTimeoutService`) is what actually
+/// turns a stale disconnect into an ABANDONED match.
+model MatchPlayer {
+  id      String @id @default(uuid())
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  seat Int
+
+  disconnectedAt DateTime?
+  leftAt         DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([matchId, userId])
+  @@unique([matchId, seat])
+  @@map("match_players")
+}
+
+/// Idempotency + audit record for every submitted match command (Phase 4
+/// only ever produces `type: "MOVE"`, left open for future command
+/// types). `id` is **client-supplied** — the same client-generated id
+/// retried after a network failure hits `@@unique([matchId, id])` and
+/// returns the originally-stored result instead of reapplying the move.
+model MatchCommand {
+  id      String
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    String
+  payload Json
+
+  resultStatus      String
+  rejectionReason   String?
+  stateVersionAfter Int?
+
+  createdAt DateTime @default(now())
+
+  @@id([matchId, id])
+  @@index([matchId])
+  @@map("match_commands")
+}
+
+/// A direct player-to-player challenge. Accepting one creates a `Match`
+/// (and points `matchId` at it) atomically with the status transition —
+/// see `ChallengesService.accept`.
+model Challenge {
+  id            String @id @default(uuid())
+  gameId        String
+  game          Game   @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  challengerId  String
+  challenger    User   @relation("ChallengeChallenger", fields: [challengerId], references: [id], onDelete: Cascade)
+  opponentId    String
+  opponent      User   @relation("ChallengeOpponent", fields: [opponentId], references: [id], onDelete: Cascade)
+
+  status ChallengeStatus @default(PENDING)
+
+  matchId String? @unique
+  match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+
+  @@index([status])
+  @@index([challengerId])
+  @@index([opponentId])
+  @@map("challenges")
 }
