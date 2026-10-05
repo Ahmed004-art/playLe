@@ -11,6 +11,10 @@ describe('validate (environment variables)', () => {
     CORS_ORIGINS: 'http://localhost:3001',
     THROTTLE_TTL_MS: '60000',
     THROTTLE_LIMIT: '100',
+    JWT_ACCESS_SECRET: 'a'.repeat(32),
+    JWT_ACCESS_TTL: '15m',
+    JWT_REFRESH_TTL_DAYS: '30',
+    AUTH_MIN_AGE_YEARS: '16',
   };
 
   it('accepts a fully valid environment', () => {
@@ -39,5 +43,11 @@ describe('validate (environment variables)', () => {
 
   it('rejects an out-of-range PORT', () => {
     expect(() => validate({ ...validEnv, PORT: '99999' })).toThrow();
+  });
+
+  it('rejects a JWT_ACCESS_SECRET shorter than 32 characters', () => {
+    expect(() =>
+      validate({ ...validEnv, JWT_ACCESS_SECRET: 'too-short' }),
+    ).toThrow();
   });
 });

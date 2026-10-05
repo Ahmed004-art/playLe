@@ -5,8 +5,8 @@ playle/
   apps/
     mobile/                   Flutter application (Android first, iOS-ready)
       lib/
-        core/                 Cross-cutting foundations (env, DI, routing, theme, logging)
-        features/             Feature modules (Phase 1: foundation/dev screen only)
+        core/                 Cross-cutting foundations (env, DI, routing, theme, logging, auth)
+        features/             Feature modules (auth: welcome/login/register/account)
       test/
       android/
       ios/
@@ -21,16 +21,18 @@ playle/
         prisma/                  PrismaService + module
         redis/                   Redis connection service + module
         realtime/                WebSocket gateway foundation (connection lifecycle only)
+        users/                   UsersService (safe serialization, lookups)
+        auth/                    Registration, login, sessions, guards — see ADR-011
       prisma/
-        schema.prisma            Prisma schema (minimal in Phase 1)
+        schema.prisma            Prisma schema (User, RefreshToken)
         migrations/
       test/                      e2e tests
 
     admin/                     Next.js admin application
       src/
-        app/                     App Router pages (dashboard shell only in Phase 1)
-        lib/                     API client abstraction, config
-        components/              Shared UI components
+        app/                     App Router pages (dashboard shell + /login)
+        lib/                     API client, auth context/token storage, config
+        components/              Shared UI components (AuthGuard, HealthStatus)
 
   packages/
     shared/                   TS contracts/utilities shared between api <-> admin ONLY

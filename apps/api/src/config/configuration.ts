@@ -19,6 +19,14 @@ export interface AppConfiguration {
     ttlMs: number;
     limit: number;
   };
+  auth: {
+    accessTokenSecret: string;
+    accessTokenTtl: string;
+    refreshTokenTtlDays: number;
+    minAgeYears: number;
+    throttleLimit: number;
+    throttleTtlMs: number;
+  };
 }
 
 export default (): AppConfiguration => ({
@@ -39,5 +47,13 @@ export default (): AppConfiguration => ({
   throttle: {
     ttlMs: parseInt(process.env.THROTTLE_TTL_MS ?? '60000', 10),
     limit: parseInt(process.env.THROTTLE_LIMIT ?? '100', 10),
+  },
+  auth: {
+    accessTokenSecret: process.env.JWT_ACCESS_SECRET ?? '',
+    accessTokenTtl: process.env.JWT_ACCESS_TTL ?? '15m',
+    refreshTokenTtlDays: parseInt(process.env.JWT_REFRESH_TTL_DAYS ?? '30', 10),
+    minAgeYears: parseInt(process.env.AUTH_MIN_AGE_YEARS ?? '16', 10),
+    throttleLimit: parseInt(process.env.AUTH_THROTTLE_LIMIT ?? '5', 10),
+    throttleTtlMs: parseInt(process.env.AUTH_THROTTLE_TTL_MS ?? '60000', 10),
   },
 });

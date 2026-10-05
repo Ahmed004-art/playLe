@@ -34,4 +34,15 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // supertest types `response.body` as `any`; reading JSON response
+    // fields in test assertions is normal here and isn't the kind of
+    // accidental-`any` leak these rules exist to catch in real source code.
+    files: ['**/*.spec.ts', 'test/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+    },
+  },
 );

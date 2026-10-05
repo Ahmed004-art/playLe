@@ -7,6 +7,7 @@ import {
   IsString,
   Max,
   Min,
+  MinLength,
   validateSync,
 } from 'class-validator';
 
@@ -51,6 +52,33 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1)
   THROTTLE_LIMIT: number = 100;
+
+  @IsString()
+  @MinLength(32, {
+    message: 'JWT_ACCESS_SECRET must be at least 32 characters long',
+  })
+  JWT_ACCESS_SECRET!: string;
+
+  @IsOptional()
+  @IsString()
+  JWT_ACCESS_TTL: string = '15m';
+
+  @IsInt()
+  @Min(1)
+  JWT_REFRESH_TTL_DAYS: number = 30;
+
+  @IsInt()
+  @Min(13)
+  @Max(99)
+  AUTH_MIN_AGE_YEARS: number = 16;
+
+  @IsInt()
+  @Min(1)
+  AUTH_THROTTLE_LIMIT: number = 5;
+
+  @IsInt()
+  @Min(1)
+  AUTH_THROTTLE_TTL_MS: number = 60000;
 }
 
 export function validate(

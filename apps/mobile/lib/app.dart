@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'core/auth/auth_controller.dart';
+import 'core/di/service_locator.dart';
 import 'core/routing/app_router.dart';
 import 'core/theme/app_theme.dart';
 
@@ -14,7 +16,7 @@ class PlayLeApp extends StatelessWidget {
       theme: AppTheme.dark,
       darkTheme: AppTheme.dark,
       themeMode: ThemeMode.dark,
-      routerConfig: appRouter,
+      routerConfig: buildAppRouter(sl<AuthController>()),
     );
   }
 }

@@ -1,11 +1,10 @@
 // PlayLe — Prisma schema
 //
-// Phase 1 intentionally defines no business models (no users, wallets,
-// matches, etc. — see docs/database/README.md). Only the datasource and
-// generator are configured here so migration tooling and the Prisma
-// client work end-to-end. Database connectivity is proven via a raw query
-// from the health check module, not a domain table. The full schema is
-// designed in the dedicated database phase.
+// Phase 2 introduces the first real domain models: User identity and
+// authentication (refresh token) state. See docs/database/README.md and
+// docs/decisions/ADR-011-authentication.md for the reasoning behind the
+// shapes below. The full business schema (wallet, ledger, matches, social
+// graph, etc.) is still designed in later, dedicated phases.
 
 generator client {
   provider = "prisma-client-js"
@@ -14,4 +13,73 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+/// Core identity record. One row per account. Never return `passwordHash`
+/// from an API response — see `src/users/users.service.ts` `toSafeUser`.
+model User {
+  id          String  @id @default(uuid())
+  email       String  @unique
+  phoneNumber String? @unique
+
+  username    String  @unique
+  displayName String?
+  avatarUrl   String?
+
+  passwordHash String
+
+  role   UserRole   @default(USER)
+  status UserStatus @default(ACTIVE)
+
+  dateOfBirth DateTime
+
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+/// Refresh-token session state, supporting rotation and reuse detection.
+/// The raw refresh token is never persisted — only a SHA-256 hash of it
+/// (see `src/auth/token.service.ts`). `familyId` groups every token
+/// descended from a single login: rotating issues a new row in the same
+/// family; presenting an already-revoked token (reuse of a stale token,
+/// e.g. a stolen one) revokes the whole family, logging out every device
+/// descended from that login.
+model RefreshToken {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash      String    @unique
+  familyId       String
+  replacedByHash String?
+  revokedAt      DateTime?
+
+  userAgent String?
+  ipAddress String?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
 }

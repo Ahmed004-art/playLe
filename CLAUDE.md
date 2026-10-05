@@ -79,8 +79,10 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 1 — Foundation, Architecture Scaffold & Development
-Environment.** See `docs/development/WORKFLOW.md` for the phase pipeline.
+**Current phase: Phase 2 — Identity, Authentication & User Foundation.**
+See `docs/development/WORKFLOW.md` for the phase pipeline and
+[ADR-011](docs/decisions/ADR-011-authentication.md) for the authentication
+architecture. Phase 1 (foundation/scaffold) is complete.
 
 ## Repository Structure
 
@@ -183,13 +185,17 @@ flutter test
 flutter build apk --debug
 ```
 
-## What NOT to Build Yet (Phase 1)
+## What NOT to Build Yet (Phase 2)
 
-Games, betting/staking logic, wallet balances, payment provider
-integrations, social features (follows/friends/feed), matchmaking,
-in-game chat, production notification workflows, KYC, and real
-administrative financial/user actions. See `README.md` roadmap and the
-Phase 1 specification for the full list. These belong to later, explicitly
+Games, game sessions/engine logic, matchmaking, betting/stakes, wallet,
+ledger, deposits/withdrawals, mobile-money integrations, prize pools,
+platform fees, social following/friends, user-to-user transfers, in-game
+chat, notifications, KYC/identity verification, real admin financial
+operations, fraud systems, ratings/rankings, and external game
+integrations. Email/SMS verification has a schema placeholder
+(`emailVerifiedAt`/`phoneVerifiedAt`) but no provider integration or OTP
+flow — see [ADR-011](docs/decisions/ADR-011-authentication.md). See
+`README.md` roadmap for the full list. These belong to later, explicitly
 approved phases.
 
 ## Stop Conditions

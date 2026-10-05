@@ -64,14 +64,47 @@ loudly on client/server contract drift during development.
 
 OpenAPI/Swagger is generated from the NestJS controllers/DTOs via
 `@nestjs/swagger` and served in development at `GET /api/docs`
-(JSON at `/api/docs-json`). Phase 1 only documents the foundation endpoints
-(health). Business endpoints are documented as they are implemented in
-later phases — every new endpoint must have Swagger decorators
-(`@ApiTags`, `@ApiOperation`, DTOs with `@ApiProperty`) as part of its
-definition of done, not added retroactively.
+(JSON at `/api/docs-json`). Every endpoint (health, and now the
+authentication endpoints below) has Swagger decorators (`@ApiTags`,
+`@ApiOperation`, `@ApiResponse`, DTOs with `@ApiProperty`) as part of its
+definition of done, not added retroactively — this remains the standard
+for every endpoint added in future phases too.
 
-## Phase 1 Scope
+## Authentication Endpoints (Phase 2)
 
-Only the health endpoint(s) exist. No business API (auth, users, wallet,
-games, etc.) is implemented yet — see `CLAUDE.md` and the Phase 1
-specification for the full "do not build yet" list.
+Full architecture: [ADR-011](../decisions/ADR-011-authentication.md).
+
+| Endpoint | Auth required | Notes |
+|---|---|---|
+| `POST /api/v1/auth/register` | No | Creates an account, returns tokens (auto-login). Stricter rate limit. |
+| `POST /api/v1/auth/login` | No | `{ identifier, password }` — identifier is an email or phone number. Stricter rate limit. |
+| `POST /api/v1/auth/refresh` | No (refresh token in body) | Rotates the refresh token; the old one stops working immediately. |
+| `POST /api/v1/auth/logout` | Yes (Bearer) | Revokes the given refresh token. |
+| `GET /api/v1/auth/me` | Yes (Bearer) | The authenticated user's own safe account info. |
+| `POST /api/v1/auth/change-password` | Yes (Bearer) | Revokes every session on success — re-authentication required. |
+
+`register` and `login` return the same shape:
+
+```json
+{
+  "user": { "id": "...", "email": "...", "username": "...", "role": "USER", "status": "ACTIVE", "...": "..." },
+  "accessToken": "ey...",
+  "refreshToken": "opaque-random-string",
+  "refreshTokenExpiresAt": "2026-01-31T00:00:00.000Z"
+}
+```
+
+Never expect `passwordHash` or any refresh-token hash in a response —
+`UsersService.toSafeUser()` strips it server-side before any response is
+built.
+
+Authenticated requests use `Authorization: Bearer <accessToken>`.
+Protected routes return `401` for a missing/invalid/expired token and
+`403` for a valid token whose role doesn't satisfy a `@Roles(...)`
+requirement on that route.
+
+## Phase 2 Scope
+
+Authentication/identity endpoints exist (above). No other business API
+(wallet, games, matchmaking, social, etc.) is implemented yet — see
+`CLAUDE.md` for the full "do not build yet" list.

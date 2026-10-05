@@ -47,6 +47,13 @@ cp apps/admin/.env.example apps/admin/.env.local
 Never commit the resulting `.env`/`.env.local` files — see `.gitignore`
 and `docs/architecture/SECURITY.md`.
 
+`apps/api/.env` needs a real `JWT_ACCESS_SECRET` (at least 32 characters —
+the API refuses to boot otherwise). Generate one:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
 ## 4. Generate the Prisma Client and Run Migrations
 
 ```bash
@@ -73,6 +80,15 @@ npm run dev:admin
 
 Starts the Next.js admin app on `http://localhost:3001` (or Next's default
 — see `apps/admin/package.json`).
+
+The admin app only lets `role: 'ADMIN'` accounts in. There's no
+promote-to-admin endpoint in Phase 2 — register a normal account via the
+API or mobile app, then promote it directly in the database for local
+testing:
+
+```bash
+npm run db:studio   # opens Prisma Studio; edit the user's `role` to ADMIN
+```
 
 ## 7. Run the Mobile App
 

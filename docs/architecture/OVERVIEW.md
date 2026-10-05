@@ -62,18 +62,23 @@ be extracted into its own service later if real scale requires it.
    can expand beyond Sierra Leone, beyond four players, and beyond
    PlayLe-native games without a rewrite.
 
-## Future Module Boundaries (Not Implemented in Phase 1)
+## Implemented Modules
 
-The backend is expected to grow the following modules. Phase 1 establishes
-the foundation they'll sit on (config, health, database, cache, real-time,
-exception handling, validation) but implements none of their business
-logic:
+| Module | Responsibility |
+|---|---|
+| Auth | Registration, login, sessions (access/refresh tokens), guards — see [ADR-011](../decisions/ADR-011-authentication.md) |
+| Users | Core user accounts, safe serialization |
+
+## Future Module Boundaries (Not Yet Implemented)
+
+The backend is expected to grow the following modules, built on the
+foundation Phase 1 established (config, health, database, cache,
+real-time, exception handling, validation) and the identity layer Phase 2
+added:
 
 | Module | Responsibility (future) |
 |---|---|
-| Auth | Authentication, session/token issuance |
-| Users | Core user accounts |
-| Profiles | Player-facing profile data |
+| Profiles | Player-facing profile data beyond the basic Phase 2 fields |
 | Social | Follows, friends, social graph |
 | Games | Game catalog/definitions and rules |
 | GameSessions | Live match/session state |

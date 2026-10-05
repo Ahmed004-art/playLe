@@ -45,6 +45,15 @@ jobs:
       REDIS_HOST: localhost
       REDIS_PORT: 6379
       CORS_ORIGINS: http://localhost:3001
+      # Ephemeral CI-only secret for a throwaway database — never used outside this job.
+      JWT_ACCESS_SECRET: ci-only-test-secret-this-is-not-used-anywhere-real
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL_DAYS: 30
+      AUTH_MIN_AGE_YEARS: 16
+      # Raised well above the production default (5) so the e2e suite's many
+      # register/login calls in quick succession don't trip the throttle.
+      AUTH_THROTTLE_LIMIT: 1000
+      AUTH_THROTTLE_TTL_MS: 60000
 
     steps:
       - uses: actions/checkout@v4

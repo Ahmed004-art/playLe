@@ -8,6 +8,8 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { RedisModule } from './redis/redis.module.js';
 import { HealthModule } from './health/health.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
+import { UsersModule } from './users/users.module.js';
+import { AuthModule } from './auth/auth.module.js';
 
 @Module({
   imports: [
@@ -21,8 +23,16 @@ import { RealtimeModule } from './realtime/realtime.module.js';
       useFactory: (configService: ConfigService<AppConfiguration, true>) => ({
         throttlers: [
           {
+            name: 'default',
             ttl: configService.get('throttle.ttlMs', { infer: true }),
             limit: configService.get('throttle.limit', { infer: true }),
+          },
+          {
+            // Stricter, separately-configurable limit for credential-guessing-sensitive
+            // routes (register/login) — see docs/decisions/ADR-011-authentication.md.
+            name: 'auth',
+            ttl: configService.get('auth.throttleTtlMs', { infer: true }),
+            limit: configService.get('auth.throttleLimit', { infer: true }),
           },
         ],
       }),
@@ -31,6 +41,8 @@ import { RealtimeModule } from './realtime/realtime.module.js';
     RedisModule,
     HealthModule,
     RealtimeModule,
+    UsersModule,
+    AuthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

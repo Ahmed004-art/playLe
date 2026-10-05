@@ -42,6 +42,7 @@ dependencies:
   shared_preferences: ^2.5.3   # local storage abstraction
   socket_io_client: ^3.1.2     # WebSocket abstraction (matches backend Socket.IO)
   logger: ^2.6.1                # structured logging foundation
+  flutter_secure_storage: ^11.2.0  # secure storage for auth tokens (Keystore/Keychain-backed)
 
 dev_dependencies:
   flutter_test:

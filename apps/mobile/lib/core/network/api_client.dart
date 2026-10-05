@@ -8,12 +8,14 @@ import '../logging/app_logger.dart';
 ///
 /// Call sites depend on [ApiClient], not on `package:dio` directly, so the
 /// underlying HTTP implementation can change without touching feature code.
-/// An auth interceptor that attaches the current session token will be
-/// added here once authentication is implemented (see
-/// docs/architecture/SECURITY.md — "Authentication architecture
-/// (placeholder)").
+///
+/// [getAccessToken] is called before every request to attach
+/// `Authorization: Bearer <token>` when a session exists. It's a callback
+/// rather than a direct [SecureStorage] dependency so this client doesn't
+/// need to know anything about how/where tokens are persisted — see
+/// `core/di/service_locator.dart` for the wiring.
 class ApiClient {
-  ApiClient({required AppConfig config, Dio? dio})
+  ApiClient({required AppConfig config, this.getAccessToken, Dio? dio})
     : _dio =
           dio ??
           Dio(
@@ -25,12 +27,21 @@ class ApiClient {
           ) {
     _dio.interceptors.add(
       InterceptorsWrapper(
-        onRequest: (options, handler) {
+        onRequest: (options, handler) async {
+          final token = await getAccessToken?.call();
+          if (token != null) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
+          // Never log request/response bodies here — they can contain
+          // passwords, tokens, or other sensitive auth material.
           AppLogger.instance.debug('-> ${options.method} ${options.path}');
           handler.next(options);
         },
         onError: (error, handler) {
-          AppLogger.instance.warning('API error: ${error.message}');
+          AppLogger.instance.warning(
+            'API error: ${error.requestOptions.method} ${error.requestOptions.path} '
+            '(${error.response?.statusCode})',
+          );
           handler.next(error);
         },
       ),
@@ -38,6 +49,7 @@ class ApiClient {
   }
 
   final Dio _dio;
+  final Future<String?> Function()? getAccessToken;
 
   Future<Response<T>> get<T>(
     String path, {
@@ -46,10 +58,7 @@ class ApiClient {
     try {
       return await _dio.get<T>(path, queryParameters: queryParameters);
     } on DioException catch (e) {
-      throw NetworkException(
-        e.message ?? 'Network request failed',
-        statusCode: e.response?.statusCode,
-      );
+      throw _toNetworkException(e);
     }
   }
 
@@ -57,10 +66,22 @@ class ApiClient {
     try {
       return await _dio.post<T>(path, data: data);
     } on DioException catch (e) {
-      throw NetworkException(
-        e.message ?? 'Network request failed',
-        statusCode: e.response?.statusCode,
-      );
+      throw _toNetworkException(e);
     }
+  }
+
+  NetworkException _toNetworkException(DioException e) {
+    final body = e.response?.data;
+    String message = e.message ?? 'Network request failed';
+
+    // The API's standard error shape (see packages/shared/src/http.ts):
+    // { statusCode, error, message, path, timestamp }. `message` may be a
+    // single string or an array of validation-failure strings.
+    if (body is Map && body['message'] != null) {
+      final raw = body['message'];
+      message = raw is List ? raw.join(', ') : raw.toString();
+    }
+
+    return NetworkException(message, statusCode: e.response?.statusCode);
   }
 }

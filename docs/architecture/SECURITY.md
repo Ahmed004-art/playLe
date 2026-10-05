@@ -1,9 +1,9 @@
 # Security Foundation
 
-This document describes the security posture established in Phase 1 and
-the security work that remains for later phases. **The application is not
-production-secure after Phase 1.** This is a foundation, not a completed
-security program.
+This document describes the security posture established through Phase 2
+and the security work that remains for later phases. **The application is
+not production-secure after Phase 2.** This is a foundation, not a
+completed security program.
 
 ## Implemented in Phase 1
 
@@ -36,35 +36,79 @@ security program.
   check (or any future Redis-dependent request) would hang forever rather
   than reporting degraded status — discovered and fixed during Phase 1
   verification against a real, intentionally-unreachable Redis.
-- **Authentication architecture (placeholder)**: module boundaries and
-  request-lifecycle hooks (guards) exist for where authentication will be
-  enforced; no real authentication (login, tokens, sessions) is
-  implemented in Phase 1.
-- **Authorization architecture (placeholder)**: the same applies to
-  role/permission checks — the guard/decorator pattern is established,
-  not populated with real roles yet.
 - **Audit-log architecture (placeholder)**: structured logging
   (`docs/architecture/OVERVIEW.md` logging section) is designed to be
   extended with dedicated audit events for authentication, financial, and
-  administrative actions; no audit log storage exists yet.
-- **Admin app**: has no real administrative controls yet, so it currently
-  carries no elevated-privilege attack surface beyond a normal Next.js
-  app. Authentication/authorization placeholders exist for when real
-  controls are added.
+  administrative actions; no audit log storage exists yet (login/logout
+  are not yet written to a dedicated audit trail — only to normal
+  application logs, with no sensitive data in them — see below).
+- **Admin app**: has no real administrative *operations* yet beyond
+  logging in as an admin-role account — no financial/user actions exist
+  to protect. Route protection and role enforcement are implemented (see
+  below) in preparation for when real controls are added.
 
-## Explicitly NOT Implemented in Phase 1
+## Implemented in Phase 2 — Authentication
 
-- Real user authentication (no login, no password hashing, no sessions,
-  no tokens are issued).
-- Real authorization/roles.
+Full architecture and reasoning: [ADR-011](../decisions/ADR-011-authentication.md).
+
+- **Password hashing**: `argon2id` via the `argon2` package. Verified live:
+  the same password hashes differently each time (random salt); a wrong
+  password is rejected; a malformed/foreign hash is rejected, not thrown.
+- **Passwords are never logged, never returned from any API response, and
+  never placed in a JWT payload.** `UsersService.toSafeUser()` strips
+  `passwordHash` before any response is built; grepped the codebase for
+  any log statement referencing password/secret/token fields — none found.
+- **Access tokens**: short-lived JWTs (15 min default), payload limited to
+  `{ sub, role }`.
+- **Refresh tokens**: opaque random strings, only a SHA-256 hash persisted;
+  rotate on every use; reuse of an already-rotated token revokes the
+  entire token family (verified live: reusing a rotated-away token not
+  only fails but also invalidates the token that replaced it).
+- **Per-request status enforcement**: `JwtAuthGuard` re-reads the user
+  from the database on every authenticated request, not just at login —
+  verified live, a user disabled mid-session is rejected on their very
+  next request with their still-unexpired access token.
+- **Brute-force protection**: `register`/`login` use a separately
+  configurable, stricter throttle (default 5 requests/60s) from the rest
+  of the API — verified live, the 6th login attempt in the window gets a
+  real `429`.
+- **User-enumeration mitigation**: login always performs a password-hash
+  comparison, even when the identifier doesn't match any account (against
+  a fixed dummy hash), so response timing doesn't distinguish "wrong
+  password" from "no such account." Both return the same generic
+  `Invalid credentials` message.
+- **Authorization**: `RolesGuard` + `@Roles(...)` enforce role-based
+  access **server-side only** — verified live, a valid non-admin token
+  against an admin-only route gets a real `403`, not merely a hidden UI
+  element.
+- **Database-level uniqueness**: `email`, `phoneNumber`, and `username`
+  are enforced unique by Postgres constraints, not just application-level
+  checks (closes the check-then-insert race window) — verified live and
+  via e2e tests (duplicate email/username both correctly rejected with
+  `409 Conflict`).
+- **Age gate**: computed server-side from `dateOfBirth`; the client's own
+  claimed age is never trusted or accepted as input.
+- **Admin app**: route protection (`AuthGuard`) and a role check during
+  login (a successfully-authenticated non-admin account is immediately
+  logged back out of the admin app) — defense in depth on top of the
+  server-side enforcement above, which remains the real boundary.
+
+## Explicitly NOT Implemented Through Phase 2
+
+- Email/SMS verification delivery (schema fields exist, no provider
+  integration or OTP flow — see ADR-011).
+- Password reset flow (not required this phase; no reset-token table
+  exists).
+- Multi-factor authentication.
+- Device/session management UI (sessions are revocable at the data layer
+  via refresh-token rotation, but there's no "your active sessions" UI).
 - KYC.
 - Any financial operation or fraud detection.
-- Production-grade rate-limit tuning per endpoint.
-- Secret management via a vault/KMS (Phase 1 uses local `.env` files only,
-  appropriate for local development, not production).
+- Secret management via a vault/KMS (local `.env` files only, appropriate
+  for local development, not production).
 - Dependency vulnerability scanning automation (can be added to CI later,
   e.g. `npm audit` / Dependabot).
-- Penetration testing / formal security review.
+- Penetration testing / formal third-party security review.
 
 ### Dependency audit conclusion (Phase 1 verification)
 
@@ -103,13 +147,23 @@ packages process untrusted input in Phase 1. None were applied.
   application itself.
 - No automated secret-scanning is wired into CI yet; the current
   safeguard is `.gitignore` plus manual review before every commit.
+- **The admin app stores session tokens in `localStorage`**, which is
+  readable by any script on the page (XSS risk). Acceptable for now since
+  the admin app has no real operations to protect; a hardened build
+  should move to httpOnly, SameSite cookies set by the API (see
+  `apps/admin/src/lib/token-storage.ts` and ADR-011).
+- No password-reset or email/SMS verification flow exists yet — an
+  account with a forgotten password currently has no self-service
+  recovery path.
+- `JWT_ACCESS_SECRET` is a single static secret per environment with no
+  rotation mechanism.
 
 ## Future Security Requirements (Later Phases)
 
-- Authentication: password hashing (e.g. argon2/bcrypt), token issuance
-  and rotation, session/device management.
 - Authorization: role-based access control for player vs. admin vs.
-  future staff roles.
+  future staff roles beyond the current USER/ADMIN split.
+- Email/SMS verification delivery, password reset, multi-factor
+  authentication, session/device management UI.
 - Financial security: idempotency keys, transaction signing/verification
   where applicable, reconciliation jobs, anomaly detection (Fraud module).
 - KYC integration ahead of/alongside withdrawal automation.
@@ -122,14 +176,19 @@ packages process untrusted input in Phase 1. None were applied.
 - Automated dependency and secret scanning in CI.
 - A formal security review before handling real user funds in production.
 
-## Secret Audit Process (Phase 1)
+## Secret Audit Process
 
 Before every commit:
 
 1. Review `git status` output for unexpected files.
 2. Confirm no `.env` (non-`.example`) file is staged.
 3. Grep staged diffs for likely secret patterns (API keys, private keys,
-   connection strings with embedded credentials) before pushing.
+   JWT secrets, connection strings with embedded credentials) before
+   pushing. Also grep the full `git log -p` history occasionally, not
+   just the current diff.
+4. Confirm no password, access token, or refresh token value appears in
+   any log statement, test fixture committed to the repo, or this
+   document itself.
 
-This is a manual process in Phase 1; automating it is listed under Future
-Security Requirements above.
+This is a manual process; automating it is listed under Future Security
+Requirements above.

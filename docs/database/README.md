@@ -7,24 +7,38 @@
 - **Prisma** — ORM, schema definition, and migration tool
   ([ADR-004](../decisions/ADR-004-prisma.md)).
 
-Schema lives at `apps/api/prisma/schema.prisma`. Migrations will live at
-`apps/api/prisma/migrations/` once the first one is created — that
-directory does not exist yet in Phase 1, since there is no business
-schema to migrate. `prisma migrate deploy` against zero migrations
-succeeds trivially ("No pending migrations to apply"), which is the
-correct, verified behavior for this phase, not an error condition.
+Schema lives at `apps/api/prisma/schema.prisma`. Migrations live at
+`apps/api/prisma/migrations/`.
 
-## Phase 1 Scope
+## Current Schema (Phase 2)
 
-Phase 1 establishes the **connection, migration tooling, and workflow**
-only. It does not create the business schema (users, wallets, ledger,
-matches, social graph, etc.) — that is designed in the dedicated database
-phase, informed by the financial ledger model in
+Two real domain models exist, added in Phase 2 — see
+[ADR-011](../decisions/ADR-011-authentication.md) for the reasoning:
+
+- **`User`** — the account record: `email` (unique), `phoneNumber`
+  (unique, optional), `username` (unique), `passwordHash`, `role`
+  (`USER`/`ADMIN`), `status` (`ACTIVE`/`SUSPENDED`/`DISABLED`),
+  `dateOfBirth`, `emailVerifiedAt`/`phoneVerifiedAt` (both `null` until a
+  future verification phase), `lastLoginAt`, `createdAt`/`updatedAt`.
+  `passwordHash` must never be serialized into an API response — see
+  `UsersService.toSafeUser()`.
+- **`RefreshToken`** — session state supporting rotation and reuse
+  detection: `tokenHash` (SHA-256 of the raw token — the raw token itself
+  is never persisted), `familyId`, `revokedAt`, `replacedByHash`,
+  `expiresAt`, plus `userAgent`/`ipAddress` for future session-management
+  UI. Cascade-deletes with its `User`.
+
+Phase 1's `schema.prisma` intentionally contained no business models;
+connectivity was proven via a raw `SELECT 1` instead. That raw query is
+still what the health check uses — `User`/`RefreshToken` are real
+business models now, not a connectivity probe.
+
+## Phase 2 Scope
+
+Phase 2 establishes identity/session data only. It does not yet create
+wallet, ledger, match, or social-graph tables — those are designed in
+their own dedicated phases, informed by the financial ledger model in
 [ADR-009](../decisions/ADR-009-financial-ledger.md).
-
-Phase 1's `schema.prisma` intentionally contains no business models.
-Database connectivity is proven via a raw query (`SELECT 1`) from the
-health check module, not via a domain table.
 
 ## Local Development Database
 
@@ -68,6 +82,13 @@ npm run db:studio            # open Prisma Studio
 - Every schema change goes through `prisma migrate dev` so it produces a
   reviewable migration file — never hand-edit the database out-of-band in
   a way Prisma doesn't know about.
+- `prisma migrate dev` needs `CREATEDB` privilege (it creates a temporary
+  shadow database to diff against) — the application's runtime database
+  role should **not** have this privilege (least-privilege), so authoring
+  a migration typically happens under a more-privileged role, then the
+  resulting migration file is applied with `prisma migrate deploy` (which
+  needs no shadow database) under the normal runtime role. This is
+  standard practice, not a Phase 2-specific workaround.
 - Migrations are committed to version control and applied via
   `prisma migrate deploy` in CI/staging/production, never
   `prisma db push` outside of local prototyping.
@@ -78,12 +99,15 @@ npm run db:studio            # open Prisma Studio
 ## Future Schema Direction
 
 See [ADR-009](../decisions/ADR-009-financial-ledger.md). The eventual
-schema will include (non-exhaustive, designed in the database phase):
+schema will include (non-exhaustive, designed in each dedicated phase):
 
-- `User`, `Profile`
 - `Wallet` (derived/cached balance) + `LedgerEntry` (immutable, append-only)
 - `Match`, `MatchPlayer`, `GameSession`
 - `Deposit`, `Withdrawal`, `Refund`, `AdminAdjustment`
 - `AuditLogEntry`
+- Verification tokens/OTP records (email/SMS verification — not yet
+  designed; `User.emailVerifiedAt`/`phoneVerifiedAt` already reserve the
+  fields that will be set once this lands)
 
-None of these exist yet.
+`User` and `RefreshToken` (above) are no longer "future" — they exist as
+of Phase 2.

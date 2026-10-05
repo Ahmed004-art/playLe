@@ -6,12 +6,16 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 1 — FOUNDATION**
+> **CURRENT PHASE: PHASE 2 — IDENTITY, AUTHENTICATION & USER FOUNDATION**
 >
-> This phase establishes the repository structure, development
-> environment, and architectural scaffolding. No games, betting, wallet,
-> payments, social features, matchmaking, chat, or KYC are implemented
-> yet. See "Roadmap" and `CLAUDE.md` for what's in scope.
+> Phase 1 (repository structure, development environment, architectural
+> scaffolding) is complete. Phase 2 adds real user accounts, email/phone +
+> password authentication, access/refresh sessions, roles, a basic
+> profile, and the authorization primitives later phases build on — see
+> [ADR-011](docs/decisions/ADR-011-authentication.md). No games, betting,
+> wallet, payments, social features, matchmaking, chat, KYC, or real admin
+> operations are implemented yet. See "Roadmap" and `CLAUDE.md` for what's
+> in scope.
 
 ## Overview
 
@@ -142,13 +146,17 @@ this repository.
 
 ## Roadmap
 
-Phase 1 (current) establishes the foundation only. Later phases (not yet
-scheduled/implemented) are expected to cover, in order of dependency:
-database/domain schema design, authentication, the wallet/ledger system,
-matchmaking and direct challenges, the game engine and initial games,
-payments/mobile-money integration, admin operational tooling, social
-features, and notifications. Each phase will be specified explicitly
-before implementation begins — see `CLAUDE.md`, "Phase Discipline".
+- **Phase 1 — Foundation** ✅ complete. Repository structure, development
+  environment, architectural scaffolding.
+- **Phase 2 — Identity, Authentication & User Foundation** (current).
+  Accounts, email/phone + password auth, access/refresh sessions, roles,
+  basic profile. See [ADR-011](docs/decisions/ADR-011-authentication.md).
+- Later phases (not yet scheduled/implemented) are expected to cover, in
+  order of dependency: the wallet/ledger system, matchmaking and direct
+  challenges, the game engine and initial games, payments/mobile-money
+  integration, admin operational tooling, social features, and
+  notifications. Each phase will be specified explicitly before
+  implementation begins — see `CLAUDE.md`, "Phase Discipline".
 
 ## Contribution / Development Workflow
 
