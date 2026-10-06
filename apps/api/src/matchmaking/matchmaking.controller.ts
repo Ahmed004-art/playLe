@@ -49,17 +49,14 @@ export class MatchmakingController {
     @CurrentUser() user: User,
     @Body() dto: MatchmakingGameDto,
   ): Promise<MatchmakingJoinResponseDto> {
-    return this.matchmakingService.join(dto.gameId, user.id);
+    return this.matchmakingService.join(dto.gameId, user, dto.stake);
   }
 
   @Post('leave')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Leave the matchmaking queue (idempotent).' })
   @ApiResponse({ status: 204 })
-  async leave(
-    @CurrentUser() user: User,
-    @Body() dto: MatchmakingGameDto,
-  ): Promise<void> {
-    await this.matchmakingService.leave(dto.gameId, user.id);
+  async leave(@CurrentUser() user: User): Promise<void> {
+    await this.matchmakingService.leave(user.id);
   }
 }

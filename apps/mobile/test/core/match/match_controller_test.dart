@@ -1,8 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/config/app_config.dart';
+import 'package:playle_mobile/core/errors/app_exception.dart';
 import 'package:playle_mobile/core/match/match_controller.dart';
 import 'package:playle_mobile/core/match/match_models.dart';
 import 'package:playle_mobile/core/match/match_state.dart';
+import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
 import 'package:playle_mobile/core/network/websocket_client.dart';
 import 'package:playle_mobile/core/realtime/realtime_connection_manager.dart';
 
@@ -101,6 +103,105 @@ void main() {
 
       expect(controller.state, isA<MatchViewError>());
     });
+
+    test(
+      'loadMatch defaults financial info to the free-play (empty) shape',
+      () async {
+        final repo = FakeMatchRepository()..matchToReturn = buildTestMatch();
+        final controller = _buildController(repo);
+
+        await controller.loadMatch('match-1');
+
+        final state = controller.state as MatchViewLoaded;
+        expect(state.financial.isFinanciallyBacked, isFalse);
+        expect(state.financial.settlement, isNull);
+      },
+    );
+
+    test('loadMatch surfaces a financially-backed match\'s stake', () async {
+      final stake = buildTestStake(status: 'PENDING');
+      final repo = FakeMatchRepository()
+        ..matchToReturn = buildTestMatch(status: 'WAITING')
+        ..financialToReturn = MatchFinancialInfo(
+          stake: stake,
+          settlement: null,
+        );
+      final controller = _buildController(repo);
+
+      await controller.loadMatch('match-1');
+
+      final state = controller.state as MatchViewLoaded;
+      expect(state.financial.isFinanciallyBacked, isTrue);
+      expect(state.financial.stake!.stakeAmountMinor, '1000');
+      expect(state.match.status, 'WAITING');
+    });
+
+    test(
+      'a financial-info load failure falls back to the empty shape rather than failing the whole load',
+      () async {
+        final repo = _ThrowingFinancialMatchRepository()
+          ..matchToReturn = buildTestMatch();
+        final controller = _buildController(repo);
+
+        await controller.loadMatch('match-1');
+
+        final state = controller.state;
+        expect(state, isA<MatchViewLoaded>());
+        expect(
+          (state as MatchViewLoaded).financial.isFinanciallyBacked,
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'confirmStake calls the repository and refreshes the match/financial state',
+      () async {
+        final stake = buildTestStake(
+          status: 'ACTIVE',
+          players: const [
+            MatchStakePlayerInfo(userId: 'user-1', heldAt: null),
+            MatchStakePlayerInfo(userId: 'user-2', heldAt: null),
+          ],
+        );
+        final repo = FakeMatchRepository()
+          ..matchToReturn = buildTestMatch(status: 'WAITING')
+          ..financialToReturn = MatchFinancialInfo(
+            stake: stake,
+            settlement: null,
+          );
+        final controller = _buildController(repo);
+        await controller.loadMatch('match-1');
+
+        await controller.confirmStake();
+
+        expect(repo.confirmStakeCallCount, 1);
+        final state = controller.state as MatchViewLoaded;
+        expect(state.financial.stake!.status, 'ACTIVE');
+      },
+    );
+
+    test('confirmStake before loadMatch is a no-op', () async {
+      final repo = FakeMatchRepository();
+      final controller = _buildController(repo);
+
+      await controller.confirmStake();
+
+      expect(repo.confirmStakeCallCount, 0);
+    });
+
+    test('confirmStake rethrows the repository\'s error', () async {
+      final repo = FakeMatchRepository()
+        ..matchToReturn = buildTestMatch(status: 'WAITING')
+        ..confirmStakeError = const NetworkException('Insufficient balance');
+      final controller = _buildController(repo);
+      await controller.loadMatch('match-1');
+
+      await expectLater(
+        controller.confirmStake(),
+        throwsA(isA<NetworkException>()),
+      );
+    });
   });
 }
 
@@ -108,5 +209,12 @@ class _ThrowingMatchRepository extends FakeMatchRepository {
   @override
   Future<MatchInfo> getMatch(String matchId) async {
     throw Exception('boom');
+  }
+}
+
+class _ThrowingFinancialMatchRepository extends FakeMatchRepository {
+  @override
+  Future<MatchFinancialInfo> getFinancial(String matchId) async {
+    throw Exception('financial boom');
   }
 }

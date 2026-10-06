@@ -6,22 +6,23 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 4 — GAME PLATFORM CORE, MATCHMAKING, REAL-TIME
-> MULTIPLAYER & TIC-TAC-TOE REFERENCE GAME**
+> **CURRENT PHASE: PHASE 5 — REAL-MONEY MATCH STAKES, HOLDS, PRIZE POOLS
+> & DETERMINISTIC SETTLEMENT**
 >
-> Phases 1-3 (foundation, identity/authentication, wallet/ledger/financial
-> foundation) are complete. Phase 4 adds the reusable multiplayer game
-> platform — a generic game-module contract and registry, match
-> lifecycle/persistence, matchmaking, direct challenges, presence, and
-> real-time push over Socket.IO (commands travel over REST, pushes over
-> WebSocket) — proven with one fully playable, server-authoritative
-> Tic-Tac-Toe game. See
-> [ADR-014](docs/decisions/ADR-014-realtime-command-transport.md) and
-> [ADR-015](docs/decisions/ADR-015-game-module-architecture.md). Matches
-> have **no stakes, holds, or prize pools** — the financial system from
-> Phase 3 is untouched. No betting/prize-pool settlement, additional
-> games, social features, chat, KYC, or user-to-user transfers are
-> implemented yet. See "Roadmap" and `CLAUDE.md` for what's in scope.
+> Phases 1-4 (foundation, identity/authentication, wallet/ledger/financial
+> foundation, game platform/matchmaking/real-time) are complete. Phase 5
+> connects the two: players stake equal amounts (held via the Phase 3
+> ledger), a completed match's authoritative result drives deterministic
+> settlement — win payout minus a 10% platform fee to a real seeded
+> platform account, draw/cancellation refunds, disconnect-forfeit
+> settlement — with exactly-once guarantees, crash recovery, on-demand
+> reconciliation, and a dispute foundation. See
+> [ADR-016](docs/decisions/ADR-016-match-financial-architecture.md),
+> [ADR-017](docs/decisions/ADR-017-deterministic-settlement.md), and
+> [ADR-018](docs/decisions/ADR-018-financial-state-machines.md). Real
+> money is exercised against test wallets only — no production Monime
+> integration, no additional games, no social features. See "Roadmap"
+> and `CLAUDE.md` for what's in scope.
 
 ## Overview
 
@@ -170,20 +171,28 @@ this repository.
   Monime (or other provider) integration is pending verified
   credentials/documentation — see `docs/development/MONIME_SETUP.md`.
 - **Phase 4 — Game Platform Core, Matchmaking, Real-Time Multiplayer &
-  Tic-Tac-Toe** (current). A generic game-module contract/registry,
+  Tic-Tac-Toe** ✅ complete. A generic game-module contract/registry,
   match lifecycle and persistence, matchmaking, direct challenges,
   presence, and real-time push over Socket.IO, proven with one
   server-authoritative Tic-Tac-Toe game. See
   [ADR-014](docs/decisions/ADR-014-realtime-command-transport.md) and
-  [ADR-015](docs/decisions/ADR-015-game-module-architecture.md). No
-  stakes, holds, or prize pools — matches and the financial system
-  remain fully isolated.
+  [ADR-015](docs/decisions/ADR-015-game-module-architecture.md).
+- **Phase 5 — Real-Money Match Stakes, Holds, Prize Pools &
+  Deterministic Settlement** (current). Equal-stake holds, prize pools,
+  a 10% platform fee to a real seeded platform account, deterministic
+  win/draw/cancellation/disconnect-forfeit settlement, exactly-once
+  guarantees, crash recovery, on-demand reconciliation, and a dispute
+  foundation. See
+  [ADR-016](docs/decisions/ADR-016-match-financial-architecture.md),
+  [ADR-017](docs/decisions/ADR-017-deterministic-settlement.md), and
+  [ADR-018](docs/decisions/ADR-018-financial-state-machines.md). Real
+  Monime payouts, KYC, and additional games remain out of scope.
 - Later phases (not yet scheduled/implemented) are expected to cover, in
-  order of dependency: betting/prize-pool settlement (wiring Phase 3's
-  wallet into Phase 4's matches), additional games on the same
-  game-module contract, admin operational tooling, social features, and
-  notifications. Each phase will be specified explicitly before
-  implementation begins — see `CLAUDE.md`, "Phase Discipline".
+  order of dependency: production Monime payment-provider integration,
+  additional games on the same game-module/financial contract, admin
+  operational tooling, social features, and notifications. Each phase
+  will be specified explicitly before implementation begins — see
+  `CLAUDE.md`, "Phase Discipline".
 
 ## Contribution / Development Workflow
 

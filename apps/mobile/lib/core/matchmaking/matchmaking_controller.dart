@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../errors/app_exception.dart';
 import '../logging/app_logger.dart';
+import '../match_stakes/match_stake_models.dart';
 import '../network/websocket_client.dart';
 import '../realtime/realtime_connection_manager.dart';
 import 'matchmaking_repository.dart';
@@ -28,7 +29,7 @@ class MatchmakingController extends ChangeNotifier {
   String? _gameId;
   void Function()? _unsubscribeMatchFound;
 
-  Future<void> join(String gameId) async {
+  Future<void> join(String gameId, {MatchStakeRequest? stake}) async {
     _gameId = gameId;
     _setState(const MatchmakingSearching());
 
@@ -43,7 +44,7 @@ class MatchmakingController extends ChangeNotifier {
         }
       });
 
-      final result = await _repository.join(gameId);
+      final result = await _repository.join(gameId, stake: stake);
       if (result.status == 'MATCHED' && result.matchId != null) {
         _setState(MatchmakingMatched(result.matchId!));
       }

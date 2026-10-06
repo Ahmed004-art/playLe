@@ -4,6 +4,7 @@ import '../auth/auth_controller.dart';
 import '../auth/auth_state.dart';
 import '../challenges/challenges_controller.dart';
 import '../di/service_locator.dart';
+import '../disputes/disputes_controller.dart';
 import '../games/games_controller.dart';
 import '../match/match_controller.dart';
 import '../matchmaking/matchmaking_controller.dart';
@@ -12,6 +13,7 @@ import '../../features/auth/account_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/register_screen.dart';
 import '../../features/auth/welcome_screen.dart';
+import '../../features/disputes/disputes_screen.dart';
 import '../../features/games/game_lobby_screen.dart';
 import '../../features/games/games_catalog_screen.dart';
 import '../../features/games/match_screen.dart';
@@ -44,6 +46,7 @@ GoRouter buildAppRouter(
   GamesController gamesController,
   MatchmakingController matchmakingController,
   ChallengesController challengesController,
+  DisputesController disputesController,
 ) {
   return GoRouter(
     initialLocation: '/',
@@ -123,8 +126,15 @@ GoRouter buildAppRouter(
             matchId: matchId,
             authController: authController,
             matchController: sl<MatchController>(),
+            walletController: walletController,
+            disputesController: disputesController,
           );
         },
+      ),
+      GoRoute(
+        path: '/disputes',
+        builder: (context, state) =>
+            DisputesScreen(disputesController: disputesController),
       ),
     ],
   );

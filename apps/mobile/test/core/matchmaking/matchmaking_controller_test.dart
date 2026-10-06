@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/config/app_config.dart';
+import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
 import 'package:playle_mobile/core/matchmaking/matchmaking_controller.dart';
 import 'package:playle_mobile/core/matchmaking/matchmaking_repository.dart';
 import 'package:playle_mobile/core/matchmaking/matchmaking_state.dart';
@@ -81,6 +82,33 @@ void main() {
 
       expect(controller.state, isA<MatchmakingIdle>());
       expect(repo.left, isTrue);
+    });
+
+    test('join forwards the requested stake to the repository', () async {
+      final repo = FakeMatchmakingRepository();
+      final controller = MatchmakingController(
+        repo,
+        WebSocketClient(config: _testConfig),
+        _fakeRealtime(),
+      );
+      const stake = MatchStakeRequest(amountMinor: '1000');
+
+      await controller.join('tic_tac_toe', stake: stake);
+
+      expect(repo.lastStakeRequested?.amountMinor, '1000');
+    });
+
+    test('join omits the stake (free play) when none is given', () async {
+      final repo = FakeMatchmakingRepository();
+      final controller = MatchmakingController(
+        repo,
+        WebSocketClient(config: _testConfig),
+        _fakeRealtime(),
+      );
+
+      await controller.join('tic_tac_toe');
+
+      expect(repo.lastStakeRequested, isNull);
     });
   });
 }

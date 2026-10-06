@@ -46,8 +46,9 @@ export class ChallengesController {
   ): Promise<ChallengeResponseDto> {
     const challenge = await this.challengesService.create(
       dto.gameId,
-      user.id,
+      user,
       dto.opponentUserId,
+      dto.stake,
     );
     return toChallengeResponse(challenge);
   }

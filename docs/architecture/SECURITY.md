@@ -1,10 +1,11 @@
 # Security Foundation
 
-This document describes the security posture established through Phase 4
+This document describes the security posture established through Phase 5
 and the security work that remains for later phases. **The application is
-not production-secure after Phase 4** — in particular, no real money can
-move yet (see ADR-013), and matches have no financial stakes. This is a
-foundation, not a completed security program.
+not production-secure after Phase 5** — in particular, no real payment
+provider is connected yet (see ADR-013), and all match-stake testing uses
+test wallets, not real money. This is a foundation, not a completed
+security program.
 
 ## Implemented in Phase 1
 
@@ -209,7 +210,82 @@ Full architecture and reasoning:
   cross-import from the financial modules; none found outside the
   pre-existing Phase 3 code).
 
-## Explicitly NOT Implemented Through Phase 4
+## Implemented in Phase 5 — Match Stakes, Settlement, Disputes & Reconciliation
+
+Full architecture and reasoning:
+[ADR-016](../decisions/ADR-016-match-financial-architecture.md),
+[ADR-017](../decisions/ADR-017-deterministic-settlement.md),
+[ADR-018](../decisions/ADR-018-financial-state-machines.md).
+
+- **Server-authoritative settlement, enforced, not just documented.**
+  `SettlementService.settle` derives the outcome entirely from the
+  match's own already-decided `status`/`winnerUserId`/`resultIsDraw` —
+  no caller, client or otherwise, can pass in a winner, a payout, or a
+  pool. Verified by e2e tests covering win, draw, disconnect-forfeit,
+  and stake-commit-timeout cancellation, each asserting the exact
+  resulting balances.
+- **No client-controlled money movement anywhere in the pipeline.**
+  Stake amount is fixed by whoever initiates (matchmaking request or
+  challenge) and never re-negotiated; the opponent can only accept or
+  not. The actual hold only ever happens via `POST
+  /matches/:id/stake/confirm`, which re-validates eligibility
+  server-side at confirm time (not just at request time) and performs
+  the hold through the existing `LedgerService.lockWallet`/`applyEntry`
+  — the exact same primitives Phase 3 wallet operations use, not a new
+  money-movement mechanism.
+- **Equal-stake enforced by construction.** `MatchStake.stakeAmountMinor`
+  is one value shared by every player, not a per-player column — there
+  is no code path that could even express unequal stakes. Matchmaking
+  additionally only pairs players who requested the identical amount
+  (separate Redis queues per stake tier); verified by e2e test that two
+  different stake amounts never pair.
+- **Exactly-once settlement is a database constraint, not application
+  logic.** `@@unique` on `Settlement.matchStakeId`; `settle()` always
+  attempts to create that row first and treats a `P2002` conflict as
+  "already settled," returning the existing result — verified by
+  calling `settle()` twice in an e2e test and asserting no balance
+  changes on the retry.
+- **Multi-wallet lock ordering**: settlement is the first place in the
+  codebase that locks more than one wallet in a single transaction; every
+  movement is sorted by `userId` before locking, preventing a
+  reverse-order deadlock between two settlements that happen to share a
+  player (see `SettlementService`, ADR-017).
+- **Real-money eligibility is checked twice, independently of identity
+  eligibility.** `stakes.realMoneyGamingEnabled` (default `false`) and a
+  separate `stakes.realMoneyMinimumAge` (distinct from the general
+  account age gate) are both re-checked at `confirmStake` time, not only
+  at the original join/challenge request — verified by e2e test
+  (a too-young account is rejected with `403`).
+- **The platform account can never be a player or log in.** Implemented
+  as a real `User` row (`role: SYSTEM`, `status: DISABLED`) — `DISABLED`
+  already fails `JwtAuthGuard`'s login check and `ChallengesService`'s
+  `status: 'ACTIVE'` opponent check with zero Phase-5-specific code.
+- **IDOR protection**: `GET /matches/:id/financial` and `POST
+  /matches/:id/stake/confirm` both 404 (not 403) for a non-participant;
+  `POST /matches/:id/dispute` likewise 404s for a non-participant and
+  409s a duplicate open dispute from the same user — all e2e-verified.
+- **Disputes never move money.** `DisputesService` has no code path
+  that calls `LedgerService` or touches a `Wallet` — verified by code
+  review and by an e2e test asserting a resolved (even "upheld")
+  dispute changes no balance. A real correction, if warranted, is a
+  separate, already-audited admin wallet adjustment (Phase 3's existing
+  mechanism) — admin safety: no dispute-resolution shortcut can move
+  money by itself.
+- **Reconciliation is read-only.** `ReconciliationService.runOnce()`
+  (admin-only, `GET /admin/reconciliation/run`) only ever reads and
+  reports; it has no write path. Verified by e2e test: a normal settled
+  match produces zero anomalies.
+- **Crash recovery is idempotent by construction.** The periodic sweep's
+  `recoverStuckSettlements()` re-calls `settle()` for any terminal match
+  whose stake isn't yet `SETTLED`/`REFUNDED` — safe to call arbitrarily
+  many times because `settle()` itself is idempotent (see above).
+- **Financial invariants enforced twice, again**: `settlement-math.ts`'s
+  `isBalanced` check runs both as an exhaustive unit-test suite (pure,
+  no I/O) and as a runtime assertion inside `SettlementService` right
+  before every commit — an unbalanced computation is refused, never
+  written.
+
+## Explicitly NOT Implemented Through Phase 5
 
 - Email/SMS verification delivery (schema fields exist, no provider
   integration or OTP flow — see ADR-011).
@@ -223,11 +299,16 @@ Full architecture and reasoning:
 - Real-money deposits or payouts — `ManualProvider` is active and makes
   no network call; `MonimeProvider` is an inert boundary pending verified
   Monime access (see ADR-013, `docs/development/MONIME_SETUP.md`).
-- Betting/prize-pool settlement, platform fees (ledger types reserved,
-  not produced yet; a match has no stake, hold, or payout).
-- Additional games beyond Tic-Tac-Toe (the `GameModule` contract is
-  designed to support them without platform changes, but none are
-  implemented).
+- Real-money payouts of actual winnings via a production payment
+  provider — the engine above works entirely against test wallets;
+  `ManualProvider` remains the active provider (see ADR-013).
+- Additional games beyond Tic-Tac-Toe (both the `GameModule` contract
+  and the Phase 5 financial pipeline are designed to support them
+  without changes, but none are implemented).
+- A production activation flag beyond `REAL_MONEY_GAMING_ENABLED` — no
+  separate legal/compliance/KYC gate exists yet; that is explicitly
+  future work before any of this handles real user funds (see ADR-016,
+  "production activation boundary").
 - Match-level anti-cheat/anomaly detection (e.g. detecting a player
   deliberately disconnecting to avoid a loss) beyond the disconnect
   grace-period forfeit rule already implemented.
@@ -281,6 +362,15 @@ the generic game-module/matchmaking/challenge/real-time layer is built
 entirely on NestJS, Prisma, `ioredis`, and `@nestjs/websockets`/
 `socket.io`, all already present since Phase 1.
 
+**Phase 5 update**: the match-financial engine introduced **zero new
+npm or Dart dependencies** — built entirely on Prisma, NestJS,
+class-validator, and Node's built-in `crypto`/`BigInt`, same as Phase 3.
+The platform/system account's seed password hash was generated once,
+at migration-authoring time, using the `argon2` package already present
+since Phase 2 (via a throwaway one-off script, not a new runtime call
+path). `npm audit` after Phase 5 reports the same findings as Phase 4,
+unchanged.
+
 ## Known Limitations
 
 - The development database and Redis instances run with default/simple
@@ -319,6 +409,16 @@ entirely on NestJS, Prisma, `ioredis`, and `@nestjs/websockets`/
   that suite was verified via a real GitHub Actions CI run (which
   provisions a genuine Redis service container) rather than locally —
   an environment-specific gap, not a gap in the test itself.
+- Phase 5's financial-engine migration needed a database role with
+  `CREATEDB`/type-ownership to author (see "Migration Discipline" in
+  `docs/database/README.md`); the default local `playle` runtime role
+  deliberately doesn't have it. In this development environment, that
+  was worked around by initializing a second, throwaway local Postgres
+  cluster (a plain `initdb`/`pg_ctl` on a different port, owned by the
+  session running it) purely to author and verify the migration and run
+  the full non-Redis e2e suite against a real database — the committed
+  migration files are identical to what any contributor with normal
+  Docker access would produce via `npm run docker:up`.
 
 ## Future Security Requirements (Later Phases)
 

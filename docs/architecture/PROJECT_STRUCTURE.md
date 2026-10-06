@@ -35,23 +35,31 @@ playle/
         withdrawals/             Withdrawal lifecycle + admin approval state machine
         games/                   Game catalog + GameModule/GameRegistry contract; tic-tac-toe/ holds
                                   the reference game's pure rule logic — see ADR-015
-        matches/                 Match lifecycle/persistence, command submission, timeout sweep
-        matchmaking/             Redis-backed opponent queueing, atomic match formation
+        matches/                 Match lifecycle/persistence, command submission, timeout + recovery sweep
+        matchmaking/             Redis-backed opponent queueing, atomic match formation, stake-tier queues
         challenges/              Direct player-to-player challenge create/accept/decline/cancel/expire
-        admin/                   Financial admin visibility + withdrawal review, read-only match visibility
+        system-account/          The seeded platform/system account's wallet lookup — see ADR-016
+        match-stakes/            Stake eligibility/validation, confirming (holding) a stake, financial reads
+        settlement/              Settlement math (pure) + SettlementService (the one settlement authority) +
+                                  ReconciliationService — see ADR-017
+        disputes/                Dispute create/list/resolve — status/audit only, never moves money
+        admin/                   Financial admin visibility + withdrawal review, match visibility,
+                                  financial-match inspection, dispute resolution, reconciliation trigger
       prisma/
         schema.prisma            Prisma schema (User, RefreshToken, Wallet, LedgerEntry, Deposit,
                                   Withdrawal, ProviderEvent, Game, Match, MatchPlayer, MatchCommand,
-                                  Challenge)
+                                  Challenge, MatchStake, MatchStakePlayer, Settlement, SettlementEntry,
+                                  Dispute)
         migrations/
-      test/                      e2e tests (auth, wallet, matches, matchmaking, realtime)
+      test/                      e2e tests (auth, wallet, matches, matchmaking, realtime, match-stakes)
 
     admin/                     Next.js admin application
       src/
         app/                     App Router pages (dashboard, /login, /withdrawals, /wallets,
-                                  /matches, /matches/[id])
-        lib/                     API client, auth context/token storage, config, wallet/match types,
-                                  formatting
+                                  /matches, /matches/[id] (incl. Phase 5 financial section),
+                                  /disputes, /disputes/[id], /reconciliation)
+        lib/                     API client, auth context/token storage, config, wallet/match/
+                                  dispute/reconciliation types, formatting
         components/              Shared UI components (AuthGuard, HealthStatus)
 
   packages/

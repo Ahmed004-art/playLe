@@ -20,6 +20,10 @@ import { GamesModule } from './games/games.module.js';
 import { MatchesModule } from './matches/matches.module.js';
 import { MatchmakingModule } from './matchmaking/matchmaking.module.js';
 import { ChallengesModule } from './challenges/challenges.module.js';
+import { SystemAccountModule } from './system-account/system-account.module.js';
+import { SettlementModule } from './settlement/settlement.module.js';
+import { MatchStakesModule } from './match-stakes/match-stakes.module.js';
+import { DisputesModule } from './disputes/disputes.module.js';
 
 @Module({
   imports: [
@@ -59,6 +63,13 @@ import { ChallengesModule } from './challenges/challenges.module.js';
             ttl: configService.get('matches.throttleTtlMs', { infer: true }),
             limit: configService.get('matches.throttleLimit', { infer: true }),
           },
+          {
+            // Separately-configurable limit for stake/dispute endpoints —
+            // see docs/decisions/ADR-016-match-financial-architecture.md.
+            name: 'stakes',
+            ttl: configService.get('stakes.throttleTtlMs', { infer: true }),
+            limit: configService.get('stakes.throttleLimit', { infer: true }),
+          },
         ],
       }),
     }),
@@ -78,6 +89,10 @@ import { ChallengesModule } from './challenges/challenges.module.js';
     MatchesModule,
     MatchmakingModule,
     ChallengesModule,
+    SystemAccountModule,
+    SettlementModule,
+    MatchStakesModule,
+    DisputesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

@@ -18,6 +18,13 @@ datasource db {
 enum UserRole {
   USER
   ADMIN
+  /// Exactly one row (the seeded platform/system account — see
+  /// docs/decisions/ADR-016-match-financial-architecture.md). Never a
+  /// normal player: `status` is `DISABLED`, which already blocks it from
+  /// login (JwtAuthGuard's status check) and from challenge-opponent
+  /// selection (ChallengesService requires `status: 'ACTIVE'`) with no
+  /// extra checks needed.
+  SYSTEM
 }
 
 enum UserStatus {
@@ -64,6 +71,11 @@ model User {
   matchCommands        MatchCommand[]
   challengesSent       Challenge[]   @relation("ChallengeChallenger")
   challengesReceived   Challenge[]   @relation("ChallengeOpponent")
+
+  matchStakePlayers MatchStakePlayer[]
+  settlementEntries SettlementEntry[]
+  disputesRaised    Dispute[]         @relation("DisputeRaisedBy")
+  disputesResolved  Dispute[]         @relation("DisputeResolvedBy")
 
   @@map("users")
 }
@@ -117,11 +129,22 @@ enum LedgerEntryType {
   RELEASE
   REFUND
   ADJUSTMENT
-  /// Reserved for the future betting/settlement phase. Never produced by
-  /// Phase 3 code — see CLAUDE.md "what not to build yet".
+  /// A player's match stake moving from available to held
+  /// (Phase 5 — see docs/decisions/ADR-016-match-financial-architecture.md).
+  STAKE_HOLD
+  /// A held match stake returned to available with no game result (match
+  /// cancelled, or a draw) — Phase 5.
+  STAKE_REFUND
+  /// A losing player's held match stake consumed by settlement (held -= 0,
+  /// no available credit) — Phase 5.
+  STAKE_LOSS
+  /// A settlement payout credited to the winner (their own stake back
+  /// plus net winnings) — reserved since Phase 3, produced starting
+  /// Phase 5.
   PRIZE
-  /// Reserved for the future betting/settlement phase. Never produced by
-  /// Phase 3 code — see CLAUDE.md "what not to build yet".
+  /// PlayLe's platform fee, credited to the system/platform account —
+  /// reserved since Phase 3, produced starting Phase 5. This is PlayLe's
+  /// product fee, not a government tax — see ADR-016.
   PLATFORM_FEE
 }
 
@@ -204,6 +227,10 @@ model LedgerEntry {
   deposit             Deposit?    @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
   relatedWithdrawalId String?
   withdrawal          Withdrawal? @relation(fields: [relatedWithdrawalId], references: [id], onDelete: SetNull)
+  relatedMatchStakeId String?
+  matchStake          MatchStake? @relation(fields: [relatedMatchStakeId], references: [id], onDelete: SetNull)
+
+  settlementEntry SettlementEntry?
 
   providerReference String?
 
@@ -216,6 +243,7 @@ model LedgerEntry {
   @@index([userId])
   @@index([walletId])
   @@index([type])
+  @@index([relatedMatchStakeId])
   @@map("ledger_entries")
 }
 
@@ -421,6 +449,8 @@ model Match {
   players  MatchPlayer[]
   commands MatchCommand[]
   challenge Challenge?
+  stake     MatchStake?
+  disputes  Dispute[]
 
   @@index([status])
   @@index([gameId])
@@ -495,6 +525,12 @@ model Challenge {
   matchId String? @unique
   match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
 
+  /// Optional — a challenge with no stake is ordinary free play. Set once
+  /// at creation and never mutated (see docs/decisions/ADR-016, "stake
+  /// immutability"): accepting commits to exactly this amount.
+  stakeAmountMinor BigInt?
+  stakeCurrency    String?
+
   expiresAt   DateTime
   createdAt   DateTime  @default(now())
   respondedAt DateTime?
@@ -503,4 +539,191 @@ model Challenge {
   @@index([challengerId])
   @@index([opponentId])
   @@map("challenges")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Real-Money Match Stakes, Holds, Prize Pools & Settlement
+//
+// See docs/decisions/ADR-016-match-financial-architecture.md,
+// ADR-017-deterministic-settlement.md, and
+// ADR-018-financial-state-machines.md. `MatchStake` is the hold-commitment
+// record (one per financially-backed Match, 1:1); `Settlement` is the
+// terminal financial outcome (one per MatchStake, 1:1, DB-unique — this
+// *is* the exactly-once guarantee), broken down per-party into
+// `SettlementEntry` rows for full audit reconstruction. Every money
+// movement here still goes through `LedgerService.applyEntry` — this
+// phase adds no new way to touch a `Wallet` directly.
+// ---------------------------------------------------------------------------
+
+enum MatchStakeStatus {
+  PENDING
+  HELD
+  ACTIVE
+  SETTLING
+  SETTLED
+  REFUNDED
+  CANCELLED
+  DISPUTED
+  FAILED
+}
+
+enum SettlementOutcome {
+  WIN
+  DRAW
+  REFUND
+  CANCELLED
+}
+
+enum SettlementStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum SettlementEntryRole {
+  WINNER
+  LOSER
+  DRAW_PARTICIPANT
+  REFUND_RECIPIENT
+  PLATFORM_FEE
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  UPHELD
+  REFUNDED
+  RESOLVED
+}
+
+/// The financial commitment attached to a match. Equal-stake is enforced
+/// by construction — `stakeAmountMinor` is one value shared by every
+/// `MatchStakePlayer`, not a per-player amount. `matchId` is `Restrict`
+/// (financial history, like `Wallet`/`Deposit`/`Withdrawal` — never
+/// deletable).
+model MatchStake {
+  id      String @id @default(uuid())
+  matchId String @unique
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Restrict)
+
+  currency         String
+  stakeAmountMinor BigInt
+
+  status MatchStakeStatus @default(PENDING)
+
+  failureReason String?
+
+  createdAt   DateTime  @default(now())
+  heldAt      DateTime?
+  cancelledAt DateTime?
+
+  players       MatchStakePlayer[]
+  settlement    Settlement?
+  ledgerEntries LedgerEntry[]
+
+  @@index([status])
+  @@map("match_stakes")
+}
+
+/// One row per participant's hold state. `heldAt` is set the instant that
+/// specific player's `STAKE_HOLD` ledger entry is applied; the
+/// `MatchStake` as a whole reaches `HELD` only once every player row here
+/// has a non-null `heldAt`.
+model MatchStakePlayer {
+  id           String     @id @default(uuid())
+  matchStakeId String
+  matchStake   MatchStake @relation(fields: [matchStakeId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  heldAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([matchStakeId, userId])
+  @@map("match_stake_players")
+}
+
+/// The one terminal financial outcome for a `MatchStake`. `@unique` on
+/// `matchStakeId` is the database-enforced exactly-once guarantee (see
+/// `SettlementService` — a second settlement attempt for the same stake
+/// always hits this constraint and is treated as a safe, idempotent
+/// retry, never a second payout). Pool/fee are captured here as an
+/// immutable snapshot even though both are deterministically derivable
+/// from `MatchStake`, so a later config change (e.g. a different fee
+/// percentage) can never retroactively change what a historical
+/// settlement is recorded as having paid.
+model Settlement {
+  id           String     @id @default(uuid())
+  matchStakeId String     @unique
+  matchStake   MatchStake @relation(fields: [matchStakeId], references: [id], onDelete: Restrict)
+
+  outcome SettlementOutcome
+  status  SettlementStatus  @default(PENDING)
+
+  currency               String
+  poolAmountMinor        BigInt
+  platformFeeAmountMinor BigInt @default(0)
+
+  failureReason String?
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  entries SettlementEntry[]
+
+  @@map("settlements")
+}
+
+/// One row per money movement a settlement causes — the complete audit
+/// trail (section 25/52 of the Phase 5 spec): who, what role, how much,
+/// and which exact `LedgerEntry` carried it out. `ledgerEntryId` is
+/// `@unique` (one entry, one ledger row) and `SetNull` only as a schema
+/// formality — ledger rows are never deleted.
+model SettlementEntry {
+  id           String     @id @default(uuid())
+  settlementId String
+  settlement   Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  role SettlementEntryRole
+
+  availableDeltaMinor BigInt
+  heldDeltaMinor      BigInt
+
+  ledgerEntryId String?      @unique
+  ledgerEntry   LedgerEntry? @relation(fields: [ledgerEntryId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([settlementId])
+  @@map("settlement_entries")
+}
+
+/// Technical foundation for a player disputing a completed match's
+/// financial outcome. Opening or reviewing a dispute never itself changes
+/// any balance — resolution happens through the same `SettlementService`/
+/// `LedgerService` paths as everything else (a compensating transaction,
+/// never a mutated history row).
+model Dispute {
+  id             String @id @default(uuid())
+  matchId        String
+  match          Match  @relation(fields: [matchId], references: [id], onDelete: Restrict)
+  raisedByUserId String
+  raisedBy       User   @relation("DisputeRaisedBy", fields: [raisedByUserId], references: [id], onDelete: Restrict)
+
+  reason String
+  status DisputeStatus @default(OPEN)
+
+  resolution        String?
+  resolvedByAdminId String?
+  resolvedByAdmin   User?   @relation("DisputeResolvedBy", fields: [resolvedByAdminId], references: [id], onDelete: SetNull)
+
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([matchId])
+  @@index([status])
+  @@map("disputes")
 }

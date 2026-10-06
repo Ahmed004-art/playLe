@@ -5,12 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Challenge } from '@prisma/client';
+import type { Challenge, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { GamesService } from '../games/games.service.js';
 import { UsersService } from '../users/users.service.js';
 import { MatchesService } from '../matches/matches.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
+import { MatchStakesService } from '../match-stakes/match-stakes.service.js';
+import type { StakeRequestDto } from '../match-stakes/dto/stake-request.dto.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
@@ -22,14 +24,17 @@ export class ChallengesService {
     private readonly usersService: UsersService,
     private readonly matchesService: MatchesService,
     private readonly emitter: RealtimeEmitterService,
+    private readonly matchStakesService: MatchStakesService,
     private readonly configService: ConfigService<AppConfiguration, true>,
   ) {}
 
   async create(
     gameId: string,
-    challengerId: string,
+    challenger: User,
     opponentUserId: string,
+    stakeRequest?: StakeRequestDto,
   ): Promise<Challenge> {
+    const challengerId = challenger.id;
     if (challengerId === opponentUserId) {
       throw new ConflictException('You cannot challenge yourself');
     }
@@ -57,6 +62,13 @@ export class ChallengesService {
       );
     }
 
+    const stake = stakeRequest
+      ? await this.matchStakesService.validateStakeRequest(
+          challenger,
+          stakeRequest,
+        )
+      : undefined;
+
     const expiryMs = this.configService.get('matches.challengeExpiryMs', {
       infer: true,
     });
@@ -67,6 +79,8 @@ export class ChallengesService {
         challengerId,
         opponentId: opponentUserId,
         expiresAt: new Date(Date.now() + expiryMs),
+        stakeAmountMinor: stake?.amountMinor,
+        stakeCurrency: stake?.currency,
       },
     });
 
@@ -122,6 +136,12 @@ export class ChallengesService {
         game,
         [challenge.challengerId, challenge.opponentId],
         tx,
+        challenge.stakeAmountMinor != null && challenge.stakeCurrency
+          ? {
+              amountMinor: challenge.stakeAmountMinor,
+              currency: challenge.stakeCurrency,
+            }
+          : undefined,
       );
 
       const resolved = await tx.challenge.update({

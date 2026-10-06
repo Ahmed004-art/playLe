@@ -27,6 +27,12 @@ import {
 import { PaginationQueryDto } from '../common/dto/pagination.dto.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
+import { MatchStakesService } from '../match-stakes/match-stakes.service.js';
+import {
+  MatchFinancialResponseDto,
+  toMatchStakeResponse,
+  toSettlementResponse,
+} from '../match-stakes/dto/match-financial-response.dto.js';
 
 const MATCHES_THROTTLE = { matches: {} };
 
@@ -35,7 +41,10 @@ const MATCHES_THROTTLE = { matches: {} };
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class MatchesController {
-  constructor(private readonly matchesService: MatchesService) {}
+  constructor(
+    private readonly matchesService: MatchesService,
+    private readonly matchStakesService: MatchStakesService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: "The authenticated user's own match history." })
@@ -86,5 +95,40 @@ export class MatchesController {
       dto.payload,
     );
     return toCommandResponse(command);
+  }
+
+  @Post(':id/stake/confirm')
+  @HttpCode(HttpStatus.OK)
+  @Throttle(MATCHES_THROTTLE)
+  @ApiOperation({
+    summary:
+      'Confirm (hold) your stake for a financially-backed match. The match ' +
+      'becomes ACTIVE once every player has confirmed.',
+  })
+  @ApiResponse({ status: 200, type: MatchFinancialResponseDto })
+  async confirmStake(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+  ): Promise<MatchFinancialResponseDto> {
+    const stake = await this.matchStakesService.confirmStake(user, id);
+    return { stake: toMatchStakeResponse(stake), settlement: null };
+  }
+
+  @Get(':id/financial')
+  @ApiOperation({
+    summary:
+      "A match's stake and settlement, if any. Both null for ordinary free play.",
+  })
+  @ApiResponse({ status: 200, type: MatchFinancialResponseDto })
+  async financial(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+  ): Promise<MatchFinancialResponseDto> {
+    const { stake, settlement } =
+      await this.matchStakesService.getFinancialView(user.id, id);
+    return {
+      stake: stake ? toMatchStakeResponse(stake) : null,
+      settlement: settlement ? toSettlementResponse(settlement) : null,
+    };
   }
 }

@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
+import { SettlementService } from '../settlement/settlement.service.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
 /**
@@ -32,6 +33,7 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly emitter: RealtimeEmitterService,
+    private readonly settlementService: SettlementService,
     private readonly configService: ConfigService<AppConfiguration, true>,
   ) {}
 
@@ -57,16 +59,70 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
     await this.expireWaitingMatches();
     await this.expireChallenges();
     await this.abandonDisconnectedMatches();
+    await this.recoverStuckSettlements();
   }
 
+  /**
+   * A financially-backed match that doesn't reach `HELD` in time (one or
+   * both players never confirmed their stake) is cancelled; whichever
+   * stake, if any, had already been held is refunded through the normal
+   * `SettlementService` path (outcome `CANCELLED`) — nobody loses money
+   * to a timeout. Free-play `WAITING` matches (no `MatchStake`) are
+   * cancelled the same way; `settle()` is a no-op for them.
+   */
   private async expireWaitingMatches(): Promise<void> {
     const now = new Date();
-    const { count } = await this.prisma.match.updateMany({
+    const expired = await this.prisma.match.findMany({
       where: { status: 'WAITING', expiresAt: { lt: now } },
+      select: { id: true },
+    });
+    if (expired.length === 0) return;
+
+    await this.prisma.match.updateMany({
+      where: { id: { in: expired.map((m) => m.id) } },
       data: { status: 'CANCELLED', terminationReason: 'WAITING_TIMEOUT' },
     });
-    if (count > 0) {
-      this.logger.log(`Expired ${count} WAITING match(es) past their timeout`);
+    this.logger.log(
+      `Expired ${expired.length} WAITING match(es) past their timeout`,
+    );
+
+    for (const match of expired) {
+      await this.settlementService.settle(match.id).catch((error: unknown) => {
+        this.logger.error(
+          `Settlement failed for cancelled match ${match.id}: ${String(error)}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Crash recovery (Phase 5 spec section 27): a match that already
+   * reached a terminal status but whose `MatchStake` never made it to
+   * `SETTLED`/`REFUNDED` (a process crash or transient failure between
+   * the match completing and settlement finishing) is retried here.
+   * `SettlementService.settle` is idempotent, so retrying a
+   * genuinely-already-settled stake is always safe — this only ever
+   * finishes work that was left incomplete, never redoes it.
+   */
+  private async recoverStuckSettlements(): Promise<void> {
+    const stuck = await this.prisma.matchStake.findMany({
+      where: {
+        status: { in: ['ACTIVE', 'SETTLING', 'FAILED'] },
+        match: { status: { in: ['COMPLETED', 'ABANDONED', 'CANCELLED'] } },
+      },
+      select: { matchId: true },
+    });
+    if (stuck.length === 0) return;
+
+    this.logger.log(`Recovering ${stuck.length} stuck settlement(s)`);
+    for (const stake of stuck) {
+      await this.settlementService
+        .settle(stake.matchId)
+        .catch((error: unknown) => {
+          this.logger.error(
+            `Settlement recovery failed for match ${stake.matchId}: ${String(error)}`,
+          );
+        });
     }
   }
 
@@ -137,6 +193,15 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(
           `Match ${player.matchId} abandoned (player ${player.userId} disconnected past grace period)`,
         );
+        // A forfeit still goes through the same deterministic settlement
+        // pipeline as any other match result (Phase 5 spec section 21).
+        await this.settlementService
+          .settle(player.matchId)
+          .catch((error: unknown) => {
+            this.logger.error(
+              `Settlement failed for abandoned match ${player.matchId}: ${String(error)}`,
+            );
+          });
       }
     }
   }

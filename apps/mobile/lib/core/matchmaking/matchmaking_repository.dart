@@ -1,3 +1,4 @@
+import '../match_stakes/match_stake_models.dart';
 import '../network/api_client.dart';
 
 class MatchmakingJoinResult {
@@ -19,7 +20,11 @@ class MatchmakingJoinResult {
 }
 
 abstract class MatchmakingRepository {
-  Future<MatchmakingJoinResult> join(String gameId);
+  /// [stake] is optional — omitting it is ordinary free play, unchanged
+  /// from Phase 4. Only players who requested the identical stake
+  /// amount+currency are ever paired together (see
+  /// docs/decisions/ADR-016-match-financial-architecture.md).
+  Future<MatchmakingJoinResult> join(String gameId, {MatchStakeRequest? stake});
   Future<void> leave(String gameId);
 }
 
@@ -29,10 +34,13 @@ class HttpMatchmakingRepository implements MatchmakingRepository {
   final ApiClient apiClient;
 
   @override
-  Future<MatchmakingJoinResult> join(String gameId) async {
+  Future<MatchmakingJoinResult> join(
+    String gameId, {
+    MatchStakeRequest? stake,
+  }) async {
     final response = await apiClient.post<Map<String, dynamic>>(
       '/matchmaking/join',
-      data: {'gameId': gameId},
+      data: {'gameId': gameId, if (stake != null) 'stake': stake.toJson()},
     );
     return MatchmakingJoinResult.fromJson(response.data!);
   }

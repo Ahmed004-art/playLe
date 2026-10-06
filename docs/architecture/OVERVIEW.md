@@ -78,21 +78,24 @@ be extracted into its own service later if real scale requires it.
 | Matchmaking | Redis-backed opponent queueing, atomic match formation |
 | Challenges | Direct player-to-player challenge create/accept/decline/cancel/expire |
 | Realtime | WebSocket gateway: authenticated connections, presence, match-room membership, server→client push — see [ADR-006](../decisions/ADR-006-realtime.md) and [ADR-014](../decisions/ADR-014-realtime-command-transport.md) |
-| Admin | Financial admin visibility + withdrawal review, and read-only match visibility (narrow slices — not a general admin system yet) |
+| SystemAccount | The seeded platform/system account's wallet lookup — see [ADR-016](../decisions/ADR-016-match-financial-architecture.md) |
+| MatchStakes | Stake eligibility/validation, confirming (holding) a player's stake, the combined financial read view |
+| Settlement | The sole settlement authority (`SettlementService`) + on-demand reconciliation — see [ADR-017](../decisions/ADR-017-deterministic-settlement.md) |
+| Disputes | Technical foundation for disputing a completed match's outcome — status/audit only, never moves money |
+| Admin | Financial admin visibility + withdrawal review, match visibility, financial-match inspection, and dispute resolution (narrow slices — not a general admin system yet) |
 
 ## Future Module Boundaries (Not Yet Implemented)
 
 The backend is expected to grow the following modules, built on the
 foundation Phase 1 established (config, health, database, cache,
 real-time, exception handling, validation), the identity layer Phase 2
-added, the financial foundation Phase 3 added, and the game platform
-Phase 4 added:
+added, the financial foundation Phase 3 added, the game platform Phase 4
+added, and the match-financial engine Phase 5 added:
 
 | Module | Responsibility (future) |
 |---|---|
 | Profiles | Player-facing profile data beyond the basic Phase 2 fields |
 | Social | Follows, friends, social graph |
-| Betting | Stake/prize-pool handling for a match (ledger types `PRIZE`/`PLATFORM_FEE` already reserved for this; wires Phase 3's wallet into Phase 4's matches) |
 | Notifications | Push/in-app notifications |
 | Chat | In-match/social messaging |
 | Fraud | Fraud detection/review |
@@ -101,7 +104,8 @@ Phase 4 added:
 
 Additional games beyond Tic-Tac-Toe are new `GameModule` implementations
 registered into the existing `Games`/`Matches` modules, not new top-level
-modules.
+modules. Likewise, a future production payment-provider integration
+extends `Payments`/`Settlement`, not a new module.
 
 These are deliberately **not** scaffolded as empty NestJS modules in
 Phase 1 — an empty, unimported module is dead code and would fail the
@@ -129,9 +133,14 @@ match's room (`match:join`) after REST has already confirmed membership
 
 See [ADR-009](../decisions/ADR-009-financial-ledger.md),
 [ADR-012](../decisions/ADR-012-financial-architecture.md),
-[ADR-013](../decisions/ADR-013-payment-provider-abstraction.md), and
-`docs/database/README.md`. Wallet, ledger, deposits, and withdrawals are
-implemented as of Phase 3 and remain fully isolated from the Phase 4
-match/matchmaking/challenge system — a match has no stake, hold, or
-prize pool. Betting/prize-pool settlement (wiring the two together) is
-still future — see CLAUDE.md "What NOT to Build Yet".
+[ADR-013](../decisions/ADR-013-payment-provider-abstraction.md),
+[ADR-016](../decisions/ADR-016-match-financial-architecture.md),
+[ADR-017](../decisions/ADR-017-deterministic-settlement.md), and
+`docs/database/README.md`. Wallet, ledger, deposits, and withdrawals
+(Phase 3) are now connected to matches (Phase 4) by Phase 5: a
+`MatchStake` holds each player's equal stake through `LedgerService`;
+`SettlementService` is the one place a completed match's authoritative
+result becomes a win payout (minus a 10% platform fee to the seeded
+platform account), a draw refund, or a cancellation refund. Production
+payment-provider payouts of real winnings remain future work — see
+CLAUDE.md "What NOT to Build Yet".

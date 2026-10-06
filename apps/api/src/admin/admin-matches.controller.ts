@@ -14,6 +14,12 @@ import {
   MatchResponseDto,
 } from '../matches/dto/match-response.dto.js';
 import { AdminMatchesQueryDto } from './dto/admin-matches-query.dto.js';
+import { MatchStakesService } from '../match-stakes/match-stakes.service.js';
+import {
+  MatchFinancialResponseDto,
+  toMatchStakeResponse,
+  toSettlementResponse,
+} from '../match-stakes/dto/match-financial-response.dto.js';
 
 /**
  * Read-only match visibility for admins — no result-override endpoint of
@@ -26,7 +32,10 @@ import { AdminMatchesQueryDto } from './dto/admin-matches-query.dto.js';
 @Roles('ADMIN')
 @ApiBearerAuth()
 export class AdminMatchesController {
-  constructor(private readonly matchesService: MatchesService) {}
+  constructor(
+    private readonly matchesService: MatchesService,
+    private readonly matchStakesService: MatchStakesService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -57,5 +66,22 @@ export class AdminMatchesController {
   async findOne(@Param('id') id: string): Promise<MatchResponseDto> {
     const match = await this.matchesService.findByIdAdmin(id);
     return toMatchResponse(match);
+  }
+
+  @Get(':id/financial')
+  @ApiOperation({
+    summary:
+      "A match's stake, pool, fee, and settlement — full financial " +
+      'inspection, no participant restriction (admin). Read-only — there ' +
+      'is no endpoint here to set or override a result (see CLAUDE.md).',
+  })
+  @ApiResponse({ status: 200, type: MatchFinancialResponseDto })
+  async financial(@Param('id') id: string): Promise<MatchFinancialResponseDto> {
+    const { stake, settlement } =
+      await this.matchStakesService.getFinancialViewAdmin(id);
+    return {
+      stake: stake ? toMatchStakeResponse(stake) : null,
+      settlement: settlement ? toSettlementResponse(settlement) : null,
+    };
   }
 }

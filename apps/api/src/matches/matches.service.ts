@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   Prisma,
   type Game,
@@ -9,17 +10,25 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { GameRegistry } from '../games/game-registry.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
+import { SettlementService } from '../settlement/settlement.service.js';
 import { MATCH_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
+import type { AppConfiguration } from '../config/configuration.js';
 
 export type MatchWithPlayers = Match & { players: MatchPlayer[] };
+
+/** A stake request already validated by the caller (see MatchStakesService). */
+export interface StakeSpec {
+  amountMinor: bigint;
+  currency: string;
+}
 
 /**
  * Prisma client or interactive-transaction client — accepted so a caller
  * can create a match atomically with its own state change (e.g.
  * `ChallengesService.accept`).
  */
-export type PrismaClientOrTx = Pick<PrismaService, 'match'>;
+export type PrismaClientOrTx = Pick<PrismaService, 'match' | 'matchStake'>;
 
 @Injectable()
 export class MatchesService {
@@ -27,41 +36,84 @@ export class MatchesService {
     private readonly prisma: PrismaService,
     private readonly gameRegistry: GameRegistry,
     private readonly emitter: RealtimeEmitterService,
+    private readonly settlementService: SettlementService,
+    private readonly configService: ConfigService<AppConfiguration, true>,
   ) {}
 
   /**
    * The only place a `Match` is created. Both players are already known
-   * (matchmaking just formed a pair, or a challenge was just accepted),
-   * so for this phase's 2-player games the match starts `ACTIVE`
-   * immediately — there is no real waiting-room window to persist as
-   * `WAITING` (see docs/decisions/ADR-015-game-module-architecture.md).
-   * Accepts an optional transaction client so a caller (e.g.
-   * `ChallengesService.accept`) can create the match atomically with its
-   * own state change; defaults to the plain `PrismaService`.
+   * (matchmaking just formed a pair, or a challenge was just accepted).
+   * Free play (`stake` omitted) starts `ACTIVE` immediately — there is
+   * no real waiting-room window for a 2-player game (see
+   * docs/decisions/ADR-015-game-module-architecture.md). A
+   * financially-backed match (`stake` given) instead starts `WAITING`,
+   * with a matching `MatchStake` (`PENDING`) created atomically in the
+   * same call, and only becomes `ACTIVE` once every player has confirmed
+   * their stake (see `MatchStakesService.confirmStake` and
+   * docs/decisions/ADR-018-financial-state-machines.md for how the two
+   * state machines coordinate). Accepts an optional transaction client
+   * so a caller (e.g. `ChallengesService.accept`) can create the match
+   * atomically with its own state change; defaults to the plain
+   * `PrismaService`.
    */
   async createMatch(
     game: Game,
     playerUserIds: string[],
     tx: PrismaClientOrTx = this.prisma,
+    stake?: StakeSpec,
   ): Promise<MatchWithPlayers> {
     const module = this.gameRegistry.get(game.id);
     const initialState = module.createInitialState(playerUserIds);
     const now = new Date();
 
-    return tx.match.create({
+    if (!stake) {
+      return tx.match.create({
+        data: {
+          gameId: game.id,
+          gameVersion: game.version,
+          status: 'ACTIVE',
+          state: module.serializeState(initialState) as Prisma.InputJsonValue,
+          readyAt: now,
+          startedAt: now,
+          players: {
+            create: playerUserIds.map((userId, seat) => ({ userId, seat })),
+          },
+        },
+        include: { players: true },
+      });
+    }
+
+    const commitTimeoutMs = this.configService.get(
+      'stakes.stakeCommitTimeoutMs',
+      { infer: true },
+    );
+
+    const match = await tx.match.create({
       data: {
         gameId: game.id,
         gameVersion: game.version,
-        status: 'ACTIVE',
+        status: 'WAITING',
         state: module.serializeState(initialState) as Prisma.InputJsonValue,
-        readyAt: now,
-        startedAt: now,
+        expiresAt: new Date(now.getTime() + commitTimeoutMs),
         players: {
           create: playerUserIds.map((userId, seat) => ({ userId, seat })),
         },
       },
       include: { players: true },
     });
+
+    await tx.matchStake.create({
+      data: {
+        matchId: match.id,
+        currency: stake.currency,
+        stakeAmountMinor: stake.amountMinor,
+        players: {
+          create: playerUserIds.map((userId) => ({ userId })),
+        },
+      },
+    });
+
+    return match;
   }
 
   /** 404s (never 403) for a non-participant — doesn't confirm the match exists. */
@@ -169,6 +221,10 @@ export class MatchesService {
         }
 
         if (match.status !== 'ACTIVE') {
+          const rejectionReason =
+            match.status === 'WAITING'
+              ? 'This match has not started yet — both players must confirm their stake first'
+              : 'This match has already ended';
           const command = await tx.matchCommand.create({
             data: {
               id: commandId,
@@ -177,7 +233,7 @@ export class MatchesService {
               type: 'MOVE',
               payload: payload as Prisma.InputJsonValue,
               resultStatus: 'REJECTED',
-              rejectionReason: 'This match has already ended',
+              rejectionReason,
             },
           });
           return { command, match };
@@ -250,6 +306,13 @@ export class MatchesService {
           winnerUserId: match.winnerUserId,
           resultIsDraw: match.resultIsDraw,
         });
+        // Best-effort: the match's own result is already final and
+        // committed above regardless of what happens here. A failure is
+        // logged inside SettlementService and left for the recovery
+        // sweep (MatchTimeoutService) — it must never fail this request,
+        // which already correctly reflects the real, authoritative game
+        // outcome.
+        await this.settlementService.settle(matchId).catch(() => {});
       }
 
       return command;

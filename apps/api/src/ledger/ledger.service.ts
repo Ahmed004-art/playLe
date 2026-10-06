@@ -93,6 +93,7 @@ export class LedgerService {
         reason: params.reason,
         relatedDepositId: params.relatedDepositId,
         relatedWithdrawalId: params.relatedWithdrawalId,
+        relatedMatchStakeId: params.relatedMatchStakeId,
         providerReference: params.providerReference,
         createdByAdminId: params.createdByAdminId,
       },

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'core/auth/auth_controller.dart';
 import 'core/challenges/challenges_controller.dart';
 import 'core/di/service_locator.dart';
+import 'core/disputes/disputes_controller.dart';
 import 'core/games/games_controller.dart';
 import 'core/matchmaking/matchmaking_controller.dart';
 import 'core/routing/app_router.dart';
@@ -26,6 +27,7 @@ class PlayLeApp extends StatelessWidget {
         sl<GamesController>(),
         sl<MatchmakingController>(),
         sl<ChallengesController>(),
+        sl<DisputesController>(),
       ),
     );
   }

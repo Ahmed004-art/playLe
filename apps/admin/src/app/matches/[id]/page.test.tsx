@@ -121,4 +121,90 @@ describe('MatchDetailPage', () => {
       screen.queryByRole('button', { name: /winner|override|set result/i }),
     ).not.toBeInTheDocument();
   });
+
+  it('shows the financial section when the match has a stake and settlement', async () => {
+    tokenStorage.setTokens('access-token', 'refresh-token');
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRoutedByUrl({
+        // Registered before the base match route: the financial URL
+        // ("/admin/matches/match-1/financial") contains the base match
+        // path as a substring, so the more specific route must be
+        // checked first by mockFetchRoutedByUrl's in-order matching.
+        '/admin/matches/match-1/financial': {
+          stake: {
+            id: 'stake-1',
+            status: 'SETTLED',
+            currency: 'SLE',
+            stakeAmountMinor: '10000',
+            poolAmountMinor: '20000',
+            players: [
+              { userId: 'user-1', heldAt: new Date().toISOString() },
+              { userId: 'user-2', heldAt: new Date().toISOString() },
+            ],
+          },
+          settlement: {
+            id: 'settlement-1',
+            outcome: 'WIN',
+            status: 'COMPLETED',
+            currency: 'SLE',
+            poolAmountMinor: '20000',
+            platformFeeAmountMinor: '2000',
+            entries: [
+              {
+                userId: 'user-1',
+                role: 'WINNER',
+                availableDeltaMinor: '18000',
+                heldDeltaMinor: '-10000',
+              },
+              {
+                userId: 'user-2',
+                role: 'LOSER',
+                availableDeltaMinor: '0',
+                heldDeltaMinor: '-10000',
+              },
+            ],
+            completedAt: new Date().toISOString(),
+          },
+        },
+        '/admin/matches/match-1': COMPLETED_MATCH,
+        '/auth/me': ADMIN_USER,
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <MatchDetailPage />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('Financial')).toBeInTheDocument());
+    expect(screen.getByText('SETTLED')).toBeInTheDocument();
+    expect(screen.getByText('Le 100.00')).toBeInTheDocument(); // stake amount
+    expect(screen.getAllByText('Le 200.00').length).toBeGreaterThan(0); // prize pool
+    expect(screen.getByText('Le 20.00')).toBeInTheDocument(); // platform fee
+    expect(screen.getByText('WINNER')).toBeInTheDocument();
+    expect(screen.getByText('Le 180.00')).toBeInTheDocument(); // winner available delta
+  });
+
+  it('shows no financial section for a free-play match (stake and settlement both null)', async () => {
+    tokenStorage.setTokens('access-token', 'refresh-token');
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRoutedByUrl({
+        '/admin/matches/match-1/financial': { stake: null, settlement: null },
+        '/admin/matches/match-1': COMPLETED_MATCH,
+        '/auth/me': ADMIN_USER,
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <MatchDetailPage />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('COMPLETED')).toBeInTheDocument());
+    expect(screen.queryByText('Financial')).not.toBeInTheDocument();
+  });
 });

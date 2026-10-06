@@ -9,7 +9,9 @@ import type {
   AdminWithdrawal,
   CursorPage,
 } from './wallet-types';
-import type { AdminMatch } from './match-types';
+import type { AdminMatch, AdminMatchFinancial } from './match-types';
+import type { AdminDispute } from './dispute-types';
+import type { ReconciliationReport } from './reconciliation-types';
 
 /**
  * API client abstraction. Admin UI code calls functions from this module
@@ -162,4 +164,44 @@ export function listMatches(status?: string): Promise<CursorPage<AdminMatch>> {
 
 export function fetchMatch(id: string): Promise<AdminMatch> {
   return request<AdminMatch>(`/admin/matches/${encodeURIComponent(id)}`, {}, true);
+}
+
+// --- Match financial detail, disputes & reconciliation (Phase 5) ---
+// Dispute resolution is status + audit only — `resolveDispute` never
+// moves money. Any balance correction after upholding a dispute is a
+// separate call to the existing `/admin/wallets/:userId/adjustments`
+// endpoint, not something this module exposes as part of resolving.
+// Reconciliation is read-only: running it never modifies any record.
+
+export function fetchMatchFinancial(matchId: string): Promise<AdminMatchFinancial> {
+  return request<AdminMatchFinancial>(
+    `/admin/matches/${encodeURIComponent(matchId)}/financial`,
+    {},
+    true,
+  );
+}
+
+export function listDisputes(status?: string): Promise<CursorPage<AdminDispute>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<CursorPage<AdminDispute>>(`/admin/disputes${query}`, {}, true);
+}
+
+export function fetchDispute(id: string): Promise<AdminDispute> {
+  return request<AdminDispute>(`/admin/disputes/${encodeURIComponent(id)}`, {}, true);
+}
+
+export function resolveDispute(
+  id: string,
+  status: string,
+  resolution: string,
+): Promise<AdminDispute> {
+  return request<AdminDispute>(
+    `/admin/disputes/${encodeURIComponent(id)}/resolve`,
+    { method: 'POST', body: JSON.stringify({ status, resolution }) },
+    true,
+  );
+}
+
+export function runReconciliation(): Promise<ReconciliationReport> {
+  return request<ReconciliationReport>('/admin/reconciliation/run', {}, true);
 }

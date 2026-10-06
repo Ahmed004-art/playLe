@@ -78,6 +78,16 @@ jobs:
       CHALLENGE_EXPIRY_MS: 120000
       MATCH_ABANDON_GRACE_MS: 5000
       MATCH_TIMEOUT_SWEEP_INTERVAL_MS: 2000
+      # Real-money engine exercised against test wallets only — see
+      # docs/decisions/ADR-016-match-financial-architecture.md.
+      REAL_MONEY_GAMING_ENABLED: 'true'
+      REAL_MONEY_MINIMUM_AGE: 18
+      MINIMUM_STAKE_MINOR: 100
+      MAXIMUM_STAKE_MINOR: 1000000
+      PLATFORM_FEE_PERCENTAGE: 10
+      STAKE_COMMIT_TIMEOUT_MS: 5000
+      STAKES_THROTTLE_LIMIT: 1000
+      STAKES_THROTTLE_TTL_MS: 60000
 
     steps:
       - uses: actions/checkout@v4

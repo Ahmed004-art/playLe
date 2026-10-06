@@ -9,6 +9,13 @@ export class ChallengeResponseDto {
   @ApiProperty() opponentId!: string;
   @ApiProperty({ enum: ChallengeStatus }) status!: ChallengeStatus;
   @ApiProperty({ nullable: true, type: String }) matchId!: string | null;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description: 'null means ordinary free play.',
+  })
+  stakeAmountMinor!: string | null;
+  @ApiProperty({ nullable: true, type: String }) stakeCurrency!: string | null;
   @ApiProperty() expiresAt!: Date;
   @ApiProperty() createdAt!: Date;
 }
@@ -23,6 +30,8 @@ export function toChallengeResponse(
     opponentId: challenge.opponentId,
     status: challenge.status,
     matchId: challenge.matchId,
+    stakeAmountMinor: challenge.stakeAmountMinor?.toString() ?? null,
+    stakeCurrency: challenge.stakeCurrency,
     expiresAt: challenge.expiresAt,
     createdAt: challenge.createdAt,
   };

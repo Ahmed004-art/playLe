@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/challenges/challenges_controller.dart';
 import 'package:playle_mobile/core/challenges/challenges_state.dart';
 import 'package:playle_mobile/core/config/app_config.dart';
+import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
 import 'package:playle_mobile/core/network/websocket_client.dart';
 import 'package:playle_mobile/core/realtime/realtime_connection_manager.dart';
 
@@ -97,5 +98,34 @@ void main() {
       expect(testChallenge.isIncomingFor('user-2'), isTrue);
       expect(testChallenge.isIncomingFor('user-1'), isFalse);
     });
+
+    test(
+      'challengeByUsername forwards the requested stake to the repository',
+      () async {
+        final repo = FakeChallengesRepository()..userIdToReturn = 'user-42';
+        final controller = _buildController(repo);
+        const stake = MatchStakeRequest(amountMinor: '1000');
+
+        await controller.challengeByUsername(
+          'tic_tac_toe',
+          'opponent',
+          stake: stake,
+        );
+
+        expect(repo.lastStakeRequested?.amountMinor, '1000');
+      },
+    );
+
+    test(
+      'challengeByUsername omits the stake (free play) when none is given',
+      () async {
+        final repo = FakeChallengesRepository()..userIdToReturn = 'user-42';
+        final controller = _buildController(repo);
+
+        await controller.challengeByUsername('tic_tac_toe', 'opponent');
+
+        expect(repo.lastStakeRequested, isNull);
+      },
+    );
   });
 }

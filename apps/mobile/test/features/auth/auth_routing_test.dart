@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:playle_mobile/core/auth/auth_controller.dart';
 import 'package:playle_mobile/core/challenges/challenges_controller.dart';
 import 'package:playle_mobile/core/config/app_config.dart';
+import 'package:playle_mobile/core/disputes/disputes_controller.dart';
 import 'package:playle_mobile/core/games/games_controller.dart';
 import 'package:playle_mobile/core/matchmaking/matchmaking_controller.dart';
 import 'package:playle_mobile/core/network/websocket_client.dart';
@@ -14,6 +15,7 @@ import 'package:playle_mobile/core/wallet/wallet_controller.dart';
 
 import '../../core/auth/fake_auth_repository.dart';
 import '../../core/challenges/fake_challenges_repository.dart';
+import '../../core/disputes/fake_disputes_repository.dart';
 import '../../core/games/fake_games_repository.dart';
 import '../../core/matchmaking/fake_matchmaking_repository.dart';
 import '../../core/realtime/fake_secure_storage.dart';
@@ -45,6 +47,7 @@ GoRouter _buildTestRouter(AuthController controller) {
       realtime,
     ),
     ChallengesController(FakeChallengesRepository(), webSocketClient, realtime),
+    DisputesController(FakeDisputesRepository()),
   );
 }
 

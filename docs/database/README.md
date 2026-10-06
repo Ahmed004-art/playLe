@@ -95,13 +95,49 @@ isn't financial history, so these cascade/null out normally.
   (nullable, FK → `Match`, `onDelete: SetNull`, set once accepted),
   `expiresAt`, `createdAt`, `respondedAt`.
 
+### Match Financial Engine (Phase 5 — see [ADR-016](../decisions/ADR-016-match-financial-architecture.md)/[ADR-017](../decisions/ADR-017-deterministic-settlement.md))
+
+- **`MatchStake`** — the hold-commitment record, 1:1 with `Match`
+  (`matchId` unique, `onDelete: Restrict` — financial history).
+  `stakeAmountMinor` is one value shared by every player (equal-stake
+  enforced by construction, not validation). `status`
+  (`MatchStakeStatus`: `PENDING, HELD, ACTIVE, SETTLING, SETTLED,
+  REFUNDED, CANCELLED, DISPUTED, FAILED` — `HELD`/`DISPUTED` reserved,
+  not currently reachable; see ADR-018).
+- **`MatchStakePlayer`** — one row per participant's hold state
+  (`heldAt`). `@@unique([matchStakeId, userId])`.
+- **`Settlement`** — the one terminal financial outcome, 1:1 with
+  `MatchStake`. **`@@unique` on `matchStakeId` is the exactly-once
+  guarantee** — a second settlement attempt always hits this constraint.
+  `outcome` (`WIN`/`DRAW`/`REFUND`/`CANCELLED`), `poolAmountMinor`/
+  `platformFeeAmountMinor` captured as an immutable snapshot at
+  settlement time.
+- **`SettlementEntry`** — one row per money movement a settlement
+  causes (`role`: `WINNER`/`LOSER`/`DRAW_PARTICIPANT`/
+  `REFUND_RECIPIENT`/`PLATFORM_FEE`), with a direct `@@unique`
+  `ledgerEntryId` pointer to the exact `LedgerEntry` that carried it out
+  — the complete audit trail.
+- **`Dispute`** — a player's dispute of a completed/abandoned match's
+  outcome. Status/audit only; `DisputesService` has no code path that
+  touches a `Wallet`. `matchId`/`raisedByUserId` both `onDelete:
+  Restrict`.
+- **New `LedgerEntryType` values**: `STAKE_HOLD`, `STAKE_REFUND`,
+  `STAKE_LOSS`. `PRIZE`/`PLATFORM_FEE` (reserved since Phase 3) are
+  produced for the first time. `LedgerEntry.relatedMatchStakeId` added
+  for traceability.
+- **The platform/system account**: a real `User` row (new
+  `UserRole.SYSTEM`, `status: DISABLED`) with its own `Wallet`, seeded
+  by migration — see ADR-016 for why this reuses `User`/`Wallet` rather
+  than a new nullable-owner schema.
+- **`Challenge`** gained optional `stakeAmountMinor`/`stakeCurrency` —
+  immutable once set; `null` means ordinary free play.
+
 ## Phase Scope
 
 Phase 2 established identity/session data. Phase 3 added the financial
-foundation above. Phase 4 added the game platform above. Social-graph and
-betting-settlement tables (wiring a match result into the wallet/ledger)
-are still designed in their own dedicated future phases, informed by
-[ADR-009](../decisions/ADR-009-financial-ledger.md).
+foundation above. Phase 4 added the game platform above. Phase 5 added
+the match financial engine above, connecting the two. Social-graph
+tables are still designed in their own dedicated future phase.
 
 ## Local Development Database
 
@@ -158,21 +194,29 @@ npm run db:studio            # open Prisma Studio
 - Financial-related schema changes require particular care: additive,
   backward-compatible changes are preferred over destructive ones once
   real data exists.
+- **A migration that adds a new enum value and a migration that uses
+  that value must be two separate migrations.** PostgreSQL refuses
+  (`unsafe use of new value ... New enum values must be committed before
+  they can be used`) if a single migration's transaction both runs
+  `ALTER TYPE ... ADD VALUE` and inserts a row using that same new
+  value — found for real locally (Phase 5's `UserRole.SYSTEM` + the
+  system-account seed row) before it ever reached CI.
 
 ## Future Schema Direction
 
 See [ADR-009](../decisions/ADR-009-financial-ledger.md). The remaining
 future schema (non-exhaustive, designed in each dedicated phase):
 
-- Betting/settlement fields or tables linking a completed `Match` to a
-  `LedgerEntry` (stake holds, `PRIZE`/`PLATFORM_FEE` payout rows).
 - Social-graph tables (follows/friends).
 - `AuditLogEntry`
 - Verification tokens/OTP records (email/SMS verification — not yet
   designed; `User.emailVerifiedAt`/`phoneVerifiedAt` already reserve the
   fields that will be set once this lands)
+- Real payment-provider payout records (paying real winnings out via
+  Monime or another provider) once that integration is verified.
 
 `User`, `RefreshToken`, `Wallet`, `LedgerEntry`, `Deposit`, `Withdrawal`,
-`ProviderEvent` (Phase 3), and `Game`, `Match`, `MatchPlayer`,
-`MatchCommand`, `Challenge` (Phase 4) are no longer "future" — they
-exist.
+`ProviderEvent` (Phase 3), `Game`, `Match`, `MatchPlayer`,
+`MatchCommand`, `Challenge` (Phase 4), and `MatchStake`,
+`MatchStakePlayer`, `Settlement`, `SettlementEntry`, `Dispute` (Phase 5)
+are no longer "future" — they exist.

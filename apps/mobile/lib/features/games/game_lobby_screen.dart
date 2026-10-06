@@ -7,9 +7,11 @@ import '../../core/challenges/challenge_models.dart';
 import '../../core/challenges/challenges_controller.dart';
 import '../../core/challenges/challenges_state.dart';
 import '../../core/errors/app_exception.dart';
+import '../../core/match_stakes/match_stake_models.dart';
 import '../../core/matchmaking/matchmaking_controller.dart';
 import '../../core/matchmaking/matchmaking_state.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/wallet/money_format.dart';
 
 /// Per-game lobby: "Find Opponent" (matchmaking) or challenge a specific
 /// player by username, plus this game's pending challenges. Reacts
@@ -37,6 +39,8 @@ class GameLobbyScreen extends StatefulWidget {
 
 class _GameLobbyScreenState extends State<GameLobbyScreen> {
   String? _navigatedMatchId;
+  bool _stakingEnabled = false;
+  final _stakeAmountController = TextEditingController(text: '10');
 
   @override
   void initState() {
@@ -48,7 +52,22 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   @override
   void dispose() {
     widget.matchmakingController.removeListener(_onMatchmakingChanged);
+    _stakeAmountController.dispose();
     super.dispose();
+  }
+
+  /// Builds the stake to attach to a matchmaking-join or challenge-create
+  /// call, or `null` for ordinary free play — see
+  /// docs/decisions/ADR-016-match-financial-architecture.md. Whole Leones
+  /// only, for a simple first picker; `amountMinor` is still always the
+  /// authoritative decimal-minor-unit string underneath.
+  MatchStakeRequest? get _selectedStake {
+    if (!_stakingEnabled) return null;
+    final leones = int.tryParse(_stakeAmountController.text.trim());
+    if (leones == null || leones <= 0) return null;
+    return MatchStakeRequest(
+      amountMinor: (BigInt.from(leones) * BigInt.from(100)).toString(),
+    );
   }
 
   void _onMatchmakingChanged() {
@@ -75,6 +94,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
       await widget.challengesController.challengeByUsername(
         widget.gameId,
         username.trim(),
+        stake: _selectedStake,
       );
       if (mounted) {
         ScaffoldMessenger.of(
@@ -101,6 +121,13 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            _StakeSelector(
+              enabled: _stakingEnabled,
+              amountController: _stakeAmountController,
+              onEnabledChanged: (value) =>
+                  setState(() => _stakingEnabled = value),
+            ),
+            const SizedBox(height: 20),
             ListenableBuilder(
               listenable: widget.matchmakingController,
               builder: (context, _) {
@@ -116,8 +143,10 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
                       FilledButton.icon(
                         icon: const Icon(Icons.search),
                         label: const Text('Find Opponent'),
-                        onPressed: () =>
-                            widget.matchmakingController.join(widget.gameId),
+                        onPressed: () => widget.matchmakingController.join(
+                          widget.gameId,
+                          stake: _selectedStake,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
@@ -163,6 +192,68 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Lets the player opt into a real-money-staked match before searching
+/// for an opponent or sending a challenge — the minimal entry point into
+/// Phase 5's flow (see `docs/api/README.md`'s "Match Stakes, Settlement
+/// & Disputes Endpoints" section). Leaving the switch off is ordinary
+/// free play, exactly as before; this widget never calls the API
+/// itself, it only reports the selection back up to the screen.
+class _StakeSelector extends StatelessWidget {
+  const _StakeSelector({
+    required this.enabled,
+    required this.amountController,
+    required this.onEnabledChanged,
+  });
+
+  final bool enabled;
+  final TextEditingController amountController;
+  final ValueChanged<bool> onEnabledChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.payments_outlined, color: AppColors.secondary),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Play for real stakes', maxLines: 1)),
+              Switch(value: enabled, onChanged: onEnabledChanged),
+            ],
+          ),
+          if (enabled) ...[
+            const SizedBox(height: 8),
+            TextField(
+              controller: amountController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                prefixText: 'Le ',
+                labelText: 'Stake per player',
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Both players stake this amount. PlayLe keeps a 10% '
+              'platform fee from the prize pool — the winner receives '
+              'the rest.',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -233,8 +324,20 @@ class _ChallengeList extends StatelessWidget {
             child: Row(
               children: [
                 Expanded(
-                  child: Text(
-                    isIncoming ? 'Incoming challenge' : 'Challenge sent',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        isIncoming ? 'Incoming challenge' : 'Challenge sent',
+                      ),
+                      if (challenge.isFinanciallyBacked)
+                        Text(
+                          'Stake: ${formatMinorAmount(challenge.stakeAmountMinor!, currency: challenge.stakeCurrency ?? 'SLE')}',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: AppColors.onSurfaceMuted),
+                        ),
+                    ],
                   ),
                 ),
                 if (isIncoming) ...[

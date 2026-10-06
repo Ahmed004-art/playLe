@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/errors/app_exception.dart';
 import '../../core/match/match_models.dart';
+import '../../core/match_stakes/match_stake_models.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/wallet/money_format.dart';
 import 'tic_tac_toe_board.dart';
 
 /// The polished Tic-Tac-Toe experience: board, turn/connection
@@ -18,6 +21,8 @@ class TicTacToeScreen extends StatefulWidget {
     required this.lastRejection,
     required this.onMove,
     required this.onExit,
+    this.financial = const MatchFinancialInfo.empty(),
+    this.onDispute,
   });
 
   final MatchInfo match;
@@ -25,6 +30,17 @@ class TicTacToeScreen extends StatefulWidget {
   final String? lastRejection;
   final Future<void> Function(int cell) onMove;
   final VoidCallback onExit;
+
+  /// This match's stake/settlement, if any. Defaults to the "nothing
+  /// financial here" shape, so every pre-Phase-5 call site (and every
+  /// free-play match) renders exactly as before — no stake status bar,
+  /// no financial result banner.
+  final MatchFinancialInfo financial;
+
+  /// Files a dispute against this (now-finished) match. `null` when the
+  /// caller has no dispute flow wired up — the result banner simply
+  /// omits the "Dispute" action in that case.
+  final Future<void> Function(String reason)? onDispute;
 
   @override
   State<TicTacToeScreen> createState() => _TicTacToeScreenState();
@@ -97,6 +113,10 @@ class _TicTacToeScreenState extends State<TicTacToeScreen> {
                 isMyTurn: isMyTurn,
                 finished: match.isFinished,
               ),
+              if (widget.financial.isFinanciallyBacked) ...[
+                const SizedBox(height: 8),
+                _StakeStatusBar(stake: widget.financial.stake!),
+              ],
               const SizedBox(height: 24),
               Expanded(
                 child: Center(
@@ -120,11 +140,18 @@ class _TicTacToeScreenState extends State<TicTacToeScreen> {
                   ),
                 ),
               if (match.isFinished)
-                _ResultBanner(
-                  won: match.winnerUserId == widget.currentUserId,
-                  isDraw: match.resultIsDraw,
-                  onExit: widget.onExit,
-                ),
+                widget.financial.settlement != null
+                    ? _FinancialResultBanner(
+                        currentUserId: widget.currentUserId,
+                        settlement: widget.financial.settlement!,
+                        onExit: widget.onExit,
+                        onDispute: widget.onDispute,
+                      )
+                    : _ResultBanner(
+                        won: match.winnerUserId == widget.currentUserId,
+                        isDraw: match.resultIsDraw,
+                        onExit: widget.onExit,
+                      ),
             ],
           ),
         ),
@@ -222,6 +249,204 @@ class _ResultBanner extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         FilledButton(onPressed: onExit, child: const Text('Back to account')),
+      ],
+    );
+  }
+}
+
+/// A small, unobtrusive strip showing this match's entry amount and
+/// prize pool while it's in progress — the board stays the visual
+/// priority; this never appears for free play (see
+/// `TicTacToeScreen.financial`'s default).
+class _StakeStatusBar extends StatelessWidget {
+  const _StakeStatusBar({required this.stake});
+
+  final MatchStakeInfo stake;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.payments_outlined,
+            size: 14,
+            color: AppColors.secondary,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            'Entry ${formatMinorAmount(stake.stakeAmountMinor, currency: stake.currency)} · '
+            'Pool ${formatMinorAmount(stake.poolAmountMinor, currency: stake.currency)}',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The financial-aware counterpart of [_ResultBanner], shown instead of
+/// it once this match has a [SettlementInfo] (i.e. it was staked). Never
+/// invoked for free play — see the `settlement != null` guard in
+/// `TicTacToeScreen.build`, which keeps the plain [_ResultBanner]
+/// untouched and byte-for-byte unchanged for every free-play match.
+class _FinancialResultBanner extends StatelessWidget {
+  const _FinancialResultBanner({
+    required this.currentUserId,
+    required this.settlement,
+    required this.onExit,
+    required this.onDispute,
+  });
+
+  final String currentUserId;
+  final SettlementInfo settlement;
+  final VoidCallback onExit;
+  final Future<void> Function(String reason)? onDispute;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = settlement.entryFor(currentUserId);
+    final currency = settlement.currency;
+    final String title;
+    final Color color;
+    final String subtitle;
+
+    switch (settlement.outcome) {
+      case 'WIN':
+        if (entry?.role == 'WINNER') {
+          title = 'You won! 🎉';
+          color = AppColors.secondary;
+          subtitle =
+              'Prize pool ${formatMinorAmount(settlement.poolAmountMinor, currency: currency)} · '
+              'Platform fee ${formatMinorAmount(settlement.platformFeeAmountMinor, currency: currency)}\n'
+              'You received ${formatMinorAmount(entry?.availableDeltaMinor ?? '0', currency: currency)}';
+        } else {
+          title = 'You lost';
+          color = AppColors.error;
+          subtitle = 'Your entry was used — it went into the prize pool.';
+        }
+        break;
+      case 'DRAW':
+        title = "It's a draw!";
+        color = AppColors.onSurfaceMuted;
+        subtitle =
+            'Your stake of ${formatMinorAmount(entry?.availableDeltaMinor ?? '0', currency: currency)} '
+            'was refunded in full.';
+        break;
+      default:
+        // REFUND / CANCELLED
+        title = 'Match cancelled';
+        color = AppColors.onSurfaceMuted;
+        subtitle =
+            'Your stake of ${formatMinorAmount(entry?.availableDeltaMinor ?? '0', currency: currency)} '
+            'was refunded.';
+    }
+
+    return Column(
+      children: [
+        Text(
+          title,
+          style: Theme.of(
+            context,
+          ).textTheme.headlineMedium?.copyWith(color: color),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          subtitle,
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (onDispute != null) ...[
+              OutlinedButton(
+                onPressed: () => _fileDispute(context),
+                child: const Text('Dispute'),
+              ),
+              const SizedBox(width: 12),
+            ],
+            FilledButton(
+              onPressed: onExit,
+              child: const Text('Back to account'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _fileDispute(BuildContext context) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) => const _DisputeReasonDialog(),
+    );
+    if (reason == null || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await onDispute?.call(reason);
+      messenger.showSnackBar(const SnackBar(content: Text('Dispute filed.')));
+    } on AppException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+}
+
+/// Collects a dispute reason (>=10 characters — the server enforces
+/// this too; see `POST /matches/:id/dispute` in docs/api/README.md).
+/// Mirrors `game_lobby_screen.dart`'s `_ChallengeUsernameDialog` pattern.
+class _DisputeReasonDialog extends StatefulWidget {
+  const _DisputeReasonDialog();
+
+  @override
+  State<_DisputeReasonDialog> createState() => _DisputeReasonDialogState();
+}
+
+class _DisputeReasonDialogState extends State<_DisputeReasonDialog> {
+  final _controller = TextEditingController();
+
+  bool get _isValid => _controller.text.trim().length >= 10;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('File a dispute'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLines: 3,
+        decoration: const InputDecoration(
+          labelText: 'What went wrong?',
+          helperText: 'At least 10 characters.',
+        ),
+        onChanged: (_) => setState(() {}),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _isValid
+              ? () => Navigator.of(context).pop(_controller.text.trim())
+              : null,
+          child: const Text('Submit'),
+        ),
       ],
     );
   }

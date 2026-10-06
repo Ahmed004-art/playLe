@@ -1,8 +1,15 @@
+import '../match_stakes/match_stake_models.dart';
 import '../network/api_client.dart';
 import 'challenge_models.dart';
 
 abstract class ChallengesRepository {
-  Future<ChallengeInfo> create(String gameId, String opponentUserId);
+  /// [stake] is optional — omitting it is ordinary free play, unchanged
+  /// from Phase 4. Immutable once the challenge is created.
+  Future<ChallengeInfo> create(
+    String gameId,
+    String opponentUserId, {
+    MatchStakeRequest? stake,
+  });
   Future<List<ChallengeInfo>> list();
   Future<ChallengeInfo> accept(String challengeId);
   Future<ChallengeInfo> decline(String challengeId);
@@ -20,10 +27,18 @@ class HttpChallengesRepository implements ChallengesRepository {
   final ApiClient apiClient;
 
   @override
-  Future<ChallengeInfo> create(String gameId, String opponentUserId) async {
+  Future<ChallengeInfo> create(
+    String gameId,
+    String opponentUserId, {
+    MatchStakeRequest? stake,
+  }) async {
     final response = await apiClient.post<Map<String, dynamic>>(
       '/challenges',
-      data: {'gameId': gameId, 'opponentUserId': opponentUserId},
+      data: {
+        'gameId': gameId,
+        'opponentUserId': opponentUserId,
+        if (stake != null) 'stake': stake.toJson(),
+      },
     );
     return ChallengeInfo.fromJson(response.data!);
   }

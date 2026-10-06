@@ -14,6 +14,7 @@ export interface ApplyLedgerEntryParams {
   reason?: string;
   relatedDepositId?: string;
   relatedWithdrawalId?: string;
+  relatedMatchStakeId?: string;
   providerReference?: string;
   /** The admin who authorized the entry. Only meaningful for `ADJUSTMENT`. */
   createdByAdminId?: string;

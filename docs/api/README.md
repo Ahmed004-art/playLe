@@ -184,10 +184,51 @@ trusts the client's claim.
 | `challenge:received` / `challenge:resolved` | `{ challengeId }` | On challenge create / accept / decline / cancel / expire. |
 | `player:left` / `player:reconnected` | `{ matchId, userId }` | On disconnect/reconnect of a match participant. |
 
+No separate `stake_confirmed`/`settlement_completed` event exists
+(Phase 5): a stake reaching `ACTIVE` already pushes `match:state`, and
+settlement always follows a `match:completed` push — both already mean
+"something changed, re-fetch" in this client, so the mobile/admin client
+re-fetches `GET /matches/:id/financial` on either event rather than the
+server maintaining a second, narrower set of financial-only events.
+
+## Match Stakes, Settlement & Disputes Endpoints (Phase 5)
+
+Full architecture: [ADR-016](../decisions/ADR-016-match-financial-architecture.md),
+[ADR-017](../decisions/ADR-017-deterministic-settlement.md),
+[ADR-018](../decisions/ADR-018-financial-state-machines.md). Stakes are
+optional on matchmaking-join/challenge-create — omitting `stake` is
+ordinary free play, unchanged from Phase 4. All amounts are decimal
+strings of minor units, same convention as Phase 3.
+
+| Endpoint | Notes |
+|---|---|
+| `POST /api/v1/matchmaking/join` | `{ gameId, stake?: { amountMinor, currency } }`. Only players requesting the identical stake are ever paired. |
+| `POST /api/v1/challenges` | `{ gameId, opponentUserId, stake?: { amountMinor, currency } }`. The stake is immutable once set — accepting commits to exactly this amount. |
+| `POST /api/v1/matches/:id/stake/confirm` | Holds the caller's stake for a `WAITING` financially-backed match. The match becomes `ACTIVE` once every player has confirmed. Idempotent and concurrency-safe. |
+| `GET /api/v1/matches/:id/financial` | The match's `MatchStake` and `Settlement` (both `null` for free play). `404` for a non-participant. |
+| `POST /api/v1/matches/:id/dispute` | `{ reason }` (≥10 chars). Only a completed/abandoned match you played in; rejects a duplicate open dispute. |
+| `GET /api/v1/disputes` | The authenticated user's own disputes. |
+
+A move submitted before every player has confirmed their stake, or
+after the match ends, is rejected the same way as any other invalid
+command (see Phase 4's `POST /matches/:id/commands`) — settlement
+itself is never triggered by a client call; it is derived entirely from
+the match's own authoritative result once it reaches a terminal state.
+
+### Admin financial-match & dispute endpoints (require `role: 'ADMIN'`)
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/admin/matches/:id/financial` | Full financial detail for any match — stake, pool, fee, settlement, per-party entries. No participant restriction. Read-only. |
+| `GET /api/v1/admin/disputes`, `GET /api/v1/admin/disputes/:id` | Optionally filtered by `status`. |
+| `POST /api/v1/admin/disputes/:id/resolve` | `{ status, resolution }` (≥10 chars). Status + audit only — **never moves money**. An upheld dispute's actual correction, if any, is a separate call to the existing `POST /admin/wallets/:userId/adjustments`. |
+| `GET /api/v1/admin/reconciliation/run` | Runs every anomaly check (orphaned holds, missing/duplicate/unbalanced settlements, wallet/ledger mismatches) now and returns the report. Never modifies any record. |
+
 ## Phase Scope
 
 Authentication/identity (Phase 2), wallet/ledger/deposits/withdrawals
-(Phase 3), and the game platform/matchmaking/challenges/real-time layer
-(Phase 4, above) exist. Betting/prize-pool settlement, additional games,
-social features, and production Monime payments are not implemented
-yet — see `CLAUDE.md` for the full "do not build yet" list.
+(Phase 3), the game platform/matchmaking/challenges/real-time layer
+(Phase 4), and match stakes/settlement/disputes/reconciliation
+(Phase 5, above) exist. Production Monime payment-provider integration,
+additional games, and social features are not implemented yet — see
+`CLAUDE.md` for the full "do not build yet" list.

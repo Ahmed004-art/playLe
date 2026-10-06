@@ -3,9 +3,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/auth/auth_state.dart';
+import '../../core/disputes/disputes_controller.dart';
 import '../../core/match/match_controller.dart';
 import '../../core/match/match_state.dart';
+import '../../core/wallet/wallet_controller.dart';
 import '../tic_tac_toe/tic_tac_toe_screen.dart';
+import 'stake_confirm_screen.dart';
 
 /// Generic match entry point: loads the authoritative match, then hands
 /// rendering off to the game-specific screen for `match.gameId` — the
@@ -18,11 +21,15 @@ class MatchScreen extends StatefulWidget {
     required this.matchId,
     required this.authController,
     required this.matchController,
+    required this.walletController,
+    required this.disputesController,
   });
 
   final String matchId;
   final AuthController authController;
   final MatchController matchController;
+  final WalletController walletController;
+  final DisputesController disputesController;
 
   @override
   State<MatchScreen> createState() => _MatchScreenState();
@@ -78,17 +85,37 @@ class _MatchScreenState extends State<MatchScreen> {
               ),
             ),
           ),
-          MatchViewLoaded(match: final match, lastRejection: final rejection) =>
+          MatchViewLoaded(
+            match: final match,
+            lastRejection: final rejection,
+            financial: final financial,
+          ) =>
             currentUserId == null
                 ? const Scaffold(body: Center(child: Text('Not signed in.')))
+                : (match.status == 'WAITING' && financial.isFinanciallyBacked)
+                ? StakeConfirmScreen(
+                    match: match,
+                    stake: financial.stake!,
+                    currentUserId: currentUserId,
+                    walletController: widget.walletController,
+                    onConfirm: widget.matchController.confirmStake,
+                    onExit: () => context.go('/account'),
+                  )
                 : switch (match.gameId) {
                     'tic_tac_toe' => TicTacToeScreen(
                       match: match,
                       currentUserId: currentUserId,
                       lastRejection: rejection,
+                      financial: financial,
                       onMove: (cell) =>
                           widget.matchController.submitMove({'cell': cell}),
                       onExit: () => context.go('/account'),
+                      onDispute: (reason) async {
+                        await widget.disputesController.create(
+                          match.id,
+                          reason,
+                        );
+                      },
                     ),
                     _ => Scaffold(
                       appBar: AppBar(),

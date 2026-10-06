@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../errors/app_exception.dart';
 import '../logging/app_logger.dart';
+import '../match_stakes/match_stake_models.dart';
 import '../network/websocket_client.dart';
 import '../realtime/realtime_connection_manager.dart';
 import 'challenge_models.dart';
@@ -49,10 +50,15 @@ class ChallengesController extends ChangeNotifier {
   /// the caller shows that message directly.
   Future<ChallengeInfo> challengeByUsername(
     String gameId,
-    String username,
-  ) async {
+    String username, {
+    MatchStakeRequest? stake,
+  }) async {
     final opponentUserId = await _repository.lookupUserIdByUsername(username);
-    final challenge = await _repository.create(gameId, opponentUserId);
+    final challenge = await _repository.create(
+      gameId,
+      opponentUserId,
+      stake: stake,
+    );
     await refresh();
     return challenge;
   }

@@ -77,6 +77,11 @@ class AccountScreen extends StatelessWidget {
                     onPressed: () => context.push('/wallet'),
                     child: const Text('Wallet'),
                   ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: () => context.push('/disputes'),
+                    child: const Text('My Disputes'),
+                  ),
                   const Spacer(),
                   OutlinedButton(
                     onPressed: () => authController.logout(),

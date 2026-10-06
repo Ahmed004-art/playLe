@@ -43,6 +43,28 @@ export interface AppConfiguration {
     abandonGraceMs: number;
     timeoutSweepIntervalMs: number;
   };
+  stakes: {
+    /**
+     * Master real-money gate. Defaults to `false` — the system never
+     * enters real-money mode because an environment variable is merely
+     * missing; it must be explicitly turned on (see
+     * docs/decisions/ADR-016-match-financial-architecture.md,
+     * "production activation boundary").
+     */
+    realMoneyGamingEnabled: boolean;
+    /**
+     * Deliberately separate from `auth.minAgeYears` (the general account
+     * age gate) — see ADR-016, "real-money eligibility is not identity
+     * eligibility".
+     */
+    realMoneyMinimumAge: number;
+    minStakeMinor: bigint;
+    maxStakeMinor: bigint;
+    platformFeePercent: number;
+    stakeCommitTimeoutMs: number;
+    throttleLimit: number;
+    throttleTtlMs: number;
+  };
 }
 
 export default (): AppConfiguration => ({
@@ -98,5 +120,24 @@ export default (): AppConfiguration => ({
       process.env.MATCH_TIMEOUT_SWEEP_INTERVAL_MS ?? '10000',
       10,
     ),
+  },
+  stakes: {
+    realMoneyGamingEnabled: process.env.REAL_MONEY_GAMING_ENABLED === 'true',
+    realMoneyMinimumAge: parseInt(
+      process.env.REAL_MONEY_MINIMUM_AGE ?? '18',
+      10,
+    ),
+    minStakeMinor: BigInt(process.env.MINIMUM_STAKE_MINOR ?? '100'),
+    maxStakeMinor: BigInt(process.env.MAXIMUM_STAKE_MINOR ?? '1000000'),
+    platformFeePercent: parseInt(
+      process.env.PLATFORM_FEE_PERCENTAGE ?? '10',
+      10,
+    ),
+    stakeCommitTimeoutMs: parseInt(
+      process.env.STAKE_COMMIT_TIMEOUT_MS ?? '60000',
+      10,
+    ),
+    throttleLimit: parseInt(process.env.STAKES_THROTTLE_LIMIT ?? '30', 10),
+    throttleTtlMs: parseInt(process.env.STAKES_THROTTLE_TTL_MS ?? '60000', 10),
   },
 });

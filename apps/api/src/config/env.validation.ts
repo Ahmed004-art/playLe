@@ -126,6 +126,43 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1)
   MATCH_TIMEOUT_SWEEP_INTERVAL_MS: number = 10000;
+
+  // Phase 5 — see docs/decisions/ADR-016-match-financial-architecture.md.
+  // Defaults are all safe-off/conservative — real-money gaming never turns
+  // on because a variable is merely unset.
+
+  @IsIn(['true', 'false'])
+  REAL_MONEY_GAMING_ENABLED: string = 'false';
+
+  @IsInt()
+  @Min(13)
+  @Max(99)
+  REAL_MONEY_MINIMUM_AGE: number = 18;
+
+  @IsInt()
+  @Min(1)
+  MINIMUM_STAKE_MINOR: number = 100;
+
+  @IsInt()
+  @Min(1)
+  MAXIMUM_STAKE_MINOR: number = 1000000;
+
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  PLATFORM_FEE_PERCENTAGE: number = 10;
+
+  @IsInt()
+  @Min(1)
+  STAKE_COMMIT_TIMEOUT_MS: number = 60000;
+
+  @IsInt()
+  @Min(1)
+  STAKES_THROTTLE_LIMIT: number = 30;
+
+  @IsInt()
+  @Min(1)
+  STAKES_THROTTLE_TTL_MS: number = 60000;
 }
 
 export function validate(

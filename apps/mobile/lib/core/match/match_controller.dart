@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../errors/app_exception.dart';
 import '../logging/app_logger.dart';
+import '../match_stakes/match_stake_models.dart';
 import '../network/websocket_client.dart';
 import '../realtime/realtime_connection_manager.dart';
 import 'match_repository.dart';
@@ -36,7 +37,8 @@ class MatchController extends ChangeNotifier {
     _setState(const MatchViewLoading());
     try {
       final match = await _repository.getMatch(matchId);
-      _setState(MatchViewLoaded(match));
+      final financial = await _fetchFinancial(matchId);
+      _setState(MatchViewLoaded(match, financial: financial));
       await _joinRealtimeRoom(matchId);
     } catch (e) {
       AppLogger.instance.warning('Failed to load match $matchId: $e');
@@ -52,12 +54,40 @@ class MatchController extends ChangeNotifier {
 
     final result = await _repository.submitCommand(matchId, payload);
     final match = await _repository.getMatch(matchId);
+    final financial = await _fetchFinancial(matchId);
     _setState(
       MatchViewLoaded(
         match,
         lastRejection: result.accepted ? null : result.rejectionReason,
+        financial: financial,
       ),
     );
+  }
+
+  /// Confirms (holds) the current user's stake for this match — see
+  /// `POST /matches/:id/stake/confirm`. A no-op if no match is loaded.
+  /// Never swallows an error: the stake-confirmation screen must be able
+  /// to show the real server-reported reason (e.g. insufficient
+  /// balance), the same "never swallow a financial error" rule
+  /// `core/wallet/wallet_controller.dart`'s deposit/withdraw follow.
+  Future<void> confirmStake() async {
+    final matchId = _matchId;
+    if (matchId == null) return;
+    await _repository.confirmStake(matchId);
+    await _refreshFromPush();
+  }
+
+  Future<MatchFinancialInfo> _fetchFinancial(String matchId) async {
+    try {
+      return await _repository.getFinancial(matchId);
+    } catch (e) {
+      // Best-effort: a financial-info failure shouldn't block showing
+      // the match itself — fall back to the free-play shape.
+      AppLogger.instance.warning(
+        'Failed to load financial info for match $matchId: $e',
+      );
+      return const MatchFinancialInfo.empty();
+    }
   }
 
   Future<void> _joinRealtimeRoom(String matchId) async {
@@ -87,7 +117,8 @@ class MatchController extends ChangeNotifier {
     if (matchId == null) return;
     try {
       final match = await _repository.getMatch(matchId);
-      _setState(MatchViewLoaded(match));
+      final financial = await _fetchFinancial(matchId);
+      _setState(MatchViewLoaded(match, financial: financial));
     } catch (e) {
       // Best-effort: keep showing the last known-good state rather than
       // erroring out mid-match over a transient refresh failure.

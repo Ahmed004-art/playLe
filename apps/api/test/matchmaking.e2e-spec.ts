@@ -75,6 +75,22 @@ describe('Matchmaking (e2e, real Redis)', () => {
         select: { matchId: true },
       })
     ).map((m) => m.matchId);
+
+    // Settlement/MatchStake are `onDelete: Restrict` toward Match — must
+    // be removed first (SettlementEntry/MatchStakePlayer cascade).
+    const matchStakeIds = (
+      await prisma.matchStake.findMany({
+        where: { matchId: { in: matchIds } },
+        select: { id: true },
+      })
+    ).map((s) => s.id);
+    await prisma.settlement.deleteMany({
+      where: { matchStakeId: { in: matchStakeIds } },
+    });
+    await prisma.matchStake.deleteMany({
+      where: { id: { in: matchStakeIds } },
+    });
+
     await prisma.match.deleteMany({ where: { id: { in: matchIds } } });
     await prisma.challenge.deleteMany({
       where: {
@@ -115,11 +131,39 @@ describe('Matchmaking (e2e, real Redis)', () => {
     return { accessToken: res.body.accessToken, userId: res.body.user.id };
   }
 
-  function join(accessToken: string) {
+  async function makeAdmin(userId: string): Promise<void> {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { role: 'ADMIN' },
+    });
+  }
+
+  async function creditViaAdmin(
+    adminToken: string,
+    userId: string,
+    amountMinor: string,
+  ): Promise<void> {
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/wallets/${userId}/adjustments`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        direction: 'CREDIT',
+        amountMinor,
+        reason: 'Test fixture credit for e2e setup',
+      })
+      .expect(200);
+  }
+
+  function join(
+    accessToken: string,
+    stake?: { amountMinor: string; currency: string },
+  ) {
     return request(app.getHttpServer())
       .post('/api/v1/matchmaking/join')
       .set('Authorization', `Bearer ${accessToken}`)
-      .send({ gameId: 'tic_tac_toe' });
+      .send(
+        stake ? { gameId: 'tic_tac_toe', stake } : { gameId: 'tic_tac_toe' },
+      );
   }
 
   function leave(accessToken: string) {
@@ -250,4 +294,61 @@ describe('Matchmaking (e2e, real Redis)', () => {
       }
     },
   );
+
+  describe('staked matchmaking — equal-stake enforcement by construction', () => {
+    it('never pairs joins requesting different stake amounts', async () => {
+      const admin = await registerUser('stakeadmin');
+      await makeAdmin(admin.userId);
+      const a = await registerUser('mmstakea');
+      const b = await registerUser('mmstakeb');
+      await creditViaAdmin(admin.accessToken, a.userId, '100000');
+      await creditViaAdmin(admin.accessToken, b.userId, '100000');
+
+      const joinA = await join(a.accessToken, {
+        amountMinor: '1000',
+        currency: 'SLE',
+      }).expect(200);
+      expect(joinA.body.status).toBe('QUEUED');
+
+      const joinB = await join(b.accessToken, {
+        amountMinor: '2000',
+        currency: 'SLE',
+      }).expect(200);
+      // Different stake amount -> different queue -> still alone, QUEUED.
+      expect(joinB.body.status).toBe('QUEUED');
+
+      await leave(a.accessToken).expect(204);
+      await leave(b.accessToken).expect(204);
+    });
+
+    it('matches two joins requesting the identical stake, creating a WAITING financially-backed match', async () => {
+      const admin = await registerUser('stakeadmin2');
+      await makeAdmin(admin.userId);
+      const a = await registerUser('mmstakesamea');
+      const b = await registerUser('mmstakesameb');
+      await creditViaAdmin(admin.accessToken, a.userId, '100000');
+      await creditViaAdmin(admin.accessToken, b.userId, '100000');
+
+      await join(a.accessToken, {
+        amountMinor: '1500',
+        currency: 'SLE',
+      }).expect(200);
+
+      const joinB = await join(b.accessToken, {
+        amountMinor: '1500',
+        currency: 'SLE',
+      }).expect(200);
+      expect(joinB.body.status).toBe('MATCHED');
+
+      const match = await prisma.match.findUnique({
+        where: { id: joinB.body.matchId },
+      });
+      expect(match?.status).toBe('WAITING');
+
+      const stake = await prisma.matchStake.findUnique({
+        where: { matchId: joinB.body.matchId },
+      });
+      expect(stake?.stakeAmountMinor).toBe(1500n);
+    });
+  });
 });

@@ -4,13 +4,15 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { AuthGuard } from '@/components/AuthGuard';
-import { fetchMatch, ApiRequestError } from '@/lib/api-client';
-import type { AdminMatch } from '@/lib/match-types';
+import { fetchMatch, fetchMatchFinancial, ApiRequestError } from '@/lib/api-client';
+import type { AdminMatch, AdminMatchFinancial } from '@/lib/match-types';
+import { formatMinorAmount } from '@/lib/money-format';
 
 function MatchDetailContent() {
   const params = useParams<{ id: string }>();
   const matchId = params.id;
   const [match, setMatch] = useState<AdminMatch | null>(null);
+  const [financial, setFinancial] = useState<AdminMatchFinancial | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,6 +24,16 @@ function MatchDetailContent() {
       try {
         const result = await fetchMatch(matchId);
         if (!cancelled) setMatch(result);
+        // Financial detail is additive to the core match record. A
+        // failure here (e.g. an older/free-play match the financial
+        // endpoint can't resolve) should never block the match detail
+        // above from rendering, so it's fetched and handled separately.
+        try {
+          const financialResult = await fetchMatchFinancial(matchId);
+          if (!cancelled) setFinancial(financialResult);
+        } catch {
+          if (!cancelled) setFinancial(null);
+        }
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof ApiRequestError ? e.message : 'Failed to load match');
@@ -35,6 +47,9 @@ function MatchDetailContent() {
       cancelled = true;
     };
   }, [matchId]);
+
+  const stake = financial?.stake ?? null;
+  const settlement = financial?.settlement ?? null;
 
   return (
     <div className="page">
@@ -124,6 +139,119 @@ function MatchDetailContent() {
             <pre className="statusLine" style={{ whiteSpace: 'pre-wrap' }}>
               {JSON.stringify(match.state, null, 2)}
             </pre>
+
+            {stake && (
+              <>
+                <h2 style={{ marginTop: 24 }}>Financial</h2>
+                <p className="statusLine">
+                  Read-only. Settlement is computed deterministically by the server — there is no
+                  action here to set a winner or credit/debit a wallet directly.
+                </p>
+                <table className="table">
+                  <tbody>
+                    <tr>
+                      <th>Stake status</th>
+                      <td>{stake.status}</td>
+                    </tr>
+                    <tr>
+                      <th>Currency</th>
+                      <td>{stake.currency}</td>
+                    </tr>
+                    <tr>
+                      <th>Stake amount</th>
+                      <td>{formatMinorAmount(stake.stakeAmountMinor, stake.currency)}</td>
+                    </tr>
+                    <tr>
+                      <th>Prize pool</th>
+                      <td>{formatMinorAmount(stake.poolAmountMinor, stake.currency)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <h3 style={{ marginTop: 16 }}>Stake holds</h3>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>User ID</th>
+                      <th>Held at</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stake.players.map((p) => (
+                      <tr key={p.userId}>
+                        <td>{p.userId}</td>
+                        <td>{p.heldAt ? new Date(p.heldAt).toLocaleString() : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {settlement && (
+                  <>
+                    <h3 style={{ marginTop: 16 }}>Settlement</h3>
+                    <table className="table">
+                      <tbody>
+                        <tr>
+                          <th>Outcome</th>
+                          <td>{settlement.outcome}</td>
+                        </tr>
+                        <tr>
+                          <th>Status</th>
+                          <td>{settlement.status}</td>
+                        </tr>
+                        <tr>
+                          <th>Prize pool</th>
+                          <td>
+                            {formatMinorAmount(settlement.poolAmountMinor, settlement.currency)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <th>Platform fee</th>
+                          <td>
+                            {formatMinorAmount(
+                              settlement.platformFeeAmountMinor,
+                              settlement.currency,
+                            )}
+                          </td>
+                        </tr>
+                        <tr>
+                          <th>Completed</th>
+                          <td>
+                            {settlement.completedAt
+                              ? new Date(settlement.completedAt).toLocaleString()
+                              : '—'}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    <h3 style={{ marginTop: 16 }}>Settlement entries</h3>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>User ID</th>
+                          <th>Role</th>
+                          <th>Available delta</th>
+                          <th>Held delta</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {settlement.entries.map((entry, i) => (
+                          <tr key={`${entry.userId}-${entry.role}-${i}`}>
+                            <td>{entry.userId}</td>
+                            <td>{entry.role}</td>
+                            <td>
+                              {formatMinorAmount(entry.availableDeltaMinor, settlement.currency)}
+                            </td>
+                            <td>{formatMinorAmount(entry.heldDeltaMinor, settlement.currency)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </>
+            )}
           </>
         )}
       </div>

@@ -1,5 +1,6 @@
 import 'package:playle_mobile/core/challenges/challenge_models.dart';
 import 'package:playle_mobile/core/challenges/challenges_repository.dart';
+import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
 
 final testChallenge = ChallengeInfo(
   id: 'challenge-1',
@@ -14,10 +15,17 @@ final testChallenge = ChallengeInfo(
 class FakeChallengesRepository implements ChallengesRepository {
   List<ChallengeInfo> challengesToReturn = [];
   String userIdToReturn = 'user-2';
+  MatchStakeRequest? lastStakeRequested;
 
   @override
-  Future<ChallengeInfo> create(String gameId, String opponentUserId) async =>
-      testChallenge;
+  Future<ChallengeInfo> create(
+    String gameId,
+    String opponentUserId, {
+    MatchStakeRequest? stake,
+  }) async {
+    lastStakeRequested = stake;
+    return testChallenge;
+  }
 
   @override
   Future<List<ChallengeInfo>> list() async => challengesToReturn;

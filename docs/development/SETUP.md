@@ -56,8 +56,14 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 Phase 3 adds `PAYMENTS_PROVIDER` (defaults to `manual` — no real payment
 gateway is connected; see [ADR-013](../decisions/ADR-013-payment-provider-abstraction.md)
-and `docs/development/MONIME_SETUP.md`). No action is needed for local
-development — the defaults work out of the box.
+and `docs/development/MONIME_SETUP.md`). Phase 5 adds
+`REAL_MONEY_GAMING_ENABLED` (defaults to `false`) and the related
+`REAL_MONEY_MINIMUM_AGE`/`MINIMUM_STAKE_MINOR`/`MAXIMUM_STAKE_MINOR`/
+`PLATFORM_FEE_PERCENTAGE`/`STAKE_COMMIT_TIMEOUT_MS` settings — see
+[ADR-016](../decisions/ADR-016-match-financial-architecture.md). No
+action is needed for local development to exercise the match-stakes
+engine against test wallets — set `REAL_MONEY_GAMING_ENABLED=true` in
+your local `.env` (already done in CI).
 
 ## 4. Generate the Prisma Client and Run Migrations
 

@@ -16,6 +16,8 @@ import '../matchmaking/matchmaking_controller.dart';
 import '../matchmaking/matchmaking_repository.dart';
 import '../challenges/challenges_controller.dart';
 import '../challenges/challenges_repository.dart';
+import '../disputes/disputes_controller.dart';
+import '../disputes/disputes_repository.dart';
 import '../match/match_controller.dart';
 import '../match/match_repository.dart';
 
@@ -112,5 +114,12 @@ Future<void> setupServiceLocator() async {
       sl<WebSocketClient>(),
       sl<RealtimeConnectionManager>(),
     ),
+  );
+
+  sl.registerLazySingleton<DisputesRepository>(
+    () => HttpDisputesRepository(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<DisputesController>(
+    () => DisputesController(sl<DisputesRepository>()),
   );
 }

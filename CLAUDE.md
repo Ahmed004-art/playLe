@@ -79,17 +79,23 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 4 — Game Platform Core, Matchmaking, Real-Time
-Multiplayer & Tic-Tac-Toe Reference Game.**
+**Current phase: Phase 5 — Real-Money Match Stakes, Holds, Prize Pools &
+Deterministic Settlement.**
 See `docs/development/WORKFLOW.md` for the phase pipeline,
-[ADR-014](docs/decisions/ADR-014-realtime-command-transport.md) for the
-REST-commands/WS-push transport decision, and
-[ADR-015](docs/decisions/ADR-015-game-module-architecture.md) for the
-generic game-module/registry architecture. Phase 1 (foundation/scaffold),
-Phase 2 (identity/authentication), and Phase 3 (wallet/ledger/financial
-foundation) are complete. Phase 4 deliberately does not touch the
-financial system — matches have no stakes, holds, or prize pools yet; see
-"What NOT to Build Yet" below.
+[ADR-016](docs/decisions/ADR-016-match-financial-architecture.md) for the
+stake/hold/platform-account architecture,
+[ADR-017](docs/decisions/ADR-017-deterministic-settlement.md) for
+settlement math, exactly-once, recovery, and reconciliation, and
+[ADR-018](docs/decisions/ADR-018-financial-state-machines.md) for the
+exact state transitions. Phase 1 (foundation), Phase 2 (identity/
+authentication), Phase 3 (wallet/ledger/financial foundation), and
+Phase 4 (game platform/matchmaking/real-time) are complete. Phase 5
+connects Phase 3's wallet/ledger to Phase 4's matches: equal-stake
+holds, prize pools, a 10% platform fee to a real seeded platform
+account, deterministic win/draw/cancellation/forfeit settlement,
+crash recovery, on-demand reconciliation, and a dispute foundation —
+all using test wallets, with no real payment-provider integration (see
+"What NOT to Build Yet" below).
 
 ## Repository Structure
 
@@ -161,12 +167,16 @@ receives Le180. The same 10% fee model applies to 3- and 4-player matches.
 **Never implement financial operations as a simple mutable balance
 calculation.** Every financial operation must go through an auditable,
 append-only ledger inside an atomic database transaction. See
-`docs/decisions/ADR-009-financial-ledger.md` for the full model and
+`docs/decisions/ADR-009-financial-ledger.md` for the full model,
 [ADR-012](docs/decisions/ADR-012-financial-architecture.md) for its
-Phase 3 implementation (`LedgerService.applyEntry`). The specific
-prize-pool/platform-fee math above is still documentation-only — betting
-settlement is a future phase; Phase 3 only reserves the `PRIZE`/
-`PLATFORM_FEE` ledger types for it.
+Phase 3 implementation (`LedgerService.applyEntry`), and
+[ADR-016](docs/decisions/ADR-016-match-financial-architecture.md)/
+[ADR-017](docs/decisions/ADR-017-deterministic-settlement.md) for the
+Phase 5 implementation (`SettlementService.settle`, which is what now
+actually produces `PRIZE`/`PLATFORM_FEE` ledger entries — fee rounding is
+`floor(pool * 10 / 100)` in `BigInt`). Real-money gaming is gated by
+`REAL_MONEY_GAMING_ENABLED` (default `false`) and a separate real-money
+minimum age, distinct from the general account age gate.
 
 ## Commands
 
@@ -196,21 +206,21 @@ flutter test
 flutter build apk --debug
 ```
 
-## What NOT to Build Yet (Phase 4)
+## What NOT to Build Yet (Phase 5)
 
-Real-money betting, stakes, wallet deductions/holds for matches, prize
-pools, `PLATFORM_FEE`/`PRIZE` ledger entries (the types remain reserved
-but still unproduced), Monime integration, any change to
-deposits/withdrawals, user-to-user transfers, KYC/AML/tax, premium
-subscriptions, social feed/followers, additional games beyond
-Tic-Tac-Toe, ratings/rankings, fraud systems, and a general admin
-operations system beyond the narrow read-only slices in `src/admin/`
-(financial visibility from Phase 3, match visibility from Phase 4 — no
-"set winner" override of any kind). Real Monime (or any other)
-payment-provider integration is also not implemented — see
+Real Monime (or any other) production payment-provider integration,
+actual mobile-money payouts, KYC/AML provider integration, additional
+games beyond Tic-Tac-Toe (the financial pipeline is generic enough to
+support them without changes — see ADR-016/017 — but none are
+implemented), social networking/followers, premium subscriptions,
+advertising, ratings/rankings, fraud systems, and a general admin
+operations system beyond the narrow slices in `src/admin/` (financial
+visibility from Phase 3, match visibility from Phase 4, financial-match
+inspection and dispute resolution from Phase 5 — no "set winner"/"give
+player money"/"set balance" shortcut of any kind). See
 [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md) and
-`docs/development/MONIME_SETUP.md`. Email/SMS verification has a schema
-placeholder (`emailVerifiedAt`/`phoneVerifiedAt`) but no provider
+`docs/development/MONIME_SETUP.md` for the payment-provider boundary.
+Email/SMS verification has a schema placeholder but no provider
 integration or OTP flow — see
 [ADR-011](docs/decisions/ADR-011-authentication.md). See `README.md`
 roadmap for the full list. These belong to later, explicitly approved

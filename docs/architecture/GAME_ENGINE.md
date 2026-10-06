@@ -105,14 +105,19 @@ never computes or asserts the outcome itself (see
 ## Relationship to the Financial System
 
 When a match completes, its result (`getResult()` / `Match.winnerUserId`/
-`resultIsDraw`) is what will eventually drive settlement in a future
-Betting/Ledger integration: the winner(s) and the prize-pool math (see
-`CLAUDE.md`, "Financial Rule", and
-[ADR-009](../decisions/ADR-009-financial-ledger.md)). **As of Phase 4,
-the game engine does not touch money at all** — matches have no stakes,
-holds, or prize pools, and the `PRIZE`/`PLATFORM_FEE` ledger types remain
-reserved but unproduced. Wiring a match result into the wallet/ledger is
-explicitly out of scope until a dedicated, explicitly-approved phase.
+`resultIsDraw`) is what drives settlement, as of Phase 5: `MatchesService`
+calls `SettlementService.settle(matchId)`, which derives the winner(s)
+and the prize-pool math entirely from this already-decided result — see
+`CLAUDE.md`, "Financial Rule",
+[ADR-009](../decisions/ADR-009-financial-ledger.md), and
+[ADR-016](../decisions/ADR-016-match-financial-architecture.md)/
+[ADR-017](../decisions/ADR-017-deterministic-settlement.md) for the full
+settlement pipeline. **The game engine itself still never touches money
+directly** — `GameModule`/`GameRegistry`/`MatchesService`'s core
+lifecycle has no knowledge of stakes at all; `MatchStake`/`Settlement`
+are a separate layer that merely reacts to a match reaching a terminal
+state. A free-play match (no stake) settles to nothing, by construction
+(see ADR-016, "two coordinated state machines").
 
 ## Games
 
