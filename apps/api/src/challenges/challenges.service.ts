@@ -116,7 +116,7 @@ export class ChallengesService {
       throw new ForbiddenException('Only the challenged player can accept');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const resolved = await this.prisma.$transaction(async (tx) => {
       const { count } = await tx.challenge.updateMany({
         where: {
           id: challengeId,
@@ -144,24 +144,28 @@ export class ChallengesService {
           : undefined,
       );
 
-      const resolved = await tx.challenge.update({
+      return tx.challenge.update({
         where: { id: challengeId },
         data: { matchId: match.id },
       });
-
-      this.emitter.emitToUser(challenge.challengerId, 'challenge:resolved', {
-        challengeId,
-        status: 'ACCEPTED',
-        matchId: match.id,
-      });
-      this.emitter.emitToUser(challenge.opponentId, 'challenge:resolved', {
-        challengeId,
-        status: 'ACCEPTED',
-        matchId: match.id,
-      });
-
-      return resolved;
     });
+
+    // Emitted only after the transaction has actually committed — a
+    // client must never be told a challenge resolved into a match that
+    // might still roll back (same principle as the Phase 6 notification
+    // outbox: never signal before the underlying write is durable).
+    this.emitter.emitToUser(challenge.challengerId, 'challenge:resolved', {
+      challengeId,
+      status: 'ACCEPTED',
+      matchId: resolved.matchId,
+    });
+    this.emitter.emitToUser(challenge.opponentId, 'challenge:resolved', {
+      challengeId,
+      status: 'ACCEPTED',
+      matchId: resolved.matchId,
+    });
+
+    return resolved;
   }
 
   async decline(userId: string, challengeId: string): Promise<Challenge> {

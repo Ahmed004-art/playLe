@@ -5,12 +5,17 @@ playle/
   apps/
     mobile/                   Flutter application (Android first, iOS-ready)
       lib/
-        core/                 Cross-cutting foundations: env, DI, routing, theme, logging, auth, wallet,
-                               games (catalog), match (generic match-state controller), matchmaking,
-                               challenges, realtime (connection manager + WebSocket client)
+        core/                 Cross-cutting foundations: env, DI, routing, theme (colors/spacing/
+                               radii/motion tokens — the shared game design system, Phase 7), logging,
+                               auth, wallet, widgets (shared loading/error/empty states, Phase 7),
+                               games (catalog), match (generic match-state controller + match/widgets/
+                               — the generic match chrome shared by every game, extracted from
+                               Tic-Tac-Toe in Phase 7), matchmaking, challenges, realtime (connection
+                               manager + WebSocket client)
         features/             Feature modules: auth (welcome/login/register/account), wallet
                                (balance/deposit/withdraw), games (catalog/lobby/match screens),
-                               tic_tac_toe (board + screen — the only game-specific UI)
+                               tic_tac_toe and checkers (board + screen — the only game-specific UI
+                               per game; see ADR-022 for Checkers)
       test/
       android/
       ios/
@@ -34,8 +39,8 @@ playle/
                                   HTTP calls + PaymentReconciliationService as of Phase 6 (ADR-019)
         deposits/                Deposit lifecycle + provider webhook handling
         withdrawals/             Withdrawal lifecycle + admin approval state machine
-        games/                   Game catalog + GameModule/GameRegistry contract; tic-tac-toe/ holds
-                                  the reference game's pure rule logic — see ADR-015
+        games/                   Game catalog + GameModule/GameRegistry contract; tic-tac-toe/ and
+                                  checkers/ each hold one game's pure rule logic — see ADR-015/ADR-022
         matches/                 Match lifecycle/persistence, command submission, timeout + recovery sweep
         matchmaking/             Redis-backed opponent queueing, atomic match formation, stake-tier queues
         challenges/              Direct player-to-player challenge create/accept/decline/cancel/expire
@@ -71,8 +76,8 @@ playle/
                                   AdminAuditLog)
         migrations/
       test/                      e2e tests (auth, wallet, matches, matchmaking, realtime, match-stakes,
-                                  payments-phase6, admin session/MFA/password-reset/verification/
-                                  responsible-gaming)
+                                  checkers, payments-phase6, admin session/MFA/password-reset/
+                                  verification/responsible-gaming)
 
     admin/                     Next.js admin application
       src/

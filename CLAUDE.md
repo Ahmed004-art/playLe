@@ -79,33 +79,46 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 6 — Production Payment Integration, Financial
-Operations, Account Security & Responsible-Gaming Foundations.**
+**Current phase: Phase 7 — Repository Audit, Modern Game Design System &
+Production-Quality Checkers.**
 See `docs/development/WORKFLOW.md` for the phase pipeline,
 [ADR-019](docs/decisions/ADR-019-production-payments.md) for the real
 Monime payment/payout/webhook/reconciliation architecture,
 [ADR-020](docs/decisions/ADR-020-account-security.md) for admin session
-cookies, CSRF, password reset, verification, and MFA, and
+cookies, CSRF, password reset, verification, and MFA,
 [ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md)
 for the centralized real-money eligibility and responsible-gaming
-foundation. Phase 1 (foundation), Phase 2 (identity/authentication),
-Phase 3 (wallet/ledger/financial foundation), Phase 4 (game platform/
-matchmaking/real-time), and Phase 5 (match stakes, settlement,
-disputes, reconciliation) are complete. Phase 6 — a real Monime
-integration (Payment Codes for deposits, Payouts for withdrawals,
-status polling, provider-operation tracking, and a separate
-payment-reconciliation service), admin httpOnly session cookies with
-CSRF protection (replacing `localStorage`, migrated and verified in
-both the admin dashboard and the mobile app), password reset,
-email/phone verification (via a `FakeDeliveryAdapter` only — see "What
-NOT to Build Yet" below), session management, TOTP-based MFA, and a
-centralized `EligibilityService` with responsible-gaming limits/
-cooling-off/self-exclusion — is implemented and tested (unit + e2e
-against a real Postgres instance, mobile `flutter test`/Android debug
-build, admin `npm test`) and CI is green, verified against a real
-GitHub Actions run
-(https://github.com/Ahmed004-art/playLe/actions/runs/38269829729) —
-not merely a local pass.
+foundation, and [ADR-022](docs/decisions/ADR-022-checkers-game-module.md)
+for the Checkers rules engine and the shared mobile game design system.
+See `docs/development/OUTSTANDING_WORK.md` for the durable, cross-phase
+register of everything still open (Monime webhook signature
+verification, business eligibility, rolling-window spend/loss-limit
+enforcement, no turn timer, and more — nothing here is closed just
+because a later phase shipped).
+
+Phase 1 (foundation), Phase 2 (identity/authentication), Phase 3
+(wallet/ledger/financial foundation), Phase 4 (game platform/
+matchmaking/real-time), Phase 5 (match stakes, settlement, disputes,
+reconciliation), and Phase 6 (production Monime integration, admin/
+mobile account security, eligibility/responsible-gaming foundations) are
+complete. Phase 7 — a repository-wide audit (verified against the real
+code/schema/tests/CI, not assumed from prior reports); a shared mobile
+game design system (`core/theme/app_spacing.dart`/`app_radii.dart`/
+`app_motion.dart`, board/piece/king color tokens, and the generic match
+chrome — status bar, stake strip, result banners, dispute dialog —
+extracted out of Tic-Tac-Toe into `core/match/widgets/` and reused by
+both games); and a complete, server-authoritative Checkers game module
+(`apps/api/src/games/checkers/`) with a polished mobile UI
+(`apps/mobile/lib/features/checkers/`) — is implemented and tested (35
+backend unit tests, 17 backend e2e tests, 21 new mobile tests, all 98
+pre-existing mobile tests still passing unchanged, mobile
+`flutter analyze`/Android debug build, admin unaffected) and CI is
+green, verified against a real GitHub Actions run — see the Phase 7
+report for the exact run URL. Checkers required zero changes to
+matchmaking, challenges, the command pipeline, realtime, stake
+confirmation, or settlement — only a new `GameModule` implementation, one
+registration-array edit, and one seed migration (see ADR-015 and
+ADR-022).
 
 ## Repository Structure
 
@@ -226,37 +239,23 @@ flutter test
 flutter build apk --debug
 ```
 
-## What NOT to Build Yet (Phase 6)
+## What NOT to Build Yet (Phase 7)
 
-A *live* production Monime payment-provider integration, actual
-mobile-money payouts, and real inbound-webhook authenticity: Phase 6
-implemented a real `MonimeProvider` against verified Monime
-documentation (Payment Codes for deposits, Payouts for withdrawals,
-status polling), but `MonimeProvider.verifyWebhookSignature` still
-always returns invalid — the exact HMAC canonical string Monime signs
-is not independently verifiable yet — so no live deposit/payout can be
-automatically confirmed via webhook until that is resolved (see
-[ADR-019](docs/decisions/ADR-019-production-payments.md) and
-`docs/development/MONIME_SETUP.md`). Also not yet built: KYC/AML
-provider integration, additional games beyond Tic-Tac-Toe (the
-financial pipeline is generic enough to support them without changes —
-see ADR-016/017 — but none are implemented), social networking/
-followers, premium subscriptions, advertising, ratings/rankings, fraud
-systems, real email/SMS delivery (Phase 6 added the password-reset/
-verification/MFA flows themselves, but delivery goes only through a
-`FakeDeliveryAdapter` — no real provider credentials exist — see
-ADR-020), rolling-window spend tracking and loss-limit enforcement
-beyond the per-action ceilings `ResponsibleGamingService` already
-enforces (see
-[ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md)),
-any self-exclusion-lift process, and a general admin operations system
-beyond the narrow slices in `src/admin/`/`src/eligibility/` (financial
-visibility from Phase 3, match visibility from Phase 4, financial-match
-inspection and dispute resolution from Phase 5, payment-reconciliation
-and responsible-gaming visibility from Phase 6 — no "set winner"/"give
-player money"/"set balance"/"lift self-exclusion" shortcut of any
-kind). See `README.md` roadmap for the full list. These belong to
-later, explicitly approved phases.
+Everything already listed as not-yet-built through Phase 6 remains
+not-yet-built — see `docs/development/OUTSTANDING_WORK.md` for the full,
+durable register (live Monime webhook verification, business-model
+eligibility, real email/SMS delivery, rolling-window spend/loss-limit
+enforcement, any self-exclusion-lift process, a general admin operations
+system beyond the narrow per-phase slices). Phase 7 itself explicitly
+does not include: Dice, Penalty, Ice Hockey, Ludo, Stickman-style
+gameplay, or Find the Marble (Checkers is this phase's only new game —
+see the Phase 7 master prompt §10); any new social-network system;
+any new payment provider or speculative Monime change; enabling
+production real-money gaming; and any unapproved change to established
+financial or responsible-gaming rules. A future game beyond Checkers is
+a new `GameModule` implementation (see ADR-015/ADR-022) — no platform
+change should be needed for one, and introducing one prematurely is
+explicitly out of scope here. See `README.md` roadmap for the full list.
 
 ## Stop Conditions
 

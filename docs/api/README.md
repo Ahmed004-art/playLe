@@ -165,17 +165,21 @@ consistency, never match/settlement state, and never mutates money.
 | `GET /api/v1/admin/payment-reconciliation/anomalies` | List recorded anomalies, optionally filtered by `status`, cursor-paginated. |
 | `POST /api/v1/admin/payment-reconciliation/anomalies/:id/resolve` | `{ resolutionNote }` (≥10 chars). Marks an anomaly resolved after the admin has reviewed/fixed the underlying issue through the ordinary deposit/withdrawal/ledger paths — never itself a money-mutating action. |
 
-## Game Platform & Matchmaking Endpoints (Phase 4)
+## Game Platform & Matchmaking Endpoints (Phase 4; two games as of Phase 7)
 
 Full architecture: [ADR-014](../decisions/ADR-014-realtime-command-transport.md),
-[ADR-015](../decisions/ADR-015-game-module-architecture.md). All routes
+[ADR-015](../decisions/ADR-015-game-module-architecture.md),
+[ADR-022](../decisions/ADR-022-checkers-game-module.md). All routes
 below require `Authorization: Bearer <accessToken>` unless noted. A
 match command (a move) travels over REST, not WebSocket — WebSocket is
-used only for server→client push and for joining a match's room.
+used only for server→client push and for joining a match's room. Every
+route below is identical regardless of which game a match is playing —
+`gameId` is just data; see ADR-022 for how Checkers was added with zero
+changes to this surface.
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/v1/games` | The game catalog (currently one row: Tic-Tac-Toe). |
+| `GET /api/v1/games` | The game catalog — `tic_tac_toe` and, as of Phase 7, `checkers`. |
 | `GET /api/v1/games/:id` | A single game's catalog entry. |
 | `POST /api/v1/matchmaking/join` | `{ gameId }`. Returns `QUEUED` or, if an opponent was already waiting, `MATCHED` with the new `matchId` immediately. |
 | `POST /api/v1/matchmaking/leave` | `{ gameId }`. Removes the caller from the queue. |
@@ -183,8 +187,8 @@ used only for server→client push and for joining a match's room.
 | `GET /api/v1/challenges` | Own sent + received challenges. |
 | `POST /api/v1/challenges/:id/accept` \| `/decline` \| `/cancel` | Atomic conditional transition (`PENDING` -> target status); exactly one of two concurrent accept attempts succeeds. Accept creates the `Match`. |
 | `GET /api/v1/matches` | Own match history, cursor-paginated. |
-| `GET /api/v1/matches/:id` | A single match, including players, state, and result. `404` (not `403`) for a non-participant. |
-| `POST /api/v1/matches/:id/commands` | `{ commandId, payload }` — `commandId` is a client-generated UUID, the idempotency key; a retried submission with the same id returns the original result rather than reapplying the move. |
+| `GET /api/v1/matches/:id` | A single match, including players, state, and result. `404` (not `403`) for a non-participant. `state` is opaque and game-specific — for Checkers, see `CheckersState` in `apps/api/src/games/checkers/checkers.types.ts`. |
+| `POST /api/v1/matches/:id/commands` | `{ commandId, payload }` — `commandId` is a client-generated UUID, the idempotency key; a retried submission with the same id returns the original result rather than reapplying the move. Tic-Tac-Toe's `payload` is `{ cell }`; Checkers' is `{ from: {row, col}, to: {row, col} }` — one command per diagonal step or jump, several per turn during a multi-jump (see ADR-022). |
 
 ### Admin match endpoints (require `role: 'ADMIN'`)
 
@@ -311,9 +315,12 @@ is the responsible-gaming-correct behavior, not a loophole.
 Authentication/identity (Phase 2), wallet/ledger/deposits/withdrawals
 (Phase 3), the game platform/matchmaking/challenges/real-time layer
 (Phase 4), match stakes/settlement/disputes/reconciliation (Phase 5),
-and production (test-mode) Monime payment integration, admin session
-security, account security, and eligibility/responsible gaming
-(Phase 6, above) exist. A *live* Monime integration (webhook signature
-verification is unresolved and fails closed), additional games, and
-social features are not implemented yet — see `CLAUDE.md` for the full
-"do not build yet" list.
+production (test-mode) Monime payment integration/admin session
+security/account security/eligibility-responsible gaming (Phase 6), and
+a second game, Checkers, proving the game-platform endpoints above are
+genuinely game-agnostic (Phase 7, above) exist. A *live* Monime
+integration (webhook signature verification is unresolved and fails
+closed), additional games beyond Tic-Tac-Toe and Checkers, and social
+features are not implemented yet — see `CLAUDE.md` and
+`docs/development/OUTSTANDING_WORK.md` for the full "do not build yet"
+list and every other known-open item.

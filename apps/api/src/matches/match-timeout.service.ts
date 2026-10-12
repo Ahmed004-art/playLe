@@ -78,20 +78,31 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
     });
     if (expired.length === 0) return;
 
-    await this.prisma.match.updateMany({
-      where: { id: { in: expired.map((m) => m.id) } },
-      data: { status: 'CANCELLED', terminationReason: 'WAITING_TIMEOUT' },
-    });
-    this.logger.log(
-      `Expired ${expired.length} WAITING match(es) past their timeout`,
-    );
-
+    let expiredCount = 0;
     for (const match of expired) {
+      // Conditioned per-row on `status: 'WAITING'` (not a single bulk
+      // `updateMany` over every id) so a match that activated (e.g. via
+      // `confirmStake`) in the window between the read above and this
+      // write is left alone rather than wrongly cancelled — and so the
+      // settlement call below only ever fires for a row this sweep tick
+      // actually transitioned.
+      const { count } = await this.prisma.match.updateMany({
+        where: { id: match.id, status: 'WAITING' },
+        data: { status: 'CANCELLED', terminationReason: 'WAITING_TIMEOUT' },
+      });
+      if (count === 0) continue;
+      expiredCount++;
+
       await this.settlementService.settle(match.id).catch((error: unknown) => {
         this.logger.error(
           `Settlement failed for cancelled match ${match.id}: ${String(error)}`,
         );
       });
+    }
+    if (expiredCount > 0) {
+      this.logger.log(
+        `Expired ${expiredCount} WAITING match(es) past their timeout`,
+      );
     }
   }
 
@@ -134,12 +145,20 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
     });
     if (expired.length === 0) return;
 
-    await this.prisma.challenge.updateMany({
-      where: { id: { in: expired.map((c) => c.id) } },
-      data: { status: 'EXPIRED', respondedAt: now },
-    });
-
+    let expiredCount = 0;
     for (const challenge of expired) {
+      // Conditioned per-row on `status: 'PENDING'` for the same reason as
+      // `expireWaitingMatches` above — a challenge accepted/declined/
+      // cancelled in the window between the read and this write must not
+      // be overwritten, and the resolved-event emit below must only fire
+      // for a challenge this sweep tick actually expired.
+      const { count } = await this.prisma.challenge.updateMany({
+        where: { id: challenge.id, status: 'PENDING' },
+        data: { status: 'EXPIRED', respondedAt: now },
+      });
+      if (count === 0) continue;
+      expiredCount++;
+
       this.emitter.emitToUser(challenge.challengerId, 'challenge:resolved', {
         challengeId: challenge.id,
         status: 'EXPIRED',
@@ -149,7 +168,9 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
         status: 'EXPIRED',
       });
     }
-    this.logger.log(`Expired ${expired.length} challenge(s)`);
+    if (expiredCount > 0) {
+      this.logger.log(`Expired ${expiredCount} challenge(s)`);
+    }
   }
 
   private async abandonDisconnectedMatches(): Promise<void> {

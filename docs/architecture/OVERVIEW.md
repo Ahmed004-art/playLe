@@ -73,7 +73,7 @@ be extracted into its own service later if real scale requires it.
 | Payments | Payment-provider abstraction (Manual/Monime) — see [ADR-013](../decisions/ADR-013-payment-provider-abstraction.md) |
 | Deposits | Deposit lifecycle, provider webhook handling |
 | Withdrawals | Withdrawal requests + admin approval workflow |
-| Games | Game catalog + the generic `GameModule`/`GameRegistry` contract — see [ADR-015](../decisions/ADR-015-game-module-architecture.md) |
+| Games | Game catalog + the generic `GameModule`/`GameRegistry` contract — see [ADR-015](../decisions/ADR-015-game-module-architecture.md); two registered games as of Phase 7, Tic-Tac-Toe and Checkers (see [ADR-022](../decisions/ADR-022-checkers-game-module.md)) |
 | Matches | Match lifecycle/persistence, command submission (moves), idempotency, concurrency-safe state transitions |
 | Matchmaking | Redis-backed opponent queueing, atomic match formation |
 | Challenges | Direct player-to-player challenge create/accept/decline/cancel/expire |
@@ -99,10 +99,12 @@ The backend is expected to grow the following modules, built on the
 foundation Phase 1 established (config, health, database, cache,
 real-time, exception handling, validation), the identity layer Phase 2
 added, the financial foundation Phase 3 added, the game platform Phase 4
-added, the match-financial engine Phase 5 added, and the production-
-payments/account-security/eligibility foundation Phase 6 added
-(`Notifications`/`NotificationOutbox` and `Audit` moved out of this list
-in Phase 6 — see "Implemented Modules" above):
+added, the match-financial engine Phase 5 added, the production-
+payments/account-security/eligibility foundation Phase 6 added, and the
+design-system/second-game foundation Phase 7 added (`Notifications`/
+`NotificationOutbox` and `Audit` moved out of this list in Phase 6 — see
+"Implemented Modules" above; Phase 7 added no new top-level module —
+see below):
 
 | Module | Responsibility (future) |
 |---|---|
@@ -112,10 +114,13 @@ in Phase 6 — see "Implemented Modules" above):
 | Fraud | Fraud detection/review beyond the read-only reconciliation anomaly checks already implemented |
 | Analytics | Platform/business analytics |
 
-Additional games beyond Tic-Tac-Toe are new `GameModule` implementations
-registered into the existing `Games`/`Matches` modules, not new top-level
-modules. Likewise, a future production payment-provider integration
-extends `Payments`/`Settlement`, not a new module.
+Additional games beyond Tic-Tac-Toe and Checkers are new `GameModule`
+implementations registered into the existing `Games`/`Matches` modules,
+not new top-level modules — Checkers itself (Phase 7) is the proof: it
+added `src/games/checkers/` and one line in `GamesModule`'s
+registration array, nothing else. Likewise, a future production
+payment-provider integration extends `Payments`/`Settlement`, not a new
+module.
 
 These are deliberately **not** scaffolded as empty NestJS modules in
 Phase 1 — an empty, unimported module is dead code and would fail the

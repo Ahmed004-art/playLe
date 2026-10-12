@@ -4,6 +4,7 @@ import { GamesController } from './games.controller.js';
 import { GameRegistry } from './game-registry.service.js';
 import { GAME_MODULES } from './contracts/game-module.interface.js';
 import { TicTacToeModule } from './tic-tac-toe/tic-tac-toe.module-impl.js';
+import { CheckersModule } from './checkers/checkers.module-impl.js';
 import { AuthModule } from '../auth/auth.module.js';
 
 /**
@@ -17,10 +18,14 @@ import { AuthModule } from '../auth/auth.module.js';
   providers: [
     GamesService,
     TicTacToeModule,
+    CheckersModule,
     {
       provide: GAME_MODULES,
-      inject: [TicTacToeModule],
-      useFactory: (ticTacToe: TicTacToeModule) => [ticTacToe],
+      inject: [TicTacToeModule, CheckersModule],
+      useFactory: (ticTacToe: TicTacToeModule, checkers: CheckersModule) => [
+        ticTacToe,
+        checkers,
+      ],
     },
     GameRegistry,
   ],

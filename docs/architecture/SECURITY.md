@@ -1,12 +1,24 @@
 # Security Foundation
 
-This document describes the security posture established through Phase 6
+This document describes the security posture established through Phase 7
 and the security work that remains for later phases. **The application is
-not production-secure after Phase 6** — in particular, Monime webhook
+not production-secure after Phase 7** — in particular, Monime webhook
 signature verification still fails closed (see ADR-019), no live Monime
 deposit/payout has been exercised outside test credentials, and all
 match-stake testing uses test wallets, not real money. This is a
-foundation, not a completed security program.
+foundation, not a completed security program. See
+`docs/development/OUTSTANDING_WORK.md` for the full, durable list of
+everything still open across every phase, not just this section's
+summary.
+
+**Phase 7 update**: no new security surface was added (Checkers reuses
+the existing auth/command/realtime pipeline unchanged). The Phase 7
+repository audit did find and fix two pre-existing *correctness* races
+in `MatchTimeoutService`/`ChallengesService` (missing status guards on
+two sweep updates; an event emitted before its transaction committed) —
+neither was an exploitable vulnerability (no unauthorized access, no
+double-spend), both were narrow-timing-window state-integrity bugs; see
+the Phase 7 report and `OUTSTANDING_WORK.md` item 12 for detail.
 
 ## Implemented in Phase 1
 
@@ -409,16 +421,19 @@ Full architecture and reasoning:
   `MatchStakesService` were deleted in favor of calling it, and
   `DepositsService.create` now calls it too.
 
-## Explicitly NOT Implemented Through Phase 6
+## Explicitly NOT Implemented Through Phase 7
 
 - Real email/SMS delivery for password reset and verification codes —
   the OTP flows themselves (`VerificationService`, `PasswordResetService`)
   are implemented as of Phase 6, but delivery goes only through
   `FakeDeliveryAdapter` (logs + in-memory record); no real provider
   credentials exist (see ADR-020).
-- A dedicated "your active sessions" UI in the mobile/admin apps — the
-  backend (`GET /auth/sessions`, revoke, revoke-all) is implemented as of
-  Phase 6 (see ADR-020); no frontend surfaces it yet.
+- A dedicated "your active sessions" UI in the admin app — the backend
+  (`GET /auth/sessions`, revoke, revoke-all) is implemented as of Phase 6
+  (see ADR-020), and the mobile app's `sessions_screen.dart` surfaces it
+  (corrected during the Phase 7 audit — this line previously said no
+  frontend surfaced it at all, which was already stale); no admin-side
+  equivalent exists yet.
 - KYC / identity verification of withdrawal destinations (`destinationDetails`
   is stored as unverified metadata — see ADR-012).
 - Live real-money deposits or payouts — `MonimeProvider` now makes real
@@ -428,9 +443,11 @@ Full architecture and reasoning:
   (see "Webhook signature verification remains fail-closed" above and
   ADR-019), so a live deposit/payout cannot yet be automatically
   confirmed. `ManualProvider` remains the default active provider.
-- Additional games beyond Tic-Tac-Toe (both the `GameModule` contract
-  and the financial pipeline are designed to support them without
-  changes, but none are implemented).
+- Additional games beyond Tic-Tac-Toe and Checkers (both the
+  `GameModule` contract and the financial pipeline are designed to
+  support them without changes — Checkers itself, added in Phase 7,
+  needed zero changes to either — but no further game is implemented;
+  see [ADR-022](../decisions/ADR-022-checkers-game-module.md)).
 - A verified legal/compliance real-money eligibility policy — Phase 6
   added a required second flag (`ELIGIBILITY_POLICY_CONFIGURED`) and a
   documented conservative placeholder minimum age
@@ -507,13 +524,20 @@ since Phase 2 (via a throwaway one-off script, not a new runtime call
 path). `npm audit` after Phase 5 reports the same findings as Phase 4,
 unchanged.
 
-**Phase 6 update**: exactly one new runtime dependency, `cookie-parser`
+**Phase 6 update**: one new backend runtime dependency, `cookie-parser`
 (`apps/api`, plus its `@types/cookie-parser` dev typings) — needed to
 read the new httpOnly `admin_access_token`/`admin_refresh_token`/
 `admin_csrf_token` cookies, since the framework has no built-in cookie
 parser. MFA (TOTP/HOTP) was deliberately hand-rolled against
-`node:crypto` rather than adding `otplib`/`speakeasy` (see ADR-020). No
-other new dependency was added anywhere (API, admin, or mobile).
+`node:crypto` rather than adding `otplib`/`speakeasy` (see ADR-020). One
+new mobile dependency, `qr_flutter` (renders the MFA enrollment QR
+code) — corrected during the Phase 7 audit, this paragraph previously
+said no other new dependency was added anywhere, which was already
+stale. No new admin dependency.
+
+**Phase 7 update**: zero new dependencies anywhere (API, admin, or
+mobile) — confirmed via `git diff` on every `package.json`/`pubspec.yaml`.
+Checkers' board rendering uses only Flutter's built-in widgets.
 
 ## Known Limitations
 
@@ -574,8 +598,9 @@ other new dependency was added anywhere (API, admin, or mobile).
   future staff roles beyond the current USER/ADMIN split.
 - A real email/SMS delivery provider for password reset and
   verification codes (the flows themselves, and session/device
-  management endpoints, are implemented as of Phase 6 — see above; no
-  dedicated session-management UI exists in the mobile/admin apps yet).
+  management endpoints, are implemented as of Phase 6 — see above; the
+  mobile app's `sessions_screen.dart` surfaces session management, but
+  no equivalent exists in the admin app yet).
 - Financial security: a real Monime webhook signature implementation
   once the canonical HMAC string is verified (see ADR-019), rolling-
   window spend tracking and `LOSS_LIMIT` enforcement (see ADR-021),

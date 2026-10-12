@@ -206,8 +206,15 @@ foundation above. Phase 4 added the game platform above. Phase 5 added
 the match financial engine above, connecting the two. Phase 6 added
 production-payment provider tracking/reconciliation, account-security
 (password reset, verification, MFA, admin audit log), and
-responsible-gaming/notification-outbox models above. Social-graph
-tables are still designed in their own dedicated future phase.
+responsible-gaming/notification-outbox models above. **Phase 7 added no
+new models or columns** — Checkers reuses the existing generic `Game`/
+`Match`/`MatchPlayer`/`MatchCommand` tables exactly as Tic-Tac-Toe does
+(its state lives in the same opaque `Match.state` JSON column); the
+only database change is one seed migration,
+`20261012220000_seed_checkers_game`, inserting the `checkers` row into
+`games` (same hand-written-INSERT pattern as the original `tic_tac_toe`
+seed in `20261005102538_add_game_platform_core`). Social-graph tables
+are still designed in their own dedicated future phase.
 
 ## Local Development Database
 

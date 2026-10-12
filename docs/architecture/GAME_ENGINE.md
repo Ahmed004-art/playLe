@@ -1,14 +1,20 @@
 # Game Engine Architecture
 
-**Implemented as of Phase 4.** This document originally described the
+**Implemented as of Phase 4; proven against a second, materially
+different game as of Phase 7.** This document originally described the
 intended architecture before any game logic existed (Phase 1); the
 conceptual model below held up and is now the real, running
 implementation, refined into a concrete contract — see
 [ADR-015](../decisions/ADR-015-game-module-architecture.md) for the exact
 interface and [ADR-014](../decisions/ADR-014-realtime-command-transport.md)
-for how a player's move actually reaches the server. One game,
-Tic-Tac-Toe, is implemented end-to-end; the contract is designed so
-additional games are new modules, not platform changes.
+for how a player's move actually reaches the server. Tic-Tac-Toe (Phase
+4) and Checkers (Phase 7, see
+[ADR-022](../decisions/ADR-022-checkers-game-module.md)) are both
+implemented end-to-end through the exact same contract, with zero
+changes to `GameRegistry`, `MatchesService`, matchmaking, challenges, or
+settlement between the two — confirming the contract genuinely
+generalizes rather than happening to fit the first game it was designed
+alongside.
 
 ## Conceptual Model
 
@@ -57,10 +63,11 @@ Clients
 
 ## Why a Common Rules Interface
 
-Every game (Tic-Tac-Toe today; Dice, Checkers, Penalty, Ice Hockey, a
-G-Switch-style game, Ludo, Find the Marble, and future games later) implements
-the same contract — the real, implemented `GameModule<TState, TMove>`
-interface (`apps/api/src/games/contracts/game-module.interface.ts`):
+Every game (Tic-Tac-Toe and Checkers today; Dice, Penalty, Ice Hockey, a
+G-Switch-style game, Ludo, Find the Marble, and future games later)
+implements the same contract — the real, implemented
+`GameModule<TState, TMove>` interface
+(`apps/api/src/games/contracts/game-module.interface.ts`):
 
 ```ts
 interface GameModule<TState = unknown, TMove = unknown> {
@@ -84,10 +91,17 @@ bound module into a `Map<gameId, GameModule>`. `MatchesService` is the
 game-agnostic driver: it looks up the right module by `Match.gameId` and
 runs every match through the same lifecycle (create -> accept a command ->
 validate -> apply -> check completion) without ever branching on which
-game it is. Adding a new game means implementing this interface and
-registering it — never modifying `MatchesService` itself. See
-`apps/api/src/games/tic-tac-toe/tic-tac-toe.module-impl.ts` for the
-reference implementation.
+game it is. Adding a new game means implementing this interface,
+registering it in `GamesModule`'s `GAME_MODULES` factory array, and
+adding one seed migration inserting its `Game` row — never modifying
+`MatchesService`, `GameRegistry`, matchmaking, challenges, realtime, or
+settlement. See `apps/api/src/games/tic-tac-toe/tic-tac-toe.module-impl.ts`
+for the simpler reference (a single move per turn, derived turn
+alternation) and `apps/api/src/games/checkers/checkers.module-impl.ts`
+for a materially harder one (explicit turn/continuation state, mandatory
+capture, a multi-step turn spanning several accepted commands) — see
+ADR-022 for why Checkers needed `TState` fields Tic-Tac-Toe never did,
+and confirmation that the interface itself still didn't need to change.
 
 ## Server Authority
 
@@ -124,15 +138,16 @@ state. A free-play match (no stake) settles to nothing, by construction
 1. **Tic-Tac-Toe** — implemented (Phase 4), the reference game proving the
    `GameModule` contract end-to-end.
 2. Dice
-3. Checkers
+3. **Checkers** — implemented (Phase 7); see
+   [ADR-022](../decisions/ADR-022-checkers-game-module.md).
 4. Penalty
 5. Ice Hockey
 6. Stickman / G-Switch-style game
 7. Ludo
 8. Find the Marble
 
-2-8 remain planned for later phases, built on the same `GameModule`
-contract Tic-Tac-Toe already proves out.
+2, 4-8 remain planned for later phases, built on the same `GameModule`
+contract Tic-Tac-Toe and Checkers already prove out.
 
 ## External Games (Future, Separate Concern)
 

@@ -6,29 +6,27 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 6 — PRODUCTION PAYMENT INTEGRATION, FINANCIAL
-> OPERATIONS, ACCOUNT SECURITY & RESPONSIBLE-GAMING FOUNDATIONS**
+> **CURRENT PHASE: PHASE 7 — REPOSITORY AUDIT, MODERN GAME DESIGN
+> SYSTEM & PRODUCTION-QUALITY CHECKERS**
 >
-> Phases 1-5 (foundation, identity/authentication, wallet/ledger/financial
-> foundation, game platform/matchmaking/real-time, and match stakes/
-> settlement/disputes/reconciliation) are complete. Phase 6 is
-> implemented and tested across all three apps (backend unit + e2e
-> against a real Postgres instance; the admin dashboard migrated off
-> `localStorage` to a new httpOnly-cookie contract; the mobile app
-> extended with matching UX for all of the below) — all verified: a real
-> Monime payment integration (Payment Codes for deposits, Payouts for withdrawals,
-> status polling, and a dedicated payment-reconciliation service), admin
-> session cookies with CSRF protection, password reset, email/phone
-> verification, session management, TOTP-based MFA, and a centralized
-> real-money eligibility service with responsible-gaming limits/
-> cooling-off/self-exclusion. See
-> [ADR-019](docs/decisions/ADR-019-production-payments.md),
-> [ADR-020](docs/decisions/ADR-020-account-security.md), and
-> [ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md).
-> Webhook signature verification still fails closed pending one
-> unverifiable Monime fact, so no live payment is auto-confirmed yet. CI
-> is green, verified against a real GitHub Actions run. See "Roadmap"
-> and `CLAUDE.md` for what's in scope.
+> Phases 1-6 (foundation, identity/authentication, wallet/ledger/
+> financial foundation, game platform/matchmaking/real-time, match
+> stakes/settlement/disputes/reconciliation, and production Monime
+> payment/account-security/eligibility foundations) are complete. Phase
+> 7 opened with a full repository audit (verified against the real
+> code/schema/tests/CI — see `docs/development/OUTSTANDING_WORK.md` for
+> every item carried forward, confirmed, or newly found) and then built
+> a shared mobile game design system plus a complete, server-
+> authoritative Checkers game — the platform's second game, proving
+> Phase 4's `GameModule` contract generalizes with zero platform changes
+> (one new module, one registration edit, one seed migration). See
+> [ADR-022](docs/decisions/ADR-022-checkers-game-module.md) for the
+> rules engine (mandatory capture, multi-jump, promotion, the explicit
+> 40-move draw rule) and the design-system extraction. Everything from
+> Phase 6 (Monime, webhook verification, eligibility, responsible
+> gaming) is unchanged and still tracked in `OUTSTANDING_WORK.md`. CI is
+> green, verified against a real GitHub Actions run. See "Roadmap" and
+> `CLAUDE.md` for what's in scope.
 
 ## Overview
 
@@ -194,7 +192,7 @@ this repository.
   [ADR-017](docs/decisions/ADR-017-deterministic-settlement.md), and
   [ADR-018](docs/decisions/ADR-018-financial-state-machines.md).
 - **Phase 6 — Production Payment Integration, Financial Operations,
-  Account Security & Responsible-Gaming Foundations** (current). A real
+  Account Security & Responsible-Gaming Foundations** ✅ complete. A real
   Monime integration (Payment Codes for deposits, Payouts for
   withdrawals, status polling, provider-operation tracking, and a
   payment-reconciliation service distinct from Phase 5's match
@@ -209,8 +207,22 @@ this repository.
   Webhook signature verification still fails closed pending one
   unverifiable Monime fact, so live payments aren't auto-confirmed yet;
   no real email/SMS delivery provider is integrated (a
-  `FakeDeliveryAdapter` only); KYC, additional games, and social
-  features remain out of scope.
+  `FakeDeliveryAdapter` only) — see
+  `docs/development/OUTSTANDING_WORK.md` for this and every other item
+  still open.
+- **Phase 7 — Repository Audit, Modern Game Design System &
+  Production-Quality Checkers** (current). A verified repository audit;
+  a shared mobile game design system (spacing/radius/motion tokens,
+  board/piece/king colors, generic match chrome extracted out of
+  Tic-Tac-Toe into reusable widgets); and a complete, server-
+  authoritative Checkers game (mandatory capture, multi-jump
+  continuation, king promotion, an explicit 40-move draw rule) — the
+  platform's second game, requiring zero changes to matchmaking,
+  challenges, the command pipeline, realtime, stake confirmation, or
+  settlement. See
+  [ADR-022](docs/decisions/ADR-022-checkers-game-module.md). Two
+  pre-existing race conditions unrelated to Checkers (found during this
+  phase's audit) were also fixed — see the Phase 7 report.
 - The next phase is not yet defined/scheduled. Each phase is specified
   explicitly before implementation begins — see `CLAUDE.md`, "Phase
   Discipline".

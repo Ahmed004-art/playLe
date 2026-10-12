@@ -7,6 +7,9 @@ import '../../core/disputes/disputes_controller.dart';
 import '../../core/match/match_controller.dart';
 import '../../core/match/match_state.dart';
 import '../../core/wallet/wallet_controller.dart';
+import '../../core/widgets/error_retry_view.dart';
+import '../../core/widgets/loading_view.dart';
+import '../checkers/checkers_screen.dart';
 import '../tic_tac_toe/tic_tac_toe_screen.dart';
 import 'stake_confirm_screen.dart';
 
@@ -62,27 +65,12 @@ class _MatchScreenState extends State<MatchScreen> {
         final state = widget.matchController.state;
 
         return switch (state) {
-          MatchViewLoading() => const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          ),
+          MatchViewLoading() => const Scaffold(body: LoadingView()),
           MatchViewError(message: final message) => Scaffold(
             appBar: AppBar(),
-            body: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(message, textAlign: TextAlign.center),
-                    const SizedBox(height: 16),
-                    OutlinedButton(
-                      onPressed: () =>
-                          widget.matchController.loadMatch(widget.matchId),
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
+            body: ErrorRetryView(
+              message: message,
+              onRetry: () => widget.matchController.loadMatch(widget.matchId),
             ),
           ),
           MatchViewLoaded(
@@ -109,6 +97,23 @@ class _MatchScreenState extends State<MatchScreen> {
                       financial: financial,
                       onMove: (cell) =>
                           widget.matchController.submitMove({'cell': cell}),
+                      onExit: () => context.go('/account'),
+                      onDispute: (reason) async {
+                        await widget.disputesController.create(
+                          match.id,
+                          reason,
+                        );
+                      },
+                    ),
+                    'checkers' => CheckersScreen(
+                      match: match,
+                      currentUserId: currentUserId,
+                      lastRejection: rejection,
+                      financial: financial,
+                      onMove: (from, to) => widget.matchController.submitMove({
+                        'from': {'row': from.row, 'col': from.col},
+                        'to': {'row': to.row, 'col': to.col},
+                      }),
                       onExit: () => context.go('/account'),
                       onDispute: (reason) async {
                         await widget.disputesController.create(
