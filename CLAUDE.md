@@ -91,19 +91,21 @@ for the centralized real-money eligibility and responsible-gaming
 foundation. Phase 1 (foundation), Phase 2 (identity/authentication),
 Phase 3 (wallet/ledger/financial foundation), Phase 4 (game platform/
 matchmaking/real-time), and Phase 5 (match stakes, settlement,
-disputes, reconciliation) are complete. Phase 6's backend, account
-security, and eligibility/responsible-gaming work is implemented and
-tested (unit + e2e, passing locally against a real Postgres instance),
-and the admin frontend has been migrated off `localStorage` to the new
-cookie contract and verified: a real Monime integration (Payment Codes
-for deposits, Payouts for withdrawals, status polling, provider-
-operation tracking, and a separate payment-reconciliation service),
-admin httpOnly session cookies with CSRF protection, password reset,
+disputes, reconciliation) are complete. Phase 6 — a real Monime
+integration (Payment Codes for deposits, Payouts for withdrawals,
+status polling, provider-operation tracking, and a separate
+payment-reconciliation service), admin httpOnly session cookies with
+CSRF protection (replacing `localStorage`, migrated and verified in
+both the admin dashboard and the mobile app), password reset,
 email/phone verification (via a `FakeDeliveryAdapter` only — see "What
 NOT to Build Yet" below), session management, TOTP-based MFA, and a
 centralized `EligibilityService` with responsible-gaming limits/
-cooling-off/self-exclusion. CI has not yet been updated/re-verified for
-this phase — that is tracked separately and is not yet done.
+cooling-off/self-exclusion — is implemented and tested (unit + e2e
+against a real Postgres instance, mobile `flutter test`/Android debug
+build, admin `npm test`) and CI is green, verified against a real
+GitHub Actions run
+(https://github.com/Ahmed004-art/playLe/actions/runs/38269829729) —
+not merely a local pass.
 
 ## Repository Structure
 

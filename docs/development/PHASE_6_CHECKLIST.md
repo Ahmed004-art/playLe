@@ -406,8 +406,16 @@ unverified assumption.
       all clean (98/98 tests).
 - [x] Mobile Android debug build — **Complete**: `flutter build apk --debug`
       succeeded (`build/app/outputs/flutter-apk/app-debug.apk`).
-- [ ] CI green — Not started; the full changeset has not yet been
-      pushed, so no real GitHub Actions run has happened yet for Phase 6.
+- [x] CI green — **Complete**. Verified via the real GitHub Actions API
+      (not a local-pass assumption): the first push (`c65b618`) failed
+      two jobs (backend typecheck — two stale test files; admin format
+      check — two unformatted files from the delegated migration), both
+      fixed and re-pushed (`41e9ce5`), which then surfaced a real bug —
+      `CsrfGuard` throwing on every WebSocket message (see "CI findings"
+      below) — fixed and re-pushed (`b416e46`). That run
+      (https://github.com/Ahmed004-art/playLe/actions/runs/38269829729)
+      is `completed`/`success` across all three jobs (Backend, Mobile,
+      Admin).
 - [x] Documentation — **Complete**: CLAUDE.md, README.md, SECURITY.md,
       docs/database/README.md, docs/api/README.md,
       docs/architecture/OVERVIEW.md, docs/architecture/PROJECT_STRUCTURE.md,

@@ -11,12 +11,12 @@ receives the remaining 90%.
 >
 > Phases 1-5 (foundation, identity/authentication, wallet/ledger/financial
 > foundation, game platform/matchmaking/real-time, and match stakes/
-> settlement/disputes/reconciliation) are complete. Phase 6's backend,
-> account security, and eligibility/responsible-gaming work is implemented
-> and tested (unit + e2e, passing locally against a real Postgres
-> instance), and the admin frontend has been migrated off `localStorage`
-> to a new httpOnly-cookie contract and verified: a real Monime payment
-> integration (Payment Codes for deposits, Payouts for withdrawals,
+> settlement/disputes/reconciliation) are complete. Phase 6 is
+> implemented and tested across all three apps (backend unit + e2e
+> against a real Postgres instance; the admin dashboard migrated off
+> `localStorage` to a new httpOnly-cookie contract; the mobile app
+> extended with matching UX for all of the below) — all verified: a real
+> Monime payment integration (Payment Codes for deposits, Payouts for withdrawals,
 > status polling, and a dedicated payment-reconciliation service), admin
 > session cookies with CSRF protection, password reset, email/phone
 > verification, session management, TOTP-based MFA, and a centralized
@@ -26,8 +26,8 @@ receives the remaining 90%.
 > [ADR-020](docs/decisions/ADR-020-account-security.md), and
 > [ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md).
 > Webhook signature verification still fails closed pending one
-> unverifiable Monime fact, so no live payment is auto-confirmed yet; CI
-> has not yet been updated/re-verified for this phase. See "Roadmap"
+> unverifiable Monime fact, so no live payment is auto-confirmed yet. CI
+> is green, verified against a real GitHub Actions run. See "Roadmap"
 > and `CLAUDE.md` for what's in scope.
 
 ## Overview
