@@ -184,6 +184,9 @@ describe('AuthService', () => {
         password: 'Passw0rd1',
       });
 
+      if ('mfaRequired' in result) {
+        throw new Error('expected a successful login, not an MFA challenge');
+      }
       expect(result.accessToken).toBe('access');
       expect(usersService.updateLastLogin).toHaveBeenCalledWith(user.id);
     });

@@ -139,9 +139,7 @@ export function fetchLedger(userId: string): Promise<CursorPage<AdminLedgerEntry
 }
 
 export function fetchDeposits(userId: string): Promise<CursorPage<AdminDeposit>> {
-  return request<CursorPage<AdminDeposit>>(
-    `/admin/deposits?userId=${encodeURIComponent(userId)}`,
-  );
+  return request<CursorPage<AdminDeposit>>(`/admin/deposits?userId=${encodeURIComponent(userId)}`);
 }
 
 export function listWithdrawals(status?: string): Promise<CursorPage<AdminWithdrawal>> {

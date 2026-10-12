@@ -10,6 +10,7 @@ describe('ManualProvider', () => {
       userId: 'u1',
       amountMinor: 1000n,
       currency: 'SLE',
+      providerIdempotencyKey: 'idem-1',
     });
 
     expect(result.status).toBe('PENDING');

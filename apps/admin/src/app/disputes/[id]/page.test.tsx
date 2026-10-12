@@ -161,9 +161,7 @@ describe('DisputeDetailPage', () => {
       resolution: 'Reviewed replay; outcome stands as settled.',
     });
     expect(resolveInit?.credentials).toBe('include');
-    expect((resolveInit?.headers as Record<string, string>)['X-CSRF-Token']).toBe(
-      'csrf-dispute1',
-    );
+    expect((resolveInit?.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-dispute1');
   });
 
   it('shows a final-state message instead of the resolve form for a resolved dispute', async () => {
