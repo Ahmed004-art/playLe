@@ -439,5 +439,41 @@ unverified assumption.
   or requires a mandatory audited reason through the existing ledger/
   withdrawal paths.
 
+### CI findings (found via a real GitHub Actions run, not locally)
+- **Real regression, found and fixed**: `CsrfGuard` is registered
+  globally (`APP_GUARD`), so it also ran for every WebSocket message
+  handler in `RealtimeGateway` (`match:join`, `presence:heartbeat`),
+  not just HTTP `/admin/*` routes. It unconditionally called
+  `context.switchToHttp().getRequest()` and read `request.path` —
+  outside a real HTTP context this throws, so the guard rejected every
+  WS message before the handler ever ran, and the client never
+  received `match:joined`/`match:error`/`match:state`. This surfaced in
+  CI (not locally, where the same local sandbox already lacks Redis and
+  masked it behind an apparently-identical "Redis not reachable"-shaped
+  timeout) as `realtime.e2e-spec.ts` timing out waiting for
+  `match:joined`/`match:error` against a real Redis service container —
+  initially misdiagnosed as a recurrence of the historical "Redis
+  cold-start race" category (see `git log` around
+  `e611a17`/`548d007e`) before `context.getType() !== 'http'` tracing
+  revealed the actual cause. Fixed with a one-line guard:
+  `CsrfGuard.canActivate` now returns `true` immediately for any
+  non-HTTP execution context. Reverified: all 6 `realtime.e2e-spec.ts`
+  tests now pass locally with **no Redis running at all** (proving the
+  fix, not Redis availability, was the actual variable), and the full
+  local e2e suite went from 143/157 passing to 147/157 (the only
+  remaining local failure is `matchmaking.e2e-spec.ts`'s own explicit
+  "Redis is not reachable" guard — expected in this sandbox, not a bug).
+- Two stale test files failed `tsc -p tsconfig.json --noEmit` (the
+  backend's dedicated typecheck step, which checks `test/**` too,
+  unlike the build/vitest paths already verified locally):
+  `auth.service.spec.ts` accessed `.accessToken` on the new
+  `LoginResult` union without narrowing past the `mfaRequired` branch,
+  and `manual.provider.spec.ts` was missing the new required
+  `providerIdempotencyKey` field. Both fixed.
+- Two admin files from the delegated frontend-migration work
+  (`api-client.ts`, a `page.test.tsx`) weren't Prettier-formatted;
+  `format:check` (a dedicated CI step, separate from lint) caught it.
+  Fixed with `prettier --write`.
+
 This file is updated as each item lands; see the final Phase 6 report for
 the authoritative end-state.

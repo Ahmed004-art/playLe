@@ -39,7 +39,15 @@ method, and for `POST /admin/session/login` itself (no CSRF cookie
 exists before login). For everything else under `/admin/*`, the
 non-httpOnly `admin_csrf_token` cookie's value must be echoed back in an
 `X-CSRF-Token` header. Scoping it this way means it required **zero**
-changes to any existing admin controller or its tests.
+changes to any existing admin controller or its tests. Being a global
+`APP_GUARD` means it also runs for non-HTTP execution contexts —
+`canActivate` checks `context.getType() !== 'http'` and no-ops
+immediately, a fix added after a real GitHub Actions CI run surfaced
+that the guard was otherwise throwing on every `RealtimeGateway`
+WebSocket message (`switchToHttp().getRequest()` outside a real HTTP
+context does not return an Express `Request`), silently breaking
+`match:join` for every client — see
+`docs/development/PHASE_6_CHECKLIST.md`'s "CI findings" section.
 
 ### Password reset: single-use, hashed, anti-enumeration
 `PasswordResetToken` mirrors `RefreshToken`'s own pattern: the raw token

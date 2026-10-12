@@ -30,6 +30,14 @@ export class CsrfGuard implements CanActivate {
   constructor(private readonly auditService: AdminAuditService) {}
 
   canActivate(context: ExecutionContext): boolean {
+    // Registered globally, this guard also runs for non-HTTP contexts
+    // (WebSocket message handlers in `RealtimeGateway`) — CSRF is an
+    // HTTP-cookie concept and meaningless there, so it must no-op rather
+    // than call `switchToHttp()` (which, outside a real HTTP context,
+    // does not return a real Express `Request` and would throw on
+    // `request.path`).
+    if (context.getType() !== 'http') return true;
+
     const request = context.switchToHttp().getRequest<Request>();
 
     if (!request.path.startsWith('/api/v1/admin')) return true;
