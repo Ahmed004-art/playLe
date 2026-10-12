@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString } from 'class-validator';
-import { WithdrawalStatus } from '@prisma/client';
+import { PaymentAnomalyStatus, WithdrawalStatus } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto.js';
 
 export class AdminLedgerQueryDto extends PaginationQueryDto {
@@ -27,4 +27,18 @@ export class AdminWithdrawalsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(Object.values(WithdrawalStatus))
   status?: WithdrawalStatus;
+}
+
+export class AdminPaymentAnomaliesQueryDto extends PaginationQueryDto {
+  @ApiPropertyOptional({ enum: PaymentAnomalyStatus })
+  @IsOptional()
+  @IsIn(Object.values(PaymentAnomalyStatus))
+  status?: PaymentAnomalyStatus;
+}
+
+export class AdminProviderOperationsQueryDto extends PaginationQueryDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  userId?: string;
 }

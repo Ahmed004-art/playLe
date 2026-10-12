@@ -6,10 +6,12 @@ import { useAuth } from '@/lib/auth-context';
 
 /**
  * Wraps a page that requires an authenticated admin. Route protection is
- * client-side (tokens live in localStorage, which Next.js middleware
- * can't read during server rendering) — see token-storage.ts for the
- * tradeoff. The actual authorization boundary is the API itself: this
- * only controls what the admin UI shows, not what the backend allows.
+ * client-side (the session lives in httpOnly cookies that Next.js
+ * middleware could read, but there is no middleware-based gate yet — see
+ * `auth-context.tsx`, which asks the API via `GET /admin/session/me`
+ * whether a valid session cookie is present). The actual authorization
+ * boundary is the API itself: this only controls what the admin UI
+ * shows, not what the backend allows.
  */
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();

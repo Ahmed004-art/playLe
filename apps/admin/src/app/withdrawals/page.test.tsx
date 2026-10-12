@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 import WithdrawalsPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -35,7 +34,8 @@ const PENDING_WITHDRAWAL = {
 };
 
 function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
-  return vi.fn((url: string) => {
+  return vi.fn((url: string, init?: RequestInit) => {
+    void init;
     for (const [path, body] of Object.entries(routes)) {
       if (url.includes(path)) {
         return Promise.resolve({ ok: true, status: 200, json: async () => body });
@@ -52,15 +52,14 @@ function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
 describe('WithdrawalsPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
+    document.cookie = 'admin_csrf_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/';
   });
 
   it('lists pending withdrawals for an authenticated admin', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/withdrawals': { items: [PENDING_WITHDRAWAL], nextCursor: null },
       }),
     );
@@ -76,9 +75,8 @@ describe('WithdrawalsPage', () => {
   });
 
   it('requires a reason of at least 10 characters before approving', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     const fetchMock = mockFetchRoutedByUrl({
-      '/auth/me': ADMIN_USER,
+      '/admin/session/me': ADMIN_USER,
       '/admin/withdrawals': { items: [PENDING_WITHDRAWAL], nextCursor: null },
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -104,9 +102,8 @@ describe('WithdrawalsPage', () => {
   });
 
   it('sends the approve action with the provided reason', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     const fetchMock = mockFetchRoutedByUrl({
-      '/auth/me': ADMIN_USER,
+      '/admin/session/me': ADMIN_USER,
       '/admin/withdrawals/withdrawal-1/approve': { ...PENDING_WITHDRAWAL, status: 'APPROVED' },
       '/admin/withdrawals': { items: [PENDING_WITHDRAWAL], nextCursor: null },
     });
@@ -128,5 +125,37 @@ describe('WithdrawalsPage', () => {
     await waitFor(() =>
       expect(fetchMock.mock.calls.some((call) => call[0].includes('/approve'))).toBe(true),
     );
+  });
+
+  it('includes the X-CSRF-Token header (matching the admin_csrf_token cookie) on the approve call', async () => {
+    document.cookie = 'admin_csrf_token=csrf-xyz789; path=/';
+    const fetchMock = mockFetchRoutedByUrl({
+      '/admin/session/me': ADMIN_USER,
+      '/admin/withdrawals/withdrawal-1/approve': { ...PENDING_WITHDRAWAL, status: 'APPROVED' },
+      '/admin/withdrawals': { items: [PENDING_WITHDRAWAL], nextCursor: null },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal(
+      'prompt',
+      vi.fn(() => 'Verified identity via support ticket #1'),
+    );
+
+    render(
+      <AuthProvider>
+        <WithdrawalsPage />
+      </AuthProvider>,
+    );
+
+    const approveButton = await screen.findByText('Approve');
+    fireEvent.click(approveButton);
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((call) => call[0].includes('/approve'))).toBe(true),
+    );
+
+    const approveCall = fetchMock.mock.calls.find((call) => call[0].includes('/approve'));
+    const [, init] = approveCall as [string, RequestInit];
+    expect(init?.credentials).toBe('include');
+    expect((init?.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-xyz789');
   });
 });

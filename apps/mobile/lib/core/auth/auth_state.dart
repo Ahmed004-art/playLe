@@ -20,3 +20,14 @@ class AuthAuthenticated extends AuthState {
 class AuthUnauthenticated extends AuthState {
   const AuthUnauthenticated();
 }
+
+/// `/auth/login` paused for an MFA challenge instead of issuing tokens
+/// (the account has TOTP enrolled — see ADR-020). The router redirects
+/// here until [AuthController.verifyMfaLogin] succeeds (→
+/// [AuthAuthenticated]) or [AuthController.cancelMfaChallenge] is called
+/// (→ [AuthUnauthenticated]).
+class AuthMfaChallenge extends AuthState {
+  const AuthMfaChallenge(this.mfaChallengeToken);
+
+  final String mfaChallengeToken;
+}

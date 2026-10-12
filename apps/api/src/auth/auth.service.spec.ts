@@ -11,6 +11,7 @@ import { PasswordService } from './password.service.js';
 import { TokenService } from './token.service.js';
 import { UsersService } from '../users/users.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import type { MfaService } from '../mfa/mfa.service.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
 function fakeUser(overrides: Partial<User> = {}): User {
@@ -60,6 +61,7 @@ describe('AuthService', () => {
     revokeAllForUser: ReturnType<typeof vi.fn>;
   };
   let configService: ConfigService<AppConfiguration, true>;
+  let mfaService: { isEnrolled: ReturnType<typeof vi.fn> };
   let service: AuthService;
 
   beforeEach(() => {
@@ -93,6 +95,7 @@ describe('AuthService', () => {
       AppConfiguration,
       true
     >;
+    mfaService = { isEnrolled: vi.fn().mockResolvedValue(false) };
 
     service = new AuthService(
       prisma as unknown as PrismaService,
@@ -100,6 +103,7 @@ describe('AuthService', () => {
       passwordService as unknown as PasswordService,
       tokenService as unknown as TokenService,
       configService,
+      mfaService as unknown as MfaService,
     );
   });
 

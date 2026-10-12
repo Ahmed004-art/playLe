@@ -15,6 +15,7 @@ describe('validate (environment variables)', () => {
     JWT_ACCESS_TTL: '15m',
     JWT_REFRESH_TTL_DAYS: '30',
     AUTH_MIN_AGE_YEARS: '16',
+    MFA_ENCRYPTION_KEY: 'b'.repeat(64),
   };
 
   it('accepts a fully valid environment', () => {

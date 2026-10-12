@@ -3,9 +3,10 @@ import { MatchStakesService } from './match-stakes.service.js';
 import { LedgerModule } from '../ledger/ledger.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
 import { RealtimeModule } from '../realtime/realtime.module.js';
+import { EligibilityModule } from '../eligibility/eligibility.module.js';
 
 @Module({
-  imports: [LedgerModule, WalletModule, RealtimeModule],
+  imports: [LedgerModule, WalletModule, RealtimeModule, EligibilityModule],
   providers: [MatchStakesService],
   exports: [MatchStakesService],
 })

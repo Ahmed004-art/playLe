@@ -10,8 +10,13 @@ import '../match/match_controller.dart';
 import '../matchmaking/matchmaking_controller.dart';
 import '../wallet/wallet_controller.dart';
 import '../../features/auth/account_screen.dart';
+import '../../features/auth/forgot_password_screen.dart';
 import '../../features/auth/login_screen.dart';
+import '../../features/auth/mfa_challenge_screen.dart';
+import '../../features/auth/mfa_screen.dart';
 import '../../features/auth/register_screen.dart';
+import '../../features/auth/responsible_gaming_screen.dart';
+import '../../features/auth/sessions_screen.dart';
 import '../../features/auth/welcome_screen.dart';
 import '../../features/disputes/disputes_screen.dart';
 import '../../features/games/game_lobby_screen.dart';
@@ -20,8 +25,11 @@ import '../../features/games/match_screen.dart';
 import '../../features/wallet/deposit_screen.dart';
 import '../../features/wallet/wallet_screen.dart';
 import '../../features/wallet/withdraw_screen.dart';
+import '../mfa/mfa_controller.dart';
+import '../responsible_gaming/responsible_gaming_controller.dart';
+import '../sessions/sessions_controller.dart';
 
-const _publicRoutes = {'/', '/login', '/register'};
+const _publicRoutes = {'/', '/login', '/register', '/password-reset'};
 
 /// Routing/navigation foundation. `redirect` re-runs whenever
 /// [authController] notifies (it's a [ChangeNotifier]), via
@@ -53,13 +61,20 @@ GoRouter buildAppRouter(
     refreshListenable: authController,
     redirect: (context, state) {
       final authState = authController.state;
-      final goingToPublicRoute = _publicRoutes.contains(state.matchedLocation);
+      final location = state.matchedLocation;
+      final goingToPublicRoute = _publicRoutes.contains(location);
 
       if (authState is AuthUnknown) {
         // Still restoring a persisted session — don't redirect yet.
         return null;
       }
-      if (authState is AuthAuthenticated && goingToPublicRoute) {
+      // `/auth/login` paused for an MFA challenge — the only screen
+      // reachable in this state is `/mfa-challenge` itself.
+      if (authState is AuthMfaChallenge) {
+        return location == '/mfa-challenge' ? null : '/mfa-challenge';
+      }
+      if (authState is AuthAuthenticated &&
+          (goingToPublicRoute || location == '/mfa-challenge')) {
         return '/account';
       }
       if (authState is AuthUnauthenticated && !goingToPublicRoute) {
@@ -80,9 +95,37 @@ GoRouter buildAppRouter(
             RegisterScreen(authController: authController),
       ),
       GoRoute(
+        path: '/password-reset',
+        builder: (context, state) =>
+            ForgotPasswordScreen(authController: authController),
+      ),
+      GoRoute(
+        path: '/mfa-challenge',
+        builder: (context, state) =>
+            MfaChallengeScreen(authController: authController),
+      ),
+      GoRoute(
         path: '/account',
         builder: (context, state) =>
             AccountScreen(authController: authController),
+      ),
+      GoRoute(
+        path: '/account/mfa',
+        builder: (context, state) =>
+            MfaScreen(mfaController: sl<MfaController>()),
+      ),
+      GoRoute(
+        path: '/account/sessions',
+        builder: (context, state) => SessionsScreen(
+          sessionsController: sl<SessionsController>(),
+          authController: authController,
+        ),
+      ),
+      GoRoute(
+        path: '/account/responsible-gaming',
+        builder: (context, state) => ResponsibleGamingScreen(
+          controller: sl<ResponsibleGamingController>(),
+        ),
       ),
       GoRoute(
         path: '/wallet',

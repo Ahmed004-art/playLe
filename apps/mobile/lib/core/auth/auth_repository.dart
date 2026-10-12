@@ -12,6 +12,26 @@ abstract final class AuthStorageKeys {
   static const refreshToken = 'auth.refresh_token';
 }
 
+/// The result of [AuthRepository.login] — either a normal successful
+/// login, or a pause for an MFA challenge (mirrors the API's union
+/// response: `AuthResponseDto | MfaChallengeResponseDto` — see
+/// `apps/api/src/auth/auth.controller.ts`).
+sealed class LoginResult {
+  const LoginResult();
+}
+
+class LoginSuccess extends LoginResult {
+  const LoginSuccess(this.user);
+
+  final AppUser user;
+}
+
+class LoginMfaRequired extends LoginResult {
+  const LoginMfaRequired(this.mfaChallengeToken);
+
+  final String mfaChallengeToken;
+}
+
 /// Authentication abstraction. The UI never talks to [ApiClient] or
 /// [SecureStorage] directly for auth — only through this repository (see
 /// `core/auth/auth_controller.dart`), so the HTTP/storage implementation
@@ -23,6 +43,12 @@ abstract class AuthRepository {
   /// Returns null if there's no session, or it couldn't be restored.
   Future<AppUser?> loadSession();
 
+  /// Re-fetches the current user (`GET /auth/me`) without touching the
+  /// session itself — used after an action that changes the user's own
+  /// record server-side but not their tokens (e.g. confirming email/phone
+  /// verification).
+  Future<AppUser> fetchCurrentUser();
+
   Future<AppUser> register({
     required String email,
     required String username,
@@ -31,13 +57,47 @@ abstract class AuthRepository {
     String? phoneNumber,
   });
 
-  Future<AppUser> login({required String identifier, required String password});
+  Future<LoginResult> login({
+    required String identifier,
+    required String password,
+  });
+
+  /// Completes a login that [login] paused for an MFA challenge. [code]
+  /// may be a 6-digit TOTP code or an 8-character recovery code — the API
+  /// accepts either in the same field.
+  Future<AppUser> verifyMfaLogin({
+    required String mfaChallengeToken,
+    required String code,
+  });
 
   Future<void> logout();
 
   Future<void> changePassword({
     required String currentPassword,
     required String newPassword,
+  });
+
+  /// Requests a password reset code. Always succeeds with the identical
+  /// generic server message whether or not [identifier] matches an
+  /// account — never used to infer account existence.
+  Future<String> requestPasswordReset(String identifier);
+
+  /// Completes a password reset. Revokes every existing session for the
+  /// account server-side; this device's own session is cleared as part
+  /// of that, so the caller must send the user back through [login].
+  Future<void> confirmPasswordReset({
+    required String token,
+    required String newPassword,
+  });
+
+  /// Sends a one-time verification code for [channel] (`'EMAIL'` or
+  /// `'SMS'`) to the authenticated user.
+  Future<void> requestVerification(String channel);
+
+  /// Confirms a verification code for [channel].
+  Future<void> confirmVerification({
+    required String channel,
+    required String code,
   });
 }
 
@@ -64,6 +124,12 @@ class HttpAuthRepository implements AuthRepository {
       }
       rethrow;
     }
+  }
+
+  @override
+  Future<AppUser> fetchCurrentUser() async {
+    final response = await apiClient.get<Map<String, dynamic>>('/auth/me');
+    return AppUser.fromJson(response.data!);
   }
 
   Future<AppUser?> _tryRefresh() async {
@@ -108,13 +174,29 @@ class HttpAuthRepository implements AuthRepository {
   }
 
   @override
-  Future<AppUser> login({
+  Future<LoginResult> login({
     required String identifier,
     required String password,
   }) async {
     final response = await apiClient.post<Map<String, dynamic>>(
       '/auth/login',
       data: {'identifier': identifier, 'password': password},
+    );
+    final body = response.data!;
+    if (body['mfaRequired'] == true) {
+      return LoginMfaRequired(body['mfaChallengeToken'] as String);
+    }
+    return LoginSuccess(await _persistAuthResponse(body));
+  }
+
+  @override
+  Future<AppUser> verifyMfaLogin({
+    required String mfaChallengeToken,
+    required String code,
+  }) async {
+    final response = await apiClient.post<Map<String, dynamic>>(
+      '/auth/mfa/verify',
+      data: {'mfaChallengeToken': mfaChallengeToken, 'code': code},
     );
     return _persistAuthResponse(response.data!);
   }
@@ -148,6 +230,48 @@ class HttpAuthRepository implements AuthRepository {
     // The API revokes every session on password change, including this
     // device's refresh token — the user must log in again.
     await _clearSession();
+  }
+
+  @override
+  Future<String> requestPasswordReset(String identifier) async {
+    final response = await apiClient.post<Map<String, dynamic>>(
+      '/auth/password-reset/request',
+      data: {'identifier': identifier},
+    );
+    return response.data!['message'] as String;
+  }
+
+  @override
+  Future<void> confirmPasswordReset({
+    required String token,
+    required String newPassword,
+  }) async {
+    await apiClient.post<void>(
+      '/auth/password-reset/confirm',
+      data: {'token': token, 'newPassword': newPassword},
+    );
+    // The API revokes every existing session (including this device's)
+    // on a successful reset — clear whatever we had locally too.
+    await _clearSession();
+  }
+
+  @override
+  Future<void> requestVerification(String channel) async {
+    await apiClient.post<void>(
+      '/auth/verification/request',
+      data: {'channel': channel},
+    );
+  }
+
+  @override
+  Future<void> confirmVerification({
+    required String channel,
+    required String code,
+  }) async {
+    await apiClient.post<void>(
+      '/auth/verification/confirm',
+      data: {'channel': channel, 'code': code},
+    );
   }
 
   Future<AppUser> _persistAuthResponse(Map<String, dynamic> body) async {

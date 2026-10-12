@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/theme/app_colors.dart';
+import 'verification_dialog.dart';
 
 /// The authenticated landing screen — a minimal hub linking out to
 /// Games and Wallet. Social features are still a later phase.
@@ -32,7 +33,7 @@ class AccountScreen extends StatelessWidget {
           final user = state.user;
 
           return SafeArea(
-            child: Padding(
+            child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -67,6 +68,26 @@ class AccountScreen extends StatelessWidget {
                     _InfoRow(label: 'Phone', value: user.phoneNumber!),
                   _InfoRow(label: 'Role', value: user.role),
                   _InfoRow(label: 'Status', value: user.status),
+                  const SizedBox(height: 8),
+                  _VerificationRow(
+                    label: 'Email',
+                    verified: user.isEmailVerified,
+                    onVerify: () => showVerificationDialog(
+                      context,
+                      authController: authController,
+                      channel: 'EMAIL',
+                    ),
+                  ),
+                  if (user.phoneNumber != null)
+                    _VerificationRow(
+                      label: 'Phone',
+                      verified: user.isPhoneVerified,
+                      onVerify: () => showVerificationDialog(
+                        context,
+                        authController: authController,
+                        channel: 'SMS',
+                      ),
+                    ),
                   const SizedBox(height: 24),
                   FilledButton(
                     onPressed: () => context.push('/games'),
@@ -82,7 +103,23 @@ class AccountScreen extends StatelessWidget {
                     onPressed: () => context.push('/disputes'),
                     child: const Text('My Disputes'),
                   ),
-                  const Spacer(),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: () => context.push('/account/mfa'),
+                    child: const Text('Two-factor authentication'),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: () => context.push('/account/sessions'),
+                    child: const Text('Active sessions'),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: () =>
+                        context.push('/account/responsible-gaming'),
+                    child: const Text('Responsible gaming'),
+                  ),
+                  const SizedBox(height: 24),
                   OutlinedButton(
                     onPressed: () => authController.logout(),
                     child: const Text('Log out'),
@@ -92,6 +129,41 @@ class AccountScreen extends StatelessWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _VerificationRow extends StatelessWidget {
+  const _VerificationRow({
+    required this.label,
+    required this.verified,
+    required this.onVerify,
+  });
+
+  final String label;
+  final bool verified;
+  final VoidCallback onVerify;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              verified ? '$label: verified' : '$label: not verified',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: verified
+                    ? AppColors.secondary
+                    : AppColors.onSurfaceMuted,
+              ),
+            ),
+          ),
+          if (!verified)
+            TextButton(onPressed: onVerify, child: const Text('Verify now')),
+        ],
       ),
     );
   }

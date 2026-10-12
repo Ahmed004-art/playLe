@@ -22,6 +22,7 @@ Future<void> main() async {
         realtime.connect();
       case AuthUnauthenticated():
         realtime.disconnect();
+      case AuthMfaChallenge():
       case AuthUnknown():
         break;
     }

@@ -1,7 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 import MatchDetailPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -58,15 +57,13 @@ function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
 describe('MatchDetailPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
   });
 
   it('shows the match status, winner, and players for an authenticated admin', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/matches/match-1': COMPLETED_MATCH,
       }),
     );
@@ -83,11 +80,10 @@ describe('MatchDetailPage', () => {
   });
 
   it('surfaces a load failure as an error message', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
       }),
     );
 
@@ -101,11 +97,10 @@ describe('MatchDetailPage', () => {
   });
 
   it('has no action to set or override the match result', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/matches/match-1': COMPLETED_MATCH,
       }),
     );
@@ -123,7 +118,6 @@ describe('MatchDetailPage', () => {
   });
 
   it('shows the financial section when the match has a stake and settlement', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
@@ -168,7 +162,7 @@ describe('MatchDetailPage', () => {
           },
         },
         '/admin/matches/match-1': COMPLETED_MATCH,
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
       }),
     );
 
@@ -188,13 +182,12 @@ describe('MatchDetailPage', () => {
   });
 
   it('shows no financial section for a free-play match (stake and settlement both null)', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
         '/admin/matches/match-1/financial': { stake: null, settlement: null },
         '/admin/matches/match-1': COMPLETED_MATCH,
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
       }),
     );
 

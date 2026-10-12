@@ -18,6 +18,8 @@ class FakeWalletRepository implements WalletRepository {
   AppException? nextError;
   Deposit? lastDeposit;
   Withdrawal? lastWithdrawal;
+  Deposit? depositToReturnFromGet;
+  Withdrawal? withdrawalToReturnFromGet;
 
   @override
   Future<Wallet> getWallet() async {
@@ -34,7 +36,10 @@ class FakeWalletRepository implements WalletRepository {
   @override
   Future<Deposit> createDeposit({required String amountMinor}) async {
     if (nextError != null) throw nextError!;
-    lastDeposit = Deposit(
+    // Honor a deposit pre-configured by the test (e.g. one with
+    // `paymentInstructions`/a non-default status/provider); only fall back
+    // to a plain default when the test didn't set one up.
+    lastDeposit ??= Deposit(
       id: 'deposit-1',
       amountMinor: amountMinor,
       currency: 'SLE',
@@ -43,6 +48,35 @@ class FakeWalletRepository implements WalletRepository {
       createdAt: DateTime.now(),
     );
     return lastDeposit!;
+  }
+
+  @override
+  Future<Deposit> getDeposit(String id) async {
+    if (nextError != null) throw nextError!;
+    return depositToReturnFromGet ??
+        lastDeposit ??
+        Deposit(
+          id: id,
+          amountMinor: '0',
+          currency: 'SLE',
+          status: 'PENDING',
+          provider: 'MANUAL',
+          createdAt: DateTime.now(),
+        );
+  }
+
+  @override
+  Future<Withdrawal> getWithdrawal(String id) async {
+    if (nextError != null) throw nextError!;
+    return withdrawalToReturnFromGet ??
+        lastWithdrawal ??
+        Withdrawal(
+          id: id,
+          amountMinor: '0',
+          currency: 'SLE',
+          status: 'PENDING_REVIEW',
+          createdAt: DateTime.now(),
+        );
   }
 
   @override

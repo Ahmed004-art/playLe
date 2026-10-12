@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module.js';
 import type { AppConfiguration } from './config/configuration.js';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter.js';
@@ -19,6 +20,9 @@ async function bootstrap(): Promise<void> {
   const env = configService.get('env', { infer: true });
 
   app.use(helmet());
+  // Needed to read the httpOnly admin-session cookies (see
+  // src/admin-auth/) — `req.cookies` is otherwise undefined.
+  app.use(cookieParser());
   app.enableCors({ origin: corsOrigins, credentials: true });
 
   app.setGlobalPrefix('api');

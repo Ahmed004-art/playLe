@@ -58,6 +58,27 @@ class LedgerEntry {
   final String? reason;
 }
 
+/// Real-action USSD "Payment Code" instructions for a Payment-Code-backed
+/// deposit (Monime — see docs/decisions/ADR-019-production-payments.md).
+/// Absent for a MANUAL-provider deposit. PlayLe never dials this code or
+/// confirms the deposit automatically — the user must do it themselves on
+/// their own phone.
+class DepositPaymentInstructions {
+  const DepositPaymentInstructions({this.ussdCode, this.expiresAt});
+
+  factory DepositPaymentInstructions.fromJson(Map<String, dynamic> json) {
+    return DepositPaymentInstructions(
+      ussdCode: json['ussdCode'] as String?,
+      expiresAt: json['expiresAt'] == null
+          ? null
+          : DateTime.parse(json['expiresAt'] as String),
+    );
+  }
+
+  final String? ussdCode;
+  final DateTime? expiresAt;
+}
+
 class Deposit {
   const Deposit({
     required this.id,
@@ -68,6 +89,7 @@ class Deposit {
     required this.createdAt,
     this.providerReference,
     this.failureReason,
+    this.paymentInstructions,
   });
 
   factory Deposit.fromJson(Map<String, dynamic> json) {
@@ -80,6 +102,11 @@ class Deposit {
       createdAt: DateTime.parse(json['createdAt'] as String),
       providerReference: json['providerReference'] as String?,
       failureReason: json['failureReason'] as String?,
+      paymentInstructions: json['paymentInstructions'] == null
+          ? null
+          : DepositPaymentInstructions.fromJson(
+              json['paymentInstructions'] as Map<String, dynamic>,
+            ),
     );
   }
 
@@ -91,6 +118,12 @@ class Deposit {
   final DateTime createdAt;
   final String? providerReference;
   final String? failureReason;
+  final DepositPaymentInstructions? paymentInstructions;
+
+  /// Terminal statuses: once reached, no further webhook-driven change is
+  /// expected, so polling can stop (`PENDING` is the only non-terminal
+  /// deposit status — see `apps/api/prisma/schema.prisma`'s `DepositStatus`).
+  bool get isTerminal => status != 'PENDING';
 }
 
 class Withdrawal {
@@ -120,4 +153,12 @@ class Withdrawal {
   final String status;
   final DateTime createdAt;
   final String? failureReason;
+
+  /// `PENDING_REVIEW`, `APPROVED`, and `PROCESSING` are all non-terminal
+  /// (see `apps/api/prisma/schema.prisma`'s `WithdrawalStatus` and
+  /// docs/decisions/ADR-019-production-payments.md's `PROCESSING` note).
+  bool get isTerminal =>
+      status != 'PENDING_REVIEW' &&
+      status != 'APPROVED' &&
+      status != 'PROCESSING';
 }

@@ -1,7 +1,6 @@
 import type { ApiErrorResponse } from '@playle/shared';
 import { appConfig } from './config';
-import { tokenStorage } from './token-storage';
-import type { AdminUser, AuthResponse } from './auth-types';
+import type { AdminUser } from './auth-types';
 import type {
   AdminWallet,
   AdminLedgerEntry,
@@ -16,7 +15,7 @@ import type { ReconciliationReport } from './reconciliation-types';
 /**
  * API client abstraction. Admin UI code calls functions from this module
  * rather than using `fetch` directly, so the base URL, error handling, and
- * auth-header attachment stay in one place.
+ * cookie/CSRF attachment stay in one place.
  */
 export class ApiRequestError extends Error {
   constructor(
@@ -28,18 +27,57 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit, auth = false): Promise<T> {
+// --- Session cookies & CSRF (Phase 6 account-security hardening) ---
+// The admin session now lives entirely in httpOnly cookies
+// (`admin_access_token`, `admin_refresh_token`) set by the API — there is
+// no token in the response body and nothing is stored in `localStorage`.
+// `credentials: 'include'` on every request makes the browser attach
+// those cookies automatically. The one cookie that is NOT httpOnly,
+// `admin_csrf_token`, exists so this client can read it and echo it back
+// as the `X-CSRF-Token` header on every mutating `/admin/*` request (the
+// double-submit CSRF pattern) — the lone exception is logging in itself,
+// since no CSRF cookie exists yet before a session does.
+const CSRF_COOKIE_NAME = 'admin_csrf_token';
+const CSRF_EXEMPT_PATHS = new Set(['/admin/session/login']);
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Reads a named cookie's value. Guarded for SSR, where `document` doesn't exist. */
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  for (const pair of document.cookie.split('; ')) {
+    const separatorIndex = pair.indexOf('=');
+    if (separatorIndex === -1) continue;
+    if (pair.slice(0, separatorIndex) === name) {
+      return decodeURIComponent(pair.slice(separatorIndex + 1));
+    }
+  }
+  return null;
+}
+
+function needsCsrfHeader(path: string, method: string): boolean {
+  return (
+    MUTATING_METHODS.has(method.toUpperCase()) &&
+    path.startsWith('/admin') &&
+    !CSRF_EXEMPT_PATHS.has(path)
+  );
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init?.headers as Record<string, string> | undefined),
   };
 
-  if (auth) {
-    const token = tokenStorage.getAccessToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+  if (needsCsrfHeader(path, init?.method ?? 'GET')) {
+    const csrfToken = readCookie(CSRF_COOKIE_NAME);
+    if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
   }
 
-  const response = await fetch(`${appConfig.apiBaseUrl}${path}`, { ...init, headers });
+  const response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
+    ...init,
+    headers,
+    credentials: 'include',
+  });
 
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as ApiErrorResponse | null;
@@ -66,25 +104,19 @@ export function getHealth(): Promise<HealthCheckResponse> {
   return request<HealthCheckResponse>('/health');
 }
 
-export function login(identifier: string, password: string): Promise<AuthResponse> {
-  return request<AuthResponse>('/auth/login', {
+export function login(identifier: string, password: string): Promise<AdminUser> {
+  return request<AdminUser>('/admin/session/login', {
     method: 'POST',
     body: JSON.stringify({ identifier, password }),
   });
 }
 
 export function fetchCurrentUser(): Promise<AdminUser> {
-  return request<AdminUser>('/auth/me', {}, true);
+  return request<AdminUser>('/admin/session/me');
 }
 
 export async function logout(): Promise<void> {
-  const refreshToken = tokenStorage.getRefreshToken();
-  if (!refreshToken) return;
-  await request<void>(
-    '/auth/logout',
-    { method: 'POST', body: JSON.stringify({ refreshToken }) },
-    true,
-  ).catch(() => {
+  await request<void>('/admin/session/logout', { method: 'POST' }).catch(() => {
     // Best-effort — the local session is cleared by the caller regardless.
   });
 }
@@ -97,60 +129,52 @@ export async function logout(): Promise<void> {
 // real authorization boundary.
 
 export function fetchWallet(userId: string): Promise<AdminWallet> {
-  return request<AdminWallet>(`/admin/wallets/${userId}`, {}, true);
+  return request<AdminWallet>(`/admin/wallets/${userId}`);
 }
 
 export function fetchLedger(userId: string): Promise<CursorPage<AdminLedgerEntry>> {
   return request<CursorPage<AdminLedgerEntry>>(
     `/admin/ledger?userId=${encodeURIComponent(userId)}`,
-    {},
-    true,
   );
 }
 
 export function fetchDeposits(userId: string): Promise<CursorPage<AdminDeposit>> {
   return request<CursorPage<AdminDeposit>>(
     `/admin/deposits?userId=${encodeURIComponent(userId)}`,
-    {},
-    true,
   );
 }
 
 export function listWithdrawals(status?: string): Promise<CursorPage<AdminWithdrawal>> {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
-  return request<CursorPage<AdminWithdrawal>>(`/admin/withdrawals${query}`, {}, true);
+  return request<CursorPage<AdminWithdrawal>>(`/admin/withdrawals${query}`);
 }
 
 export function approveWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
-  return request<AdminWithdrawal>(
-    `/admin/withdrawals/${id}/approve`,
-    { method: 'POST', body: JSON.stringify({ reason }) },
-    true,
-  );
+  return request<AdminWithdrawal>(`/admin/withdrawals/${id}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export function rejectWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
-  return request<AdminWithdrawal>(
-    `/admin/withdrawals/${id}/reject`,
-    { method: 'POST', body: JSON.stringify({ reason }) },
-    true,
-  );
+  return request<AdminWithdrawal>(`/admin/withdrawals/${id}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export function completeWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
-  return request<AdminWithdrawal>(
-    `/admin/withdrawals/${id}/complete`,
-    { method: 'POST', body: JSON.stringify({ reason }) },
-    true,
-  );
+  return request<AdminWithdrawal>(`/admin/withdrawals/${id}/complete`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export function failWithdrawal(id: string, reason: string): Promise<AdminWithdrawal> {
-  return request<AdminWithdrawal>(
-    `/admin/withdrawals/${id}/fail`,
-    { method: 'POST', body: JSON.stringify({ reason }) },
-    true,
-  );
+  return request<AdminWithdrawal>(`/admin/withdrawals/${id}/fail`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
 }
 
 // --- Match visibility (Phase 4) ---
@@ -159,11 +183,11 @@ export function failWithdrawal(id: string, reason: string): Promise<AdminWithdra
 
 export function listMatches(status?: string): Promise<CursorPage<AdminMatch>> {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
-  return request<CursorPage<AdminMatch>>(`/admin/matches${query}`, {}, true);
+  return request<CursorPage<AdminMatch>>(`/admin/matches${query}`);
 }
 
 export function fetchMatch(id: string): Promise<AdminMatch> {
-  return request<AdminMatch>(`/admin/matches/${encodeURIComponent(id)}`, {}, true);
+  return request<AdminMatch>(`/admin/matches/${encodeURIComponent(id)}`);
 }
 
 // --- Match financial detail, disputes & reconciliation (Phase 5) ---
@@ -174,20 +198,16 @@ export function fetchMatch(id: string): Promise<AdminMatch> {
 // Reconciliation is read-only: running it never modifies any record.
 
 export function fetchMatchFinancial(matchId: string): Promise<AdminMatchFinancial> {
-  return request<AdminMatchFinancial>(
-    `/admin/matches/${encodeURIComponent(matchId)}/financial`,
-    {},
-    true,
-  );
+  return request<AdminMatchFinancial>(`/admin/matches/${encodeURIComponent(matchId)}/financial`);
 }
 
 export function listDisputes(status?: string): Promise<CursorPage<AdminDispute>> {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
-  return request<CursorPage<AdminDispute>>(`/admin/disputes${query}`, {}, true);
+  return request<CursorPage<AdminDispute>>(`/admin/disputes${query}`);
 }
 
 export function fetchDispute(id: string): Promise<AdminDispute> {
-  return request<AdminDispute>(`/admin/disputes/${encodeURIComponent(id)}`, {}, true);
+  return request<AdminDispute>(`/admin/disputes/${encodeURIComponent(id)}`);
 }
 
 export function resolveDispute(
@@ -195,13 +215,12 @@ export function resolveDispute(
   status: string,
   resolution: string,
 ): Promise<AdminDispute> {
-  return request<AdminDispute>(
-    `/admin/disputes/${encodeURIComponent(id)}/resolve`,
-    { method: 'POST', body: JSON.stringify({ status, resolution }) },
-    true,
-  );
+  return request<AdminDispute>(`/admin/disputes/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ status, resolution }),
+  });
 }
 
 export function runReconciliation(): Promise<ReconciliationReport> {
-  return request<ReconciliationReport>('/admin/reconciliation/run', {}, true);
+  return request<ReconciliationReport>('/admin/reconciliation/run');
 }

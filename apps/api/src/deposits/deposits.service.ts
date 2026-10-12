@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -19,15 +21,26 @@ import { parseAmountMinor } from '../common/money.js';
 import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
+import { EligibilityService } from '../eligibility/eligibility.service.js';
+import { NotificationOutboxService } from '../notification-outbox/notification-outbox.service.js';
+
+export interface DepositPaymentInstructions {
+  ussdCode?: string;
+  expiresAt?: string;
+}
 
 @Injectable()
 export class DepositsService {
+  private readonly logger = new Logger(DepositsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly ledgerService: LedgerService,
     private readonly walletService: WalletService,
     private readonly configService: ConfigService<AppConfiguration, true>,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProviderPort,
+    private readonly eligibilityService: EligibilityService,
+    private readonly notificationOutbox: NotificationOutboxService,
   ) {}
 
   async create(
@@ -45,6 +58,8 @@ export class DepositsService {
         `Minimum deposit is ${minDeposit} minor units`,
       );
     }
+
+    await this.eligibilityService.assertCanDeposit(userId, amountMinor);
 
     const wallet = await this.walletService.getByUserId(userId);
 
@@ -74,11 +89,56 @@ export class DepositsService {
       throw error;
     }
 
-    const initiation = await this.provider.initiateDeposit({
-      depositId: deposit.id,
-      userId,
-      amountMinor,
-      currency: deposit.currency,
+    const providerIdempotencyKey = randomUUID();
+    const operation = await this.prisma.providerOperation.create({
+      data: {
+        provider: this.provider.name,
+        kind: 'DEPOSIT_INITIATE',
+        relatedDepositId: deposit.id,
+        providerIdempotencyKey,
+        status: 'PENDING',
+      },
+    });
+
+    let initiation;
+    try {
+      initiation = await this.provider.initiateDeposit({
+        depositId: deposit.id,
+        userId,
+        amountMinor,
+        currency: deposit.currency,
+        providerIdempotencyKey,
+      });
+    } catch (error) {
+      // Nothing financial has moved yet (a deposit only ever credits via
+      // a *verified* webhook) — an ambiguous initiation failure here just
+      // means the user won't have a working payment code and should
+      // retry, not a stuck/duplicate-risk financial operation like a
+      // payout. Recorded as UNKNOWN for audit, deposit stays PENDING.
+      this.logger.error(
+        `Deposit initiation for ${deposit.id} ended in an unknown outcome: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      await this.prisma.providerOperation.update({
+        where: { id: operation.id },
+        data: {
+          status: 'UNKNOWN',
+          failureReason:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
+      return deposit;
+    }
+
+    await this.prisma.providerOperation.update({
+      where: { id: operation.id },
+      data: {
+        status: initiation.status === 'PENDING' ? 'SUCCEEDED' : 'FAILED',
+        responseSnapshot: {
+          raw: (initiation.raw ?? null) as Prisma.InputJsonValue,
+          userFacingInstructions: initiation.userFacingInstructions ?? null,
+        },
+        resolvedAt: new Date(),
+      },
     });
 
     if (initiation.providerReference) {
@@ -89,6 +149,26 @@ export class DepositsService {
     }
 
     return deposit;
+  }
+
+  /**
+   * The most recent provider-facing instructions for a deposit (e.g. a
+   * USSD code to dial and when it expires) — safe, non-secret data
+   * surfaced to the client. Returns `null` for a `MANUAL` deposit or
+   * whenever no provider call produced any (e.g. `UNAVAILABLE`).
+   */
+  async getPaymentInstructions(
+    depositId: string,
+  ): Promise<DepositPaymentInstructions | null> {
+    const operation = await this.prisma.providerOperation.findFirst({
+      where: { relatedDepositId: depositId, kind: 'DEPOSIT_INITIATE' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const snapshot = operation?.responseSnapshot as
+      | { userFacingInstructions?: DepositPaymentInstructions | null }
+      | null
+      | undefined;
+    return snapshot?.userFacingInstructions ?? null;
   }
 
   async findById(userId: string, id: string): Promise<Deposit> {
@@ -168,7 +248,7 @@ export class DepositsService {
         providerReference,
       });
 
-      return tx.deposit.update({
+      const updated = await tx.deposit.update({
         where: { id: existing.id },
         data: {
           status: 'COMPLETED',
@@ -176,6 +256,20 @@ export class DepositsService {
           providerReference: providerReference ?? existing.providerReference,
         },
       });
+
+      // Same transaction as the ledger write above — never emitted
+      // before this commits (see ADR-019).
+      await this.notificationOutbox.enqueue(tx, {
+        userId: existing.userId,
+        type: 'DEPOSIT_COMPLETED',
+        payload: {
+          depositId: existing.id,
+          amountMinor: existing.amountMinor.toString(),
+          currency: existing.currency,
+        },
+      });
+
+      return updated;
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
@@ -190,9 +284,44 @@ export class DepositsService {
       return existing;
     }
 
-    return this.prisma.deposit.update({
+    const updated = await this.prisma.deposit.update({
       where: { id: existing.id },
       data: { status: 'FAILED', failedAt: new Date(), failureReason: reason },
+    });
+
+    await this.notificationOutbox.enqueueStandalone({
+      userId: existing.userId,
+      type: 'DEPOSIT_FAILED',
+      payload: {
+        depositId: existing.id,
+        amountMinor: existing.amountMinor.toString(),
+        currency: existing.currency,
+        reason,
+      },
+    });
+
+    return updated;
+  }
+
+  /**
+   * The provider-side payment code/session expired before the user paid
+   * — distinct from `FAILED` (which implies the provider actively
+   * rejected or reversed something). No ledger effect either way.
+   */
+  async markExpired(depositId: string): Promise<Deposit> {
+    const existing = await this.prisma.deposit.findUnique({
+      where: { id: depositId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Deposit not found');
+    }
+    if (existing.status !== 'PENDING') {
+      return existing;
+    }
+
+    return this.prisma.deposit.update({
+      where: { id: existing.id },
+      data: { status: 'EXPIRED', failedAt: new Date() },
     });
   }
 
@@ -273,6 +402,8 @@ export class DepositsService {
         deposit.id,
         payload.reason ?? 'Provider reported a failed deposit',
       );
+    } else if (payload.eventType === 'deposit.expired') {
+      await this.markExpired(deposit.id);
     }
 
     await this.prisma.providerEvent.update({
@@ -294,7 +425,8 @@ export class DepositsService {
       'eventType' in value &&
       'providerReference' in value &&
       ((value as WebhookDepositPayload).eventType === 'deposit.completed' ||
-        (value as WebhookDepositPayload).eventType === 'deposit.failed') &&
+        (value as WebhookDepositPayload).eventType === 'deposit.failed' ||
+        (value as WebhookDepositPayload).eventType === 'deposit.expired') &&
       typeof (value as WebhookDepositPayload).providerReference === 'string'
     ) {
       return value as WebhookDepositPayload;

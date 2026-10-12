@@ -1,6 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { DepositStatus, type Deposit } from '@prisma/client';
 import { toAmountString } from '../../common/money.js';
+import type { DepositPaymentInstructions } from '../deposits.service.js';
+
+export class DepositPaymentInstructionsDto {
+  @ApiProperty({ required: false }) ussdCode?: string;
+  @ApiProperty({ required: false }) expiresAt?: string;
+}
 
 export class DepositResponseDto {
   @ApiProperty() id!: string;
@@ -11,11 +17,16 @@ export class DepositResponseDto {
   @ApiProperty({ nullable: true, type: String }) providerReference!:
     string | null;
   @ApiProperty({ nullable: true, type: String }) failureReason!: string | null;
+  @ApiProperty({ required: false, type: DepositPaymentInstructionsDto })
+  paymentInstructions?: DepositPaymentInstructionsDto;
   @ApiProperty() createdAt!: Date;
   @ApiProperty() updatedAt!: Date;
 }
 
-export function toDepositResponse(deposit: Deposit): DepositResponseDto {
+export function toDepositResponse(
+  deposit: Deposit,
+  paymentInstructions?: DepositPaymentInstructions | null,
+): DepositResponseDto {
   return {
     id: deposit.id,
     amountMinor: toAmountString(deposit.amountMinor),
@@ -24,6 +35,7 @@ export function toDepositResponse(deposit: Deposit): DepositResponseDto {
     provider: deposit.provider,
     providerReference: deposit.providerReference,
     failureReason: deposit.failureReason,
+    ...(paymentInstructions ? { paymentInstructions } : {}),
     createdAt: deposit.createdAt,
     updatedAt: deposit.updatedAt,
   };

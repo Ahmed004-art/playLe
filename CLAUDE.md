@@ -79,23 +79,31 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 5 — Real-Money Match Stakes, Holds, Prize Pools &
-Deterministic Settlement.**
+**Current phase: Phase 6 — Production Payment Integration, Financial
+Operations, Account Security & Responsible-Gaming Foundations.**
 See `docs/development/WORKFLOW.md` for the phase pipeline,
-[ADR-016](docs/decisions/ADR-016-match-financial-architecture.md) for the
-stake/hold/platform-account architecture,
-[ADR-017](docs/decisions/ADR-017-deterministic-settlement.md) for
-settlement math, exactly-once, recovery, and reconciliation, and
-[ADR-018](docs/decisions/ADR-018-financial-state-machines.md) for the
-exact state transitions. Phase 1 (foundation), Phase 2 (identity/
-authentication), Phase 3 (wallet/ledger/financial foundation), and
-Phase 4 (game platform/matchmaking/real-time) are complete. Phase 5
-connects Phase 3's wallet/ledger to Phase 4's matches: equal-stake
-holds, prize pools, a 10% platform fee to a real seeded platform
-account, deterministic win/draw/cancellation/forfeit settlement,
-crash recovery, on-demand reconciliation, and a dispute foundation —
-all using test wallets, with no real payment-provider integration (see
-"What NOT to Build Yet" below).
+[ADR-019](docs/decisions/ADR-019-production-payments.md) for the real
+Monime payment/payout/webhook/reconciliation architecture,
+[ADR-020](docs/decisions/ADR-020-account-security.md) for admin session
+cookies, CSRF, password reset, verification, and MFA, and
+[ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md)
+for the centralized real-money eligibility and responsible-gaming
+foundation. Phase 1 (foundation), Phase 2 (identity/authentication),
+Phase 3 (wallet/ledger/financial foundation), Phase 4 (game platform/
+matchmaking/real-time), and Phase 5 (match stakes, settlement,
+disputes, reconciliation) are complete. Phase 6's backend, account
+security, and eligibility/responsible-gaming work is implemented and
+tested (unit + e2e, passing locally against a real Postgres instance),
+and the admin frontend has been migrated off `localStorage` to the new
+cookie contract and verified: a real Monime integration (Payment Codes
+for deposits, Payouts for withdrawals, status polling, provider-
+operation tracking, and a separate payment-reconciliation service),
+admin httpOnly session cookies with CSRF protection, password reset,
+email/phone verification (via a `FakeDeliveryAdapter` only — see "What
+NOT to Build Yet" below), session management, TOTP-based MFA, and a
+centralized `EligibilityService` with responsible-gaming limits/
+cooling-off/self-exclusion. CI has not yet been updated/re-verified for
+this phase — that is tracked separately and is not yet done.
 
 ## Repository Structure
 
@@ -175,8 +183,18 @@ Phase 3 implementation (`LedgerService.applyEntry`), and
 Phase 5 implementation (`SettlementService.settle`, which is what now
 actually produces `PRIZE`/`PLATFORM_FEE` ledger entries — fee rounding is
 `floor(pool * 10 / 100)` in `BigInt`). Real-money gaming is gated by
-`REAL_MONEY_GAMING_ENABLED` (default `false`) and a separate real-money
-minimum age, distinct from the general account age gate.
+`REAL_MONEY_GAMING_ENABLED` (default `false`), a separate real-money
+minimum age distinct from the general account age gate, and — as of
+Phase 6 — a second independent `ELIGIBILITY_POLICY_CONFIGURED` flag, all
+checked through the single centralized `EligibilityService` (see
+[ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md)).
+Phase 6's `PaymentReconciliationService` (`src/payments/`) is a
+deliberately separate concern from Phase 5's `SettlementService`/
+`ReconciliationService` (`src/settlement/`) — the former only ever
+checks provider/ledger drift on deposits and withdrawals, the latter
+only ever checks match-stake/settlement consistency; neither touches
+the other's records (see
+[ADR-019](docs/decisions/ADR-019-production-payments.md)).
 
 ## Commands
 
@@ -206,25 +224,37 @@ flutter test
 flutter build apk --debug
 ```
 
-## What NOT to Build Yet (Phase 5)
+## What NOT to Build Yet (Phase 6)
 
-Real Monime (or any other) production payment-provider integration,
-actual mobile-money payouts, KYC/AML provider integration, additional
-games beyond Tic-Tac-Toe (the financial pipeline is generic enough to
-support them without changes — see ADR-016/017 — but none are
-implemented), social networking/followers, premium subscriptions,
-advertising, ratings/rankings, fraud systems, and a general admin
-operations system beyond the narrow slices in `src/admin/` (financial
+A *live* production Monime payment-provider integration, actual
+mobile-money payouts, and real inbound-webhook authenticity: Phase 6
+implemented a real `MonimeProvider` against verified Monime
+documentation (Payment Codes for deposits, Payouts for withdrawals,
+status polling), but `MonimeProvider.verifyWebhookSignature` still
+always returns invalid — the exact HMAC canonical string Monime signs
+is not independently verifiable yet — so no live deposit/payout can be
+automatically confirmed via webhook until that is resolved (see
+[ADR-019](docs/decisions/ADR-019-production-payments.md) and
+`docs/development/MONIME_SETUP.md`). Also not yet built: KYC/AML
+provider integration, additional games beyond Tic-Tac-Toe (the
+financial pipeline is generic enough to support them without changes —
+see ADR-016/017 — but none are implemented), social networking/
+followers, premium subscriptions, advertising, ratings/rankings, fraud
+systems, real email/SMS delivery (Phase 6 added the password-reset/
+verification/MFA flows themselves, but delivery goes only through a
+`FakeDeliveryAdapter` — no real provider credentials exist — see
+ADR-020), rolling-window spend tracking and loss-limit enforcement
+beyond the per-action ceilings `ResponsibleGamingService` already
+enforces (see
+[ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md)),
+any self-exclusion-lift process, and a general admin operations system
+beyond the narrow slices in `src/admin/`/`src/eligibility/` (financial
 visibility from Phase 3, match visibility from Phase 4, financial-match
-inspection and dispute resolution from Phase 5 — no "set winner"/"give
-player money"/"set balance" shortcut of any kind). See
-[ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md) and
-`docs/development/MONIME_SETUP.md` for the payment-provider boundary.
-Email/SMS verification has a schema placeholder but no provider
-integration or OTP flow — see
-[ADR-011](docs/decisions/ADR-011-authentication.md). See `README.md`
-roadmap for the full list. These belong to later, explicitly approved
-phases.
+inspection and dispute resolution from Phase 5, payment-reconciliation
+and responsible-gaming visibility from Phase 6 — no "set winner"/"give
+player money"/"set balance"/"lift self-exclusion" shortcut of any
+kind). See `README.md` roadmap for the full list. These belong to
+later, explicitly approved phases.
 
 ## Stop Conditions
 

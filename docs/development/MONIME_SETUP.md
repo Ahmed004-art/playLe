@@ -4,140 +4,131 @@ This document is for the PlayLe project owner, not for an automated
 implementation step. It tracks what **you** need to do outside this
 codebase before PlayLe can accept a real Monime deposit or send a real
 Monime payout. See
-[ADR-013](../decisions/ADR-013-payment-provider-abstraction.md) for why
-the codebase itself cannot go further than it has.
+[ADR-019](../decisions/ADR-019-production-payments.md) for the resulting
+architecture and
+[docs/development/PHASE_6_CHECKLIST.md](PHASE_6_CHECKLIST.md) §0 for the
+full verified-facts table with sources.
 
-**What's confirmed vs. not**: Monime is a real Sierra Leonean payment
-aggregator — public sources describe it as unifying Orange Money,
-Afrimoney, and Visa debit card payments behind one interface, with
-payout to a local bank account, positioned as a Stripe/PayPal-equivalent
-for Sierra Leone. No official developer documentation, API reference, or
-signup/onboarding page was publicly findable at the time this was
-written. **Every item below that isn't one of those confirmed facts is
-marked `VERIFY WITH MONIME`** — do not treat it as settled until you've
-confirmed it directly with Monime.
+**Phase 3 → Phase 6 update**: as of Phase 3, no official Monime developer
+documentation was reachable, so `MonimeProvider` was a deliberately inert
+stub. For Phase 6, `docs.monime.io` (current API version
+`caph-2025-08-23`) and the official `monimesl/monime-developer-apis`
+GitHub repository's OpenAPI spec were fetched directly and verified. The
+real integration (Payment Codes for deposits, Payouts for withdrawals,
+status polling) is now implemented. **One fact remains genuinely
+unverifiable** — the exact `Monime-Signature` webhook HMAC canonical
+string — so inbound webhook signature verification still fails closed
+(every delivery rejected) until you complete action 3 below.
 
-## PHASE A — No account required yet
+## Owner actions required
 
-Nothing to do yet. The codebase already has a working provider
-abstraction (`ManualProvider`) that doesn't depend on Monime, so
-development/testing is not blocked on any of the steps below.
+### 1. Confirm PlayLe's business model is eligible
 
-## PHASE B — Create a Monime account
+Payment aggregators in many markets restrict or specially-license
+gaming/gambling-adjacent merchants. `VERIFY WITH MONIME` (contact their
+support/sales): whether a real-money competitive-gaming platform
+(stakes + prize pool + platform fee) is a permitted use case, whether
+PlayLe's age-gate model is compatible with Monime's own merchant
+eligibility rules, and whether payout (not just collection) is available
+to PlayLe's merchant category. **If Monime's terms don't permit this use
+case, that is a legal/business blocker independent of anything this
+codebase can fix.**
 
-- `VERIFY WITH MONIME`: Where to sign up (their own website/app — no
-  public developer portal URL was found). Whether a personal account is
-  separate from a merchant/business account.
+### 2. Create a Monime Space and a test Personal Access Token
 
-## PHASE C — Complete merchant/business verification
+Sign in at the Monime dashboard and create a **Space** (you'll get a
+`spc-...` id — this is the `Monime-Space-Id` header value every API call
+requires). Generate a **Personal Access Token** — a test token is
+prefixed `mon_test_...` and is safe to use immediately; PlayLe's
+`MonimeProvider` always permits a test token to make real calls against
+Monime's test environment (no separate "enable live" flag needed for
+test tokens — see ADR-019 "production activation guardrails"). A
+**live** token (`mon_...`, no `_test_`) additionally requires setting
+`MONIME_LIVE_PAYMENTS_ENABLED=true` before PlayLe will use it for a real
+call — do not set that until you intend to go live.
 
-- `VERIFY WITH MONIME`: What business documents are required (business
-  registration, tax ID, proof of address, director ID, etc. — standard
-  for Sierra Leone payment aggregators, but not confirmed for Monime
-  specifically).
-- `VERIFY WITH MONIME`: Typical verification turnaround time.
-
-## PHASE D — Confirm PlayLe's eligibility
-
-Do not assume any of the following are automatically true — each is a
-real business-model question only Monime can answer:
-
-- `VERIFY WITH MONIME`: Whether a real-money **competitive gaming**
-  platform (stakes + prize pool + platform fee) is a permitted use case
-  under Monime's merchant terms. Payment aggregators in many markets
-  restrict or specially-license gaming/gambling-adjacent merchants.
-- `VERIFY WITH MONIME`: Whether PlayLe's **16+ age minimum** (rather than
-  18+/21+) is compatible with Monime's own merchant eligibility rules —
-  payment processors sometimes impose their own age floors independent
-  of the merchant's.
-- `VERIFY WITH MONIME`: Whether payout (not just collection) is available
-  to PlayLe's merchant category, and under what conditions.
-
-**If Monime's terms don't permit this use case, that is a legal/business
-blocker independent of anything this codebase can fix — resolve this
-before investing further integration effort.**
-
-## PHASE E — Obtain sandbox/test credentials
-
-- `VERIFY WITH MONIME`: Whether a sandbox/test environment exists
-  separately from production, and how it's requested.
-- `VERIFY WITH MONIME`: The exact credential names/types issued (API key,
-  secret, merchant ID, etc.).
-
-## PHASE F — Configure local environment variables
-
-Once real credential names are confirmed (Phase E), they go in
-`apps/api/.env` (never committed — see `.gitignore` and
-`docs/architecture/SECURITY.md`):
+Put these in `apps/api/.env` (never committed):
 
 ```
 PAYMENTS_PROVIDER=monime
-MONIME_API_KEY=<sandbox key — VERIFY WITH MONIME this is the right field>
-MONIME_WEBHOOK_SECRET=<VERIFY WITH MONIME this is the right field>
+MONIME_API_KEY=mon_test_...         # or mon_... once genuinely ready for live
+MONIME_SPACE_ID=spc_...
+MONIME_BASE_URL=https://api.monime.io   # same URL for test and live — the token decides
+MONIME_LIVE_PAYMENTS_ENABLED=false  # only "true" once you mean to go live
 ```
 
-These two variable names are PlayLe's own placeholders (`apps/api/src/config/`)
-— **not confirmed Monime field names**. Adjust them once Monime's actual
-credential shape is known; this is a config-only change, not a
-code-architecture change.
+### 3. Capture a real webhook delivery to unblock signature verification
 
-**Never commit real credentials.** Sandbox and production credentials
-must be different values in different, never-committed `.env` files.
+The webhook signature *algorithm* is confirmed (HMAC-SHA256 — see the
+official OpenAPI schema's `verificationMethod.hmac256` field), but the
+exact bytes it signs are not independently verifiable from any source
+reachable during implementation. Use Monime's `monime-cli` tool's
+Webhook Inspector (or any equivalent Monime provides) against a
+Test-mode webhook delivery, or open
+`docs.monime.io/guide/webhook/hmac-verification` in a real browser
+(it renders client-side JS content that automated fetches cannot see)
+and share its exact content. Once the canonical string is known,
+`MonimeProvider.verifyWebhookSignature`
+(`apps/api/src/payments/providers/monime.provider.ts`) is the only file
+that needs to change — the payload-*parsing* logic
+(`parseMonimeWebhookPayload`) is already implemented and unit-tested.
 
-## PHASE G — Configure the webhook endpoint
+### 4. Confirm Payment Codes vs. Checkout Sessions
 
-PlayLe's webhook receiver already exists:
-`POST /payments/webhooks/monime` (see `src/deposits/webhooks.controller.ts`).
+PlayLe implements **Payment Codes** (a USSD code the customer dials — no
+redirect), matching a native mobile app with no in-app browser payment
+flow. Checkout Sessions (hosted redirect) is Monime's other deposit
+mechanism, left unimplemented as a documented future option. Confirm
+this matches your intended product UX before relying on it for real
+traffic.
 
-- `VERIFY WITH MONIME`: Where/how you register this URL with Monime (a
-  dashboard field, an API call, etc.).
-- `VERIFY WITH MONIME`: The exact webhook signature scheme (header name,
-  hashing algorithm, what's hashed) — `MonimeProvider.verifyWebhookSignature`
-  currently **always rejects** every delivery until this is implemented
-  against confirmed documentation. This is intentional — see ADR-013.
-- You will need a publicly reachable HTTPS URL for this endpoint before
-  Monime can deliver webhooks — not available on a local development
-  machine without a tunneling tool (e.g. ngrok) or a deployed staging
-  environment, neither of which exists yet in this project.
+### 5. Confirm the payout destination field names with one real test payout
 
-## PHASE H — Test deposits
+The current `caph-2025-08-23` docs page and the matching OpenAPI spec
+show `destination: { type, providerId, ...type-specific field }` (e.g.
+`momo` + `providerId: 'm17'|'m18'` + `phoneNumber`, or `bank` +
+`providerId: 'slb001'|'slb004'|'slb007'` + `accountNumber`). An older
+`2024-08-01` spec version showed different field names
+(`providerCode`/`accountId`). PlayLe implements the current shape as
+authoritative; confirm it with one real **test** payout before any live
+use. `MonimeProvider` only maps a payout destination it recognizes
+exactly (plus one legacy convenience mapping, `{method: 'ORANGE_MONEY',
+phoneNumber}` → `m17`, the one provider id Monime's own docs describe —
+"Orange Money SL") — any other destination shape is refused
+(`UNAVAILABLE`), never guessed.
 
-Blocked until Phases B–G are complete. Once they are, the integration
-work remaining in the codebase is:
-1. Implement `MonimeProvider.initiateDeposit` against the confirmed
-   request/response shape.
-2. Implement `MonimeProvider.verifyWebhookSignature` against the
-   confirmed signature scheme.
-3. Add e2e coverage exercising the real sandbox (not just the existing
-   `FakePaymentProvider`-based tests).
+### 6. Decide the real-money eligibility policy
 
-## PHASE I — Test payouts
+Separate from Monime itself — see
+[ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md).
+`REAL_MONEY_GAMING_ENABLED` and `ELIGIBILITY_POLICY_CONFIGURED` both stay
+`false` in any real deployment until you've determined (with real legal
+advice) the actual minimum age, jurisdiction restrictions, and any KYC
+requirements, and set `REAL_MONEY_MINIMUM_AGE` accordingly.
 
-- `VERIFY WITH MONIME`: Whether payout/withdrawal is a separate API
-  surface from deposits, and what its request/response/status-callback
-  shape is.
-- Blocked until Phase D confirms payout eligibility and Phase E provides
-  credentials with payout scope.
+### 7. Supply email/SMS delivery credentials (or confirm none exist yet)
 
-## PHASE J — Production onboarding
+Password-reset and verification codes are currently delivered only via
+`FakeDeliveryAdapter` (logs + in-memory record, never a real send) — see
+`src/notifications/`. No real email/SMS provider is integrated. If/when
+you have credentials for one, a new `DeliveryPort` implementation is the
+only code change needed (same provider-abstraction pattern as
+payments).
 
-- `VERIFY WITH MONIME`: Fees, transaction limits (minimum/maximum per
-  transaction, daily/monthly caps), and settlement timing for production.
-- `VERIFY WITH MONIME`: Any additional security/compliance requirements
-  for going live (e.g. PCI-adjacent requirements, additional KYC on
-  PlayLe as a merchant).
-- Confirm the items in
-  "[Legal/Compliance](#legal-compliance-reminder)" below are separately
-  resolved — Monime eligibility and PlayLe's own regulatory compliance
-  are two different gates, both required.
+## What's confirmed vs. not (verified during Phase 6)
 
-## What payment methods are available in Sierra Leone (confirmed, general)
+**Confirmed** (fetched directly from `docs.monime.io` and the official
+OpenAPI spec): auth headers (`Authorization: Bearer <token>` +
+`Monime-Space-Id`), token format (`mon_...` live, `mon_test_...` test,
+same base URL for both), `Idempotency-Key` semantics, the Payment Code
+and Payout request/response schemas (field names, types, enums),
+confirmed webhook event names (`payment_code.created/expired/processed/completed`,
+`payout.failed/completed/delayed`), and the webhook signature algorithm
+(HMAC-SHA256).
 
-Public sources describe Monime as aggregating **Orange Money**,
-**Afrimoney**, and **Visa debit cards** for collection, with payout to a
-**local bank account**. `VERIFY WITH MONIME` whether this list is
-complete/current and which of these (if any) are available to PlayLe's
-specific merchant category.
+**Not confirmed** (see owner actions above): business-model eligibility,
+the exact HMAC canonical string, and whether the payout destination
+field names are stable across the API version used in production.
 
 ## Legal/Compliance Reminder
 

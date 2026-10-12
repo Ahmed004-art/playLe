@@ -82,7 +82,16 @@ be extracted into its own service later if real scale requires it.
 | MatchStakes | Stake eligibility/validation, confirming (holding) a player's stake, the combined financial read view |
 | Settlement | The sole settlement authority (`SettlementService`) + on-demand reconciliation — see [ADR-017](../decisions/ADR-017-deterministic-settlement.md) |
 | Disputes | Technical foundation for disputing a completed match's outcome — status/audit only, never moves money |
-| Admin | Financial admin visibility + withdrawal review, match visibility, financial-match inspection, and dispute resolution (narrow slices — not a general admin system yet) |
+| Admin | Financial admin visibility + withdrawal review, match visibility, financial-match inspection, dispute resolution, provider-operation/event visibility, and payment reconciliation (narrow slices — not a general admin system yet) |
+| AdminAuth | httpOnly-cookie admin session login/refresh/logout/me — the same `AuthService`/`TokenService` machinery, a different transport — see [ADR-020](../decisions/ADR-020-account-security.md) |
+| Audit | `AdminAuditLog` — append-only record of admin session/security events, used by `CsrfGuard`/`AdminSessionController`/`MfaService` |
+| PasswordReset | Single-use, hashed password-reset tokens; anti-enumeration — see ADR-020 |
+| Verification | Email/phone one-time verification codes — the first real implementation of the Phase 2 `emailVerifiedAt`/`phoneVerifiedAt` placeholders — see ADR-020 |
+| Mfa | Hand-rolled TOTP/HOTP (RFC 6238/4226) enrollment, login challenge, recovery codes — see ADR-020 |
+| Notifications | `DeliveryPort`/`FakeDeliveryAdapter` — the shared delivery abstraction behind password reset, verification, and the financial notification outbox; no real email/SMS provider yet |
+| NotificationOutbox | Financial/security notifications enqueued in the same transaction as their triggering ledger write, delivered by a separate sweep — see ADR-019 |
+| Eligibility | Centralized real-money eligibility (`EligibilityService`) and responsible-gaming limits/cooling-off/self-exclusion (`ResponsibleGamingService`, no lift path) — see [ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md) |
+| Payments (extended) | Real `MonimeProvider` (Payment Codes, Payouts, status polling) and `PaymentReconciliationService` (provider/ledger drift detection, distinct from Settlement's reconciliation) — see [ADR-019](../decisions/ADR-019-production-payments.md) |
 
 ## Future Module Boundaries (Not Yet Implemented)
 
@@ -90,16 +99,17 @@ The backend is expected to grow the following modules, built on the
 foundation Phase 1 established (config, health, database, cache,
 real-time, exception handling, validation), the identity layer Phase 2
 added, the financial foundation Phase 3 added, the game platform Phase 4
-added, and the match-financial engine Phase 5 added:
+added, the match-financial engine Phase 5 added, and the production-
+payments/account-security/eligibility foundation Phase 6 added
+(`Notifications`/`NotificationOutbox` and `Audit` moved out of this list
+in Phase 6 — see "Implemented Modules" above):
 
 | Module | Responsibility (future) |
 |---|---|
 | Profiles | Player-facing profile data beyond the basic Phase 2 fields |
 | Social | Follows, friends, social graph |
-| Notifications | Push/in-app notifications |
 | Chat | In-match/social messaging |
-| Fraud | Fraud detection/review |
-| Audit | Audit log of sensitive actions |
+| Fraud | Fraud detection/review beyond the read-only reconciliation anomaly checks already implemented |
 | Analytics | Platform/business analytics |
 
 Additional games beyond Tic-Tac-Toe are new `GameModule` implementations
@@ -135,12 +145,20 @@ See [ADR-009](../decisions/ADR-009-financial-ledger.md),
 [ADR-012](../decisions/ADR-012-financial-architecture.md),
 [ADR-013](../decisions/ADR-013-payment-provider-abstraction.md),
 [ADR-016](../decisions/ADR-016-match-financial-architecture.md),
-[ADR-017](../decisions/ADR-017-deterministic-settlement.md), and
+[ADR-017](../decisions/ADR-017-deterministic-settlement.md),
+[ADR-019](../decisions/ADR-019-production-payments.md), and
 `docs/database/README.md`. Wallet, ledger, deposits, and withdrawals
 (Phase 3) are now connected to matches (Phase 4) by Phase 5: a
 `MatchStake` holds each player's equal stake through `LedgerService`;
 `SettlementService` is the one place a completed match's authoritative
 result becomes a win payout (minus a 10% platform fee to the seeded
-platform account), a draw refund, or a cancellation refund. Production
-payment-provider payouts of real winnings remain future work — see
-CLAUDE.md "What NOT to Build Yet".
+platform account), a draw refund, or a cancellation refund. Phase 6
+connected the deposit/withdrawal side to a real payment provider:
+`MonimeProvider` issues Payment Codes for deposits and submits Payouts
+for withdrawals (test-mode-exercisable today), and
+`PaymentReconciliationService` runs read-only drift checks between the
+ledger and provider state — deliberately separate from
+`SettlementService`'s own reconciliation, which only ever checks
+match-stake/settlement consistency. A *live* Monime deposit/payout
+still can't be automatically confirmed until webhook signature
+verification is resolved (fail-closed — see ADR-019).

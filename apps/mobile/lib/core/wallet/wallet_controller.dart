@@ -44,6 +44,16 @@ class WalletController extends ChangeNotifier {
     return result;
   }
 
+  /// Re-fetches a single deposit — used by [DepositScreen]-style polling
+  /// to pick up a later webhook-driven status change. Does not touch
+  /// [state] itself (that would reset the whole wallet to loading on
+  /// every poll tick); callers hold the latest [Deposit] locally.
+  Future<Deposit> fetchDeposit(String id) => _repository.getDeposit(id);
+
+  /// Re-fetches a single withdrawal — mirrors [fetchDeposit].
+  Future<Withdrawal> fetchWithdrawal(String id) =>
+      _repository.getWithdrawal(id);
+
   Future<Withdrawal> withdraw({
     required String amountMinor,
     required Map<String, dynamic> destinationDetails,

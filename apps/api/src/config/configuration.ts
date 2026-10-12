@@ -27,10 +27,40 @@ export interface AppConfiguration {
     throttleLimit: number;
     throttleTtlMs: number;
   };
+  adminSession: {
+    /**
+     * `Secure` on cookies and `SameSite=None` (vs. `Lax`) — only ever
+     * true in a real deployed (HTTPS) environment. Never true in local
+     * dev/test, where cookies must work over plain HTTP.
+     */
+    secureCookies: boolean;
+    accessTokenCookieTtlMs: number;
+  };
+  security: {
+    /** 64-hex-char (32-byte) key encrypting MFA TOTP secrets at rest (AES-256-GCM). */
+    mfaEncryptionKey: string;
+  };
+  notifications: {
+    dispatchSweepIntervalMs: number;
+  };
   payments: {
     provider: 'manual' | 'monime';
     monimeApiKey?: string;
+    monimeSpaceId?: string;
     monimeWebhookSecret?: string;
+    monimeBaseUrl: string;
+    /** Optional `Monime-Version` header pin, e.g. `caph.2025-08-23`. */
+    monimeApiVersion?: string;
+    monimeHttpTimeoutMs: number;
+    /**
+     * Separate from merely selecting `provider: 'monime'` or having an
+     * API key configured — a *live* (non-`mon_test_`) Monime token is
+     * never actually used to make a real HTTP call unless this is also
+     * explicitly `true`. A test-prefixed token is always allowed to run
+     * (see docs/development/PHASE_6_CHECKLIST.md, "production activation
+     * guardrails" — no single flag enables every capability at once).
+     */
+    monimeLivePaymentsEnabled: boolean;
     minDepositMinor: bigint;
     minWithdrawalMinor: bigint;
     throttleLimit: number;
@@ -52,6 +82,15 @@ export interface AppConfiguration {
      * "production activation boundary").
      */
     realMoneyGamingEnabled: boolean;
+    /**
+     * A second, independent gate from `realMoneyGamingEnabled` — see
+     * ADR-021. The owner's age/jurisdiction/KYC policy is a legal
+     * decision this codebase cannot make; real-money gaming never runs
+     * unless *both* flags are true, so flipping one alone (e.g. by
+     * accident) can never silently enable live play with no configured
+     * legal policy behind it.
+     */
+    eligibilityPolicyConfigured: boolean;
     /**
      * Deliberately separate from `auth.minAgeYears` (the general account
      * age gate) — see ADR-016, "real-money eligibility is not identity
@@ -94,10 +133,36 @@ export default (): AppConfiguration => ({
     throttleLimit: parseInt(process.env.AUTH_THROTTLE_LIMIT ?? '5', 10),
     throttleTtlMs: parseInt(process.env.AUTH_THROTTLE_TTL_MS ?? '60000', 10),
   },
+  adminSession: {
+    secureCookies: process.env.ADMIN_SESSION_SECURE_COOKIES === 'true',
+    // Keep in sync with JWT_ACCESS_TTL's default (15m) unless changed.
+    accessTokenCookieTtlMs: parseInt(
+      process.env.ADMIN_SESSION_ACCESS_COOKIE_TTL_MS ?? '900000',
+      10,
+    ),
+  },
+  security: {
+    mfaEncryptionKey: process.env.MFA_ENCRYPTION_KEY ?? '',
+  },
+  notifications: {
+    dispatchSweepIntervalMs: parseInt(
+      process.env.NOTIFICATION_DISPATCH_SWEEP_INTERVAL_MS ?? '10000',
+      10,
+    ),
+  },
   payments: {
     provider: process.env.PAYMENTS_PROVIDER === 'monime' ? 'monime' : 'manual',
     monimeApiKey: process.env.MONIME_API_KEY || undefined,
+    monimeSpaceId: process.env.MONIME_SPACE_ID || undefined,
     monimeWebhookSecret: process.env.MONIME_WEBHOOK_SECRET || undefined,
+    monimeBaseUrl: process.env.MONIME_BASE_URL ?? 'https://api.monime.io',
+    monimeApiVersion: process.env.MONIME_API_VERSION || undefined,
+    monimeHttpTimeoutMs: parseInt(
+      process.env.MONIME_HTTP_TIMEOUT_MS ?? '10000',
+      10,
+    ),
+    monimeLivePaymentsEnabled:
+      process.env.MONIME_LIVE_PAYMENTS_ENABLED === 'true',
     minDepositMinor: BigInt(process.env.WALLET_MIN_DEPOSIT_MINOR ?? '500'),
     minWithdrawalMinor: BigInt(
       process.env.WALLET_MIN_WITHDRAWAL_MINOR ?? '500',
@@ -123,6 +188,8 @@ export default (): AppConfiguration => ({
   },
   stakes: {
     realMoneyGamingEnabled: process.env.REAL_MONEY_GAMING_ENABLED === 'true',
+    eligibilityPolicyConfigured:
+      process.env.ELIGIBILITY_POLICY_CONFIGURED === 'true',
     realMoneyMinimumAge: parseInt(
       process.env.REAL_MONEY_MINIMUM_AGE ?? '18',
       10,

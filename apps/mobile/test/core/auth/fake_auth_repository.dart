@@ -19,10 +19,30 @@ class FakeAuthRepository implements AuthRepository {
   bool loggedOut = false;
   bool changedPassword = false;
 
+  /// When set, [login] returns an MFA challenge instead of succeeding.
+  String? mfaChallengeTokenToReturn;
+  String? lastMfaVerifyCode;
+  String? mfaVerifyError;
+
+  AppUser userToReturnFromFetch = testUser;
+  String? lastRequestedPasswordResetIdentifier;
+  String passwordResetMessageToReturn =
+      'If an account exists for that identifier, a reset code has been sent.';
+  bool passwordResetConfirmed = false;
+  String? lastVerificationRequestChannel;
+  String? lastVerificationConfirmChannel;
+  String? lastVerificationConfirmCode;
+
   @override
   Future<AppUser?> loadSession() async {
     if (loadSessionError != null) throw loadSessionError!;
     return sessionToRestore;
+  }
+
+  @override
+  Future<AppUser> fetchCurrentUser() async {
+    if (nextError != null) throw nextError!;
+    return userToReturnFromFetch;
   }
 
   @override
@@ -38,11 +58,27 @@ class FakeAuthRepository implements AuthRepository {
   }
 
   @override
-  Future<AppUser> login({
+  Future<LoginResult> login({
     required String identifier,
     required String password,
   }) async {
     if (nextError != null) throw nextError!;
+    final challengeToken = mfaChallengeTokenToReturn;
+    if (challengeToken != null) {
+      return LoginMfaRequired(challengeToken);
+    }
+    return LoginSuccess(testUser);
+  }
+
+  @override
+  Future<AppUser> verifyMfaLogin({
+    required String mfaChallengeToken,
+    required String code,
+  }) async {
+    lastMfaVerifyCode = code;
+    if (mfaVerifyError != null) {
+      throw NetworkException(mfaVerifyError!, statusCode: 401);
+    }
     return testUser;
   }
 
@@ -58,5 +94,37 @@ class FakeAuthRepository implements AuthRepository {
   }) async {
     if (nextError != null) throw nextError!;
     changedPassword = true;
+  }
+
+  @override
+  Future<String> requestPasswordReset(String identifier) async {
+    if (nextError != null) throw nextError!;
+    lastRequestedPasswordResetIdentifier = identifier;
+    return passwordResetMessageToReturn;
+  }
+
+  @override
+  Future<void> confirmPasswordReset({
+    required String token,
+    required String newPassword,
+  }) async {
+    if (nextError != null) throw nextError!;
+    passwordResetConfirmed = true;
+  }
+
+  @override
+  Future<void> requestVerification(String channel) async {
+    if (nextError != null) throw nextError!;
+    lastVerificationRequestChannel = channel;
+  }
+
+  @override
+  Future<void> confirmVerification({
+    required String channel,
+    required String code,
+  }) async {
+    if (nextError != null) throw nextError!;
+    lastVerificationConfirmChannel = channel;
+    lastVerificationConfirmCode = code;
   }
 }

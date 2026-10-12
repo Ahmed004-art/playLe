@@ -2,7 +2,6 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthGuard } from './AuthGuard';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 
 const replace = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -12,11 +11,19 @@ vi.mock('next/navigation', () => ({
 describe('AuthGuard', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
     replace.mockClear();
   });
 
-  it('redirects to /login when there is no session', async () => {
+  it('redirects to /login when GET /admin/session/me returns 401 (no session)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ message: 'Invalid or expired access token' }),
+      }),
+    );
+
     render(
       <AuthProvider>
         <AuthGuard>
@@ -30,7 +37,6 @@ describe('AuthGuard', () => {
   });
 
   it('renders the protected content for an authenticated admin', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({

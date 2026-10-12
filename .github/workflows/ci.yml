@@ -54,6 +54,10 @@ jobs:
       # register/login calls in quick succession don't trip the throttle.
       AUTH_THROTTLE_LIMIT: 1000
       AUTH_THROTTLE_TTL_MS: 60000
+      # Ephemeral CI-only key (AES-256-GCM, 32 bytes) encrypting MFA TOTP
+      # secrets at rest for this throwaway database — never used outside
+      # this job. See docs/decisions/ADR-020-account-security.md.
+      MFA_ENCRYPTION_KEY: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       # The global 'default' throttler (ThrottlerGuard is an APP_GUARD, so
       # it applies to every request) is also raised well above its 100
       # production default — the wallet/deposits/withdrawals e2e suite
@@ -81,6 +85,9 @@ jobs:
       # Real-money engine exercised against test wallets only — see
       # docs/decisions/ADR-016-match-financial-architecture.md.
       REAL_MONEY_GAMING_ENABLED: 'true'
+      # Second, independent gate (ADR-021) — CI exercises the real engine
+      # against test wallets only, same as REAL_MONEY_GAMING_ENABLED above.
+      ELIGIBILITY_POLICY_CONFIGURED: 'true'
       REAL_MONEY_MINIMUM_AGE: 18
       MINIMUM_STAKE_MINOR: 100
       MAXIMUM_STAKE_MINOR: 1000000

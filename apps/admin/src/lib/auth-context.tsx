@@ -7,7 +7,6 @@ import {
   login as apiLogin,
   logout as apiLogout,
 } from './api-client';
-import { tokenStorage } from './token-storage';
 import type { AdminUser } from './auth-types';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
@@ -28,6 +27,11 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * logged in, and whether they're allowed into the admin app at all (only
  * `role === 'ADMIN'` accounts may use it; a successfully-authenticated
  * non-admin is immediately logged back out of this app).
+ *
+ * The session itself lives in httpOnly cookies set by the API
+ * (`admin_access_token` / `admin_refresh_token`) — this context never
+ * reads or stores a token. Session restore just asks the API whether a
+ * valid session cookie is already present.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
@@ -37,15 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function restore() {
-      if (!tokenStorage.getAccessToken()) {
-        if (!cancelled) setStatus('unauthenticated');
-        return;
-      }
       try {
         const current = await fetchCurrentUser();
         if (cancelled) return;
         if (current.role !== 'ADMIN') {
-          tokenStorage.clear();
           setStatus('unauthenticated');
           return;
         }
@@ -53,7 +52,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setStatus('authenticated');
       } catch {
         if (!cancelled) {
-          tokenStorage.clear();
           setStatus('unauthenticated');
         }
       }
@@ -66,23 +64,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (identifier: string, password: string) => {
-    const response = await apiLogin(identifier, password);
+    const user = await apiLogin(identifier, password);
 
-    if (response.user.role !== 'ADMIN') {
-      // Don't persist tokens for a non-admin account — this app is
-      // admin-only, even though the backend would happily authenticate
-      // any valid user. Defense in depth on top of server-side role checks.
+    if (user.role !== 'ADMIN') {
+      // Don't treat this as a session for this app — it's admin-only,
+      // even though the backend would happily authenticate any valid
+      // user. Defense in depth on top of server-side role checks.
       throw new ApiRequestError('This account does not have admin access.', 403);
     }
 
-    tokenStorage.setTokens(response.accessToken, response.refreshToken);
-    setUser(response.user);
+    setUser(user);
     setStatus('authenticated');
   }, []);
 
   const logout = useCallback(async () => {
     await apiLogout();
-    tokenStorage.clear();
     setUser(null);
     setStatus('unauthenticated');
   }, []);

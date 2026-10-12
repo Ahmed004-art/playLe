@@ -1,5 +1,4 @@
 import {
-  ForbiddenException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
@@ -16,7 +15,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
-import { isOldEnough } from '../auth/utils/age.util.js';
+import { EligibilityService } from '../eligibility/eligibility.service.js';
 import { parseAmountMinor } from '../common/money.js';
 import { MATCH_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 import type { AppConfiguration } from '../config/configuration.js';
@@ -35,6 +34,7 @@ export class MatchStakesService {
     private readonly walletService: WalletService,
     private readonly emitter: RealtimeEmitterService,
     private readonly configService: ConfigService<AppConfiguration, true>,
+    private readonly eligibilityService: EligibilityService,
   ) {}
 
   /**
@@ -52,22 +52,9 @@ export class MatchStakesService {
     user: User,
     dto: StakeRequestDto,
   ): Promise<StakeSpec> {
-    if (
-      !this.configService.get('stakes.realMoneyGamingEnabled', { infer: true })
-    ) {
-      throw new ForbiddenException('Real-money gaming is not enabled');
-    }
-
-    const minimumAge = this.configService.get('stakes.realMoneyMinimumAge', {
-      infer: true,
-    });
-    if (!isOldEnough(user.dateOfBirth, minimumAge)) {
-      throw new ForbiddenException(
-        `You must be at least ${minimumAge} to play for real money`,
-      );
-    }
-
     const amountMinor = parseAmountMinor(dto.amountMinor);
+    await this.eligibilityService.assertCanStake(user, amountMinor);
+
     const minStake = this.configService.get('stakes.minStakeMinor', {
       infer: true,
     });
@@ -185,21 +172,7 @@ export class MatchStakesService {
       return stake;
     }
 
-    if (
-      !this.configService.get('stakes.realMoneyGamingEnabled', {
-        infer: true,
-      })
-    ) {
-      throw new ForbiddenException('Real-money gaming is not enabled');
-    }
-    const minimumAge = this.configService.get('stakes.realMoneyMinimumAge', {
-      infer: true,
-    });
-    if (!isOldEnough(user.dateOfBirth, minimumAge)) {
-      throw new ForbiddenException(
-        `You must be at least ${minimumAge} to play for real money`,
-      );
-    }
+    await this.eligibilityService.assertCanStake(user, stake.stakeAmountMinor);
 
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },

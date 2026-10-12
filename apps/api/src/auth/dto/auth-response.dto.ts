@@ -34,3 +34,14 @@ export class AuthResponseDto {
   })
   refreshTokenExpiresAt!: string;
 }
+
+/**
+ * Returned by `/auth/login` (and `/admin/session/login`) instead of
+ * `AuthResponseDto` when the account has MFA enrolled — no tokens/
+ * cookies are issued until `/auth/mfa/verify` succeeds with this token
+ * plus a valid TOTP/recovery code.
+ */
+export class MfaChallengeResponseDto {
+  @ApiProperty({ example: true }) mfaRequired!: true;
+  @ApiProperty() mfaChallengeToken!: string;
+}

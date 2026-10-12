@@ -66,16 +66,24 @@ model User {
   ledgerAdjustmentsAuthored LedgerEntry[] @relation("LedgerAdjustmentAdmin")
   withdrawalReviewsAuthored Withdrawal[]  @relation("WithdrawalReviewAdmin")
 
-  matchPlayers         MatchPlayer[]
-  matchesWon           Match[]       @relation("MatchWinner")
-  matchCommands        MatchCommand[]
-  challengesSent       Challenge[]   @relation("ChallengeChallenger")
-  challengesReceived   Challenge[]   @relation("ChallengeOpponent")
+  matchPlayers       MatchPlayer[]
+  matchesWon         Match[]        @relation("MatchWinner")
+  matchCommands      MatchCommand[]
+  challengesSent     Challenge[]    @relation("ChallengeChallenger")
+  challengesReceived Challenge[]    @relation("ChallengeOpponent")
 
   matchStakePlayers MatchStakePlayer[]
   settlementEntries SettlementEntry[]
-  disputesRaised    Dispute[]         @relation("DisputeRaisedBy")
-  disputesResolved  Dispute[]         @relation("DisputeResolvedBy")
+  disputesRaised    Dispute[]          @relation("DisputeRaisedBy")
+  disputesResolved  Dispute[]          @relation("DisputeResolvedBy")
+
+  passwordResetTokens           PasswordResetToken[]
+  verificationChallenges        VerificationChallenge[]
+  mfaTotpCredential             MfaTotpCredential?
+  responsibleGamingRestrictions ResponsibleGamingRestriction[]
+  notifications                 NotificationOutbox[]
+  paymentAnomaliesResolved      PaymentReconciliationAnomaly[] @relation("PaymentAnomalyResolvedAdmin")
+  adminAuditLogs                AdminAuditLog[]
 
   @@map("users")
 }
@@ -153,11 +161,21 @@ enum DepositStatus {
   COMPLETED
   FAILED
   CANCELLED
+  /// The provider-side payment code/session expired before the user paid
+  /// (Phase 6 — real-provider deposits only; a MANUAL deposit never
+  /// reaches this state).
+  EXPIRED
 }
 
 enum WithdrawalStatus {
   PENDING_REVIEW
   APPROVED
+  /// Submitted to the payout provider; outcome not yet confirmed (Phase
+  /// 6). A withdrawal can sit here for an extended period if the
+  /// provider's own outcome is unknown (e.g. after an HTTP timeout) — see
+  /// docs/decisions/ADR-019-production-payments.md. Funds stay held;
+  /// nothing is released or re-submitted automatically from this state.
+  PROCESSING
   REJECTED
   COMPLETED
   FAILED
@@ -277,8 +295,10 @@ model Deposit {
   failedAt    DateTime?
   cancelledAt DateTime?
 
-  ledgerEntries  LedgerEntry[]
-  providerEvents ProviderEvent[]
+  ledgerEntries      LedgerEntry[]
+  providerEvents     ProviderEvent[]
+  providerOperations ProviderOperation[]
+  anomalies          PaymentReconciliationAnomaly[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -312,7 +332,7 @@ model Withdrawal {
   idempotencyKey String
 
   reviewedByAdminId String?
-  reviewedByAdmin   User?   @relation("WithdrawalReviewAdmin", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  reviewedByAdmin   User?     @relation("WithdrawalReviewAdmin", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
   reviewedAt        DateTime?
   reviewReason      String?
 
@@ -325,7 +345,10 @@ model Withdrawal {
   failedAt    DateTime?
   cancelledAt DateTime?
 
-  ledgerEntries LedgerEntry[]
+  ledgerEntries      LedgerEntry[]
+  providerEvents     ProviderEvent[]
+  providerOperations ProviderOperation[]
+  anomalies          PaymentReconciliationAnomaly[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -348,8 +371,13 @@ model ProviderEvent {
 
   status ProviderEventStatus @default(RECEIVED)
 
-  relatedDepositId String?
-  deposit          Deposit? @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
+  relatedDepositId    String?
+  deposit             Deposit?    @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
+  /// Set for payout-related webhook deliveries (Phase 6) — a deposit
+  /// webhook and a withdrawal webhook never both set a relation on the
+  /// same row.
+  relatedWithdrawalId String?
+  withdrawal          Withdrawal? @relation(fields: [relatedWithdrawalId], references: [id], onDelete: SetNull)
 
   processedAt DateTime?
   createdAt   DateTime  @default(now())
@@ -446,8 +474,8 @@ model Match {
   completedAt DateTime?
   expiresAt   DateTime?
 
-  players  MatchPlayer[]
-  commands MatchCommand[]
+  players   MatchPlayer[]
+  commands  MatchCommand[]
   challenge Challenge?
   stake     MatchStake?
   disputes  Dispute[]
@@ -512,13 +540,13 @@ model MatchCommand {
 /// (and points `matchId` at it) atomically with the status transition —
 /// see `ChallengesService.accept`.
 model Challenge {
-  id            String @id @default(uuid())
-  gameId        String
-  game          Game   @relation(fields: [gameId], references: [id], onDelete: Restrict)
-  challengerId  String
-  challenger    User   @relation("ChallengeChallenger", fields: [challengerId], references: [id], onDelete: Cascade)
-  opponentId    String
-  opponent      User   @relation("ChallengeOpponent", fields: [opponentId], references: [id], onDelete: Cascade)
+  id           String @id @default(uuid())
+  gameId       String
+  game         Game   @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  challengerId String
+  challenger   User   @relation("ChallengeChallenger", fields: [challengerId], references: [id], onDelete: Cascade)
+  opponentId   String
+  opponent     User   @relation("ChallengeOpponent", fields: [opponentId], references: [id], onDelete: Cascade)
 
   status ChallengeStatus @default(PENDING)
 
@@ -726,4 +754,354 @@ model Dispute {
   @@index([matchId])
   @@index([status])
   @@map("disputes")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Production Payment Integration, Financial Operations, Account
+// Security & Responsible-Gaming Foundations
+//
+// See docs/decisions/ADR-019-production-payments.md (provider
+// abstraction/webhook/reconciliation), ADR-020-account-security.md (admin
+// session cookies, password reset, MFA), and
+// ADR-021-eligibility-and-responsible-gaming.md. None of this changes
+// Phase 5 settlement math or ledger-writer exclusivity: `LedgerService`
+// remains the only code path that ever touches a `Wallet` balance or
+// inserts a `LedgerEntry`. See docs/development/PHASE_6_CHECKLIST.md for
+// the verified-vs-unverified Monime API facts this schema is built on.
+// ---------------------------------------------------------------------------
+
+enum ProviderOperationKind {
+  DEPOSIT_INITIATE
+  DEPOSIT_STATUS_CHECK
+  PAYOUT_SUBMIT
+  PAYOUT_STATUS_CHECK
+}
+
+enum ProviderOperationStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  /// The provider's actual outcome could not be determined (e.g. an HTTP
+  /// timeout on submission). Per ADR-019, an UNKNOWN operation is never
+  /// retried with a new idempotency key — only resolved by querying the
+  /// provider for the status of this exact operation, or by manual
+  /// reconciliation.
+  UNKNOWN
+}
+
+/// One row per outbound call PlayLe makes to a payment provider (deposit
+/// initiation, payout submission, and status polls for either). The
+/// persisted `providerIdempotencyKey` is what makes a retried submission
+/// safe: a retry after a timeout reuses this same key and the provider's
+/// own idempotency guarantee (see docs/development/PHASE_6_CHECKLIST.md
+/// §0) prevents a duplicate payout — PlayLe never mints a second key for
+/// the same operation just because the first attempt's outcome is
+/// unknown.
+model ProviderOperation {
+  id       String                @id @default(uuid())
+  provider String
+  kind     ProviderOperationKind
+
+  relatedDepositId    String?
+  deposit             Deposit?    @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
+  relatedWithdrawalId String?
+  withdrawal          Withdrawal? @relation(fields: [relatedWithdrawalId], references: [id], onDelete: SetNull)
+
+  providerIdempotencyKey String @unique
+
+  status ProviderOperationStatus @default(PENDING)
+
+  requestSnapshot  Json?
+  responseSnapshot Json?
+  failureReason    String?
+
+  attempts Int @default(1)
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  resolvedAt DateTime?
+
+  @@index([status])
+  @@index([relatedDepositId])
+  @@index([relatedWithdrawalId])
+  @@map("provider_operations")
+}
+
+enum PaymentAnomalyType {
+  DEPOSIT_CREDITED_WITHOUT_PROVIDER_CONFIRMATION
+  DEPOSIT_PROVIDER_CONFIRMED_NOT_CREDITED
+  WITHDRAWAL_PROVIDER_PAID_NOT_COMPLETED
+  WITHDRAWAL_COMPLETED_WITHOUT_PROVIDER_CONFIRMATION
+  DUPLICATE_PROVIDER_REFERENCE
+  AMOUNT_MISMATCH
+  STUCK_PROCESSING
+  ORPHAN_PROVIDER_EVENT
+  UNKNOWN_PAYOUT_OUTCOME
+  LEDGER_PROVIDER_DRIFT
+}
+
+enum PaymentAnomalyStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+/// Output of the Phase 6 payment-reconciliation sweep — distinct from
+/// Phase 5's match-settlement reconciliation (`ReconciliationService`).
+/// Detecting and recording an anomaly here never itself mutates money or
+/// historical financial records (see ADR-019); resolution happens only
+/// through the ordinary Deposit/Withdrawal/Ledger service paths, recorded
+/// back onto this row for audit.
+model PaymentReconciliationAnomaly {
+  id   String             @id @default(uuid())
+  type PaymentAnomalyType
+
+  relatedDepositId    String?
+  deposit             Deposit?    @relation(fields: [relatedDepositId], references: [id], onDelete: SetNull)
+  relatedWithdrawalId String?
+  withdrawal          Withdrawal? @relation(fields: [relatedWithdrawalId], references: [id], onDelete: SetNull)
+
+  details Json
+
+  status PaymentAnomalyStatus @default(OPEN)
+
+  resolvedByAdminId String?
+  resolvedByAdmin   User?   @relation("PaymentAnomalyResolvedAdmin", fields: [resolvedByAdminId], references: [id], onDelete: SetNull)
+  resolutionNote    String?
+
+  detectedAt DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([status])
+  @@index([type])
+  @@map("payment_reconciliation_anomalies")
+}
+
+/// A single-use, expiring, hashed password-reset token. The raw token is
+/// never persisted (mirrors `RefreshToken.tokenHash` — see
+/// `src/auth/token.service.ts`); only its SHA-256 hash is stored.
+/// Consuming one revokes every refresh-token session for the user (same
+/// policy as `AuthService.changePassword`).
+model PasswordResetToken {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  requestIp String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+enum VerificationChannel {
+  EMAIL
+  SMS
+}
+
+enum VerificationPurpose {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+}
+
+/// A one-time verification code challenge. `codeHash` is a SHA-256 hash
+/// of the short numeric code actually delivered — the raw code is never
+/// persisted. `attempts` is incremented on every failed check and
+/// enforces a throttle (see `VerificationService`); exceeding it forces a
+/// fresh challenge rather than allowing unlimited guesses against one.
+model VerificationChallenge {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  channel VerificationChannel
+  purpose VerificationPurpose
+  target  String
+
+  codeHash   String
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("verification_challenges")
+}
+
+/// One row per user with TOTP MFA enrolled (at most one — `userId` is
+/// unique; re-enrolling replaces this row rather than creating a second).
+/// `secretEncrypted` is the TOTP seed encrypted at rest (see
+/// `docs/decisions/ADR-020-account-security.md` for the encryption-key
+/// source) — never stored or logged in plaintext. `confirmedAt` is null
+/// during enrollment (secret generated, not yet proven by one valid code)
+/// — an unconfirmed credential grants no login enforcement, preventing a
+/// user from locking themselves out of an incomplete enrollment.
+model MfaTotpCredential {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  secretEncrypted String
+
+  confirmedAt DateTime?
+  disabledAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  recoveryCodes MfaRecoveryCode[]
+
+  @@map("mfa_totp_credentials")
+}
+
+/// Single-use MFA recovery codes, issued as a batch at enrollment
+/// confirmation. `codeHash` is a hash of one recovery code; `usedAt` is
+/// set the instant one is consumed and it is never usable again.
+model MfaRecoveryCode {
+  id                  String            @id @default(uuid())
+  mfaTotpCredentialId String
+  mfaTotpCredential   MfaTotpCredential @relation(fields: [mfaTotpCredentialId], references: [id], onDelete: Cascade)
+
+  codeHash String
+  usedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([mfaTotpCredentialId])
+  @@map("mfa_recovery_codes")
+}
+
+enum ResponsibleGamingRestrictionType {
+  SELF_EXCLUSION
+  DEPOSIT_LIMIT
+  STAKE_LIMIT
+  LOSS_LIMIT
+  COOLING_OFF
+}
+
+enum ResponsibleGamingRestrictionStatus {
+  ACTIVE
+  EXPIRED
+  LIFTED
+}
+
+/// A user-initiated or time-bound financial/gaming restriction, enforced
+/// centrally by the eligibility policy service (`EligibilityService`) at
+/// every financial and stake-forming boundary — never left to individual
+/// controllers to check ad hoc. A `SELF_EXCLUSION` row has no `endsAt` and
+/// — deliberately, this phase — no admin "lift" endpoint exists anywhere
+/// in the codebase; `status` can reach `LIFTED` only for the other
+/// restriction types (e.g. a user shortening their own cooling-off via an
+/// equally-restrictive new request is still a new row, never an edit of
+/// this one — see ADR-021 "no destructive editing of restriction
+/// history").
+model ResponsibleGamingRestriction {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  type   ResponsibleGamingRestrictionType
+  status ResponsibleGamingRestrictionStatus @default(ACTIVE)
+
+  /// Type-specific configuration, e.g. `{"limitMinor": "50000"}` for a
+  /// DEPOSIT_LIMIT/STAKE_LIMIT/LOSS_LIMIT; `{}` for SELF_EXCLUSION/COOLING_OFF.
+  config Json
+
+  startsAt DateTime  @default(now())
+  endsAt   DateTime?
+
+  liftedAt     DateTime?
+  liftedReason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([status])
+  @@map("responsible_gaming_restrictions")
+}
+
+enum NotificationType {
+  DEPOSIT_COMPLETED
+  DEPOSIT_FAILED
+  WITHDRAWAL_SUBMITTED
+  WITHDRAWAL_COMPLETED
+  WITHDRAWAL_FAILED
+  SELF_EXCLUSION_ACTIVATED
+  PASSWORD_RESET_REQUESTED
+  VERIFICATION_CODE_ISSUED
+}
+
+enum NotificationOutboxStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+/// Transactional outbox for every financial/account-security
+/// notification: a row here is always written in the **same** database
+/// transaction as the financial mutation or security event it describes
+/// (see ADR-019 "notifications must not be emitted before commit"), and a
+/// separate dispatcher (polling, like `MatchTimeoutService`) delivers it
+/// afterwards via whatever `NotificationDeliveryPort` is configured
+/// (`FakeDeliveryAdapter` absent real credentials — see
+/// docs/development/PHASE_6_CHECKLIST.md item 6). Delivery failure never
+/// rolls back or retries the underlying financial operation.
+model NotificationOutbox {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  payload Json
+
+  status   NotificationOutboxStatus @default(PENDING)
+  attempts Int                      @default(0)
+
+  failureReason String?
+
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@index([status])
+  @@map("notification_outbox")
+}
+
+enum AdminAuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SESSION_REFRESH
+  CSRF_REJECTED
+  MFA_ENROLLED
+  MFA_DISABLED
+  MFA_CHALLENGE_FAILED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+}
+
+/// Append-only audit trail for admin-session and account-security
+/// events (login/logout/refresh, CSRF rejections, MFA changes, password
+/// resets). Separate from the financial `LedgerEntry` audit trail — this
+/// one is about *who accessed what*, not money. `adminId` is nullable so
+/// a failed login attempt against a nonexistent/non-admin identifier can
+/// still be recorded (for brute-force visibility) without a FK to attach
+/// it to.
+model AdminAuditLog {
+  id      String           @id @default(uuid())
+  adminId String?
+  admin   User?            @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  action  AdminAuditAction
+  detail  String?
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([adminId])
+  @@index([action])
+  @@map("admin_audit_logs")
 }

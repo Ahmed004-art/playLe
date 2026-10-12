@@ -23,7 +23,12 @@ import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
-import { AuthResponseDto, UserResponseDto } from './dto/auth-response.dto.js';
+import {
+  AuthResponseDto,
+  MfaChallengeResponseDto,
+  UserResponseDto,
+} from './dto/auth-response.dto.js';
+import { MfaLoginVerifyDto } from './dto/mfa-login-verify.dto.js';
 import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 
@@ -67,11 +72,40 @@ export class AuthController {
   })
   @ApiResponse({ status: 200, type: AuthResponseDto })
   @ApiResponse({
+    status: 200,
+    type: MfaChallengeResponseDto,
+    description: 'Returned instead when the account has MFA enrolled.',
+  })
+  @ApiResponse({
     status: 401,
     description: 'Invalid credentials, or the account is suspended/disabled.',
   })
-  async login(@Body() dto: LoginDto, @Req() req: Request) {
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+  ): Promise<AuthResponseDto | MfaChallengeResponseDto> {
     const result = await this.authService.login(dto, this.requestMeta(req));
+    if ('mfaRequired' in result) return result;
+    return this.toAuthResponse(result);
+  }
+
+  @Post('mfa/verify')
+  @HttpCode(HttpStatus.OK)
+  @Throttle(AUTH_THROTTLE)
+  @ApiOperation({
+    summary: 'Completes a login that /auth/login paused for an MFA challenge.',
+  })
+  @ApiResponse({ status: 200, type: AuthResponseDto })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid/expired challenge, or an invalid TOTP/recovery code.',
+  })
+  async verifyMfa(@Body() dto: MfaLoginVerifyDto, @Req() req: Request) {
+    const result = await this.authService.completeMfaLogin(
+      dto.mfaChallengeToken,
+      dto.code,
+      this.requestMeta(req),
+    );
     return this.toAuthResponse(result);
   }
 

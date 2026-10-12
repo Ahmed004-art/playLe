@@ -14,10 +14,18 @@ abstract class WalletRepository {
 
   Future<Deposit> createDeposit({required String amountMinor});
 
+  /// Re-fetches a single deposit by id — used to poll for a later
+  /// webhook-driven status change (e.g. `PENDING` → `COMPLETED`/`EXPIRED`)
+  /// after creation, since this app has no push channel for deposits.
+  Future<Deposit> getDeposit(String id);
+
   Future<Withdrawal> createWithdrawal({
     required String amountMinor,
     required Map<String, dynamic> destinationDetails,
   });
+
+  /// Re-fetches a single withdrawal by id — same purpose as [getDeposit].
+  Future<Withdrawal> getWithdrawal(String id);
 
   Future<Withdrawal> cancelWithdrawal(String id);
 }
@@ -53,6 +61,20 @@ class HttpWalletRepository implements WalletRepository {
       headers: {'Idempotency-Key': _generateIdempotencyKey()},
     );
     return Deposit.fromJson(response.data!);
+  }
+
+  @override
+  Future<Deposit> getDeposit(String id) async {
+    final response = await apiClient.get<Map<String, dynamic>>('/deposits/$id');
+    return Deposit.fromJson(response.data!);
+  }
+
+  @override
+  Future<Withdrawal> getWithdrawal(String id) async {
+    final response = await apiClient.get<Map<String, dynamic>>(
+      '/withdrawals/$id',
+    );
+    return Withdrawal.fromJson(response.data!);
   }
 
   @override

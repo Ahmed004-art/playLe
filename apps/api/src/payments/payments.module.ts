@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PAYMENT_PROVIDER } from './ports/payment-provider.port.js';
 import { ManualProvider } from './providers/manual.provider.js';
 import { MonimeProvider } from './providers/monime.provider.js';
+import { PaymentReconciliationService } from './payment-reconciliation.service.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
 @Module({
@@ -10,6 +11,7 @@ import type { AppConfiguration } from '../config/configuration.js';
   providers: [
     ManualProvider,
     MonimeProvider,
+    PaymentReconciliationService,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService, ManualProvider, MonimeProvider],
@@ -23,6 +25,6 @@ import type { AppConfiguration } from '../config/configuration.js';
           : manual,
     },
   ],
-  exports: [PAYMENT_PROVIDER],
+  exports: [PAYMENT_PROVIDER, PaymentReconciliationService],
 })
 export class PaymentsModule {}

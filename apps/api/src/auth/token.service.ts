@@ -11,6 +11,11 @@ export interface AccessTokenPayload {
   role: UserRole;
 }
 
+interface MfaChallengePayload {
+  sub: string;
+  purpose: 'mfa_challenge';
+}
+
 export interface IssuedTokenPair {
   accessToken: string;
   refreshToken: string;
@@ -66,6 +71,41 @@ export class TokenService {
       });
     } catch {
       throw new UnauthorizedException('Invalid or expired access token');
+    }
+  }
+
+  /**
+   * A short-lived (5m), single-purpose token identifying *who* is mid-
+   * login — issued instead of a real access/refresh token pair once
+   * `AuthService.login` sees the account has MFA enrolled. Carries no
+   * authority on its own: it is accepted only by
+   * `MfaService.verifyChallenge`, never by `JwtAuthGuard`.
+   */
+  signMfaChallengeToken(userId: string): string {
+    const payload: MfaChallengePayload = {
+      sub: userId,
+      purpose: 'mfa_challenge',
+    };
+    return this.jwtService.sign(payload, {
+      secret: this.configService.get('auth.accessTokenSecret', { infer: true }),
+      expiresIn: '5m',
+    });
+  }
+
+  /** Returns the challenged user's id, or throws if invalid/expired/wrong-purpose. */
+  verifyMfaChallengeToken(token: string): string {
+    try {
+      const payload = this.jwtService.verify<MfaChallengePayload>(token, {
+        secret: this.configService.get('auth.accessTokenSecret', {
+          infer: true,
+        }),
+      });
+      if (payload.purpose !== 'mfa_challenge') {
+        throw new Error('wrong token purpose');
+      }
+      return payload.sub;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired MFA challenge');
     }
   }
 
@@ -187,6 +227,51 @@ export class TokenService {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  /**
+   * Every currently-active (non-revoked, non-expired) session for a
+   * user — "manage your devices" UI. Never exposes the token itself,
+   * only its metadata (`RefreshToken` already captured `userAgent`/
+   * `ipAddress` at issuance — no new tracking needed).
+   */
+  async listActiveSessions(userId: string): Promise<
+    Array<{
+      id: string;
+      familyId: string;
+      userAgent: string | null;
+      ipAddress: string | null;
+      createdAt: Date;
+      expiresAt: Date;
+    }>
+  > {
+    return this.prisma.refreshToken.findMany({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        familyId: true,
+        userAgent: true,
+        ipAddress: true,
+        createdAt: true,
+        expiresAt: true,
+      },
+    });
+  }
+
+  /** Revokes one session by its row id, scoped to its owning user — never another user's. */
+  async revokeSessionById(userId: string, id: string): Promise<boolean> {
+    const existing = await this.prisma.refreshToken.findUnique({
+      where: { id },
+    });
+    if (!existing || existing.userId !== userId || existing.revokedAt) {
+      return false;
+    }
+    await this.prisma.refreshToken.update({
+      where: { id },
+      data: { revokedAt: new Date() },
+    });
+    return true;
   }
 
   private generateRawToken(): string {

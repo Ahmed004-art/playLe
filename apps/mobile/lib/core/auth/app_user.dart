@@ -10,6 +10,8 @@ class AppUser {
     this.phoneNumber,
     this.displayName,
     this.avatarUrl,
+    this.emailVerifiedAt,
+    this.phoneVerifiedAt,
   });
 
   factory AppUser.fromJson(Map<String, dynamic> json) {
@@ -22,6 +24,12 @@ class AppUser {
       phoneNumber: json['phoneNumber'] as String?,
       displayName: json['displayName'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
+      emailVerifiedAt: json['emailVerifiedAt'] == null
+          ? null
+          : DateTime.parse(json['emailVerifiedAt'] as String),
+      phoneVerifiedAt: json['phoneVerifiedAt'] == null
+          ? null
+          : DateTime.parse(json['phoneVerifiedAt'] as String),
     );
   }
 
@@ -33,6 +41,10 @@ class AppUser {
   final String? phoneNumber;
   final String? displayName;
   final String? avatarUrl;
+  final DateTime? emailVerifiedAt;
+  final DateTime? phoneVerifiedAt;
 
   bool get isAdmin => role == 'ADMIN';
+  bool get isEmailVerified => emailVerifiedAt != null;
+  bool get isPhoneVerified => phoneVerifiedAt != null;
 }

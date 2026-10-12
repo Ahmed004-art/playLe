@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/errors/app_exception.dart';
@@ -81,6 +82,13 @@ class _LoginScreenState extends State<LoginScreen> {
                   validator: (value) =>
                       (value == null || value.isEmpty) ? 'Required' : null,
                   onFieldSubmitted: (_) => _submit(),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => context.push('/password-reset'),
+                    child: const Text('Forgot password?'),
+                  ),
                 ),
                 if (_errorMessage != null) ...[
                   const SizedBox(height: 16),

@@ -111,6 +111,90 @@ void main() {
         ),
       );
     });
+
+    test('transitions to AuthMfaChallenge instead of AuthAuthenticated when '
+        'the account has MFA enrolled', () async {
+      final repo = FakeAuthRepository()
+        ..mfaChallengeTokenToReturn = 'challenge-token-1';
+      final controller = AuthController(repo);
+
+      await controller.login(
+        identifier: 'player@example.com',
+        password: 'Passw0rd1',
+      );
+
+      final state = controller.state;
+      expect(state, isA<AuthMfaChallenge>());
+      expect(
+        (state as AuthMfaChallenge).mfaChallengeToken,
+        'challenge-token-1',
+      );
+    });
+  });
+
+  group('AuthController MFA challenge completion', () {
+    test(
+      'verifyMfaLogin completes the login and transitions to Authenticated',
+      () async {
+        final repo = FakeAuthRepository()
+          ..mfaChallengeTokenToReturn = 'challenge-token-1';
+        final controller = AuthController(repo);
+        await controller.login(
+          identifier: 'player@example.com',
+          password: 'Passw0rd1',
+        );
+        expect(controller.state, isA<AuthMfaChallenge>());
+
+        await controller.verifyMfaLogin('123456');
+
+        expect(controller.state, isA<AuthAuthenticated>());
+        expect(repo.lastMfaVerifyCode, '123456');
+      },
+    );
+
+    test(
+      'verifyMfaLogin throws StateError when no challenge is in progress',
+      () async {
+        final controller = AuthController(FakeAuthRepository());
+
+        expect(
+          () => controller.verifyMfaLogin('123456'),
+          throwsA(isA<StateError>()),
+        );
+      },
+    );
+
+    test('surfaces an invalid code without changing state', () async {
+      final repo = FakeAuthRepository()
+        ..mfaChallengeTokenToReturn = 'challenge-token-1'
+        ..mfaVerifyError = 'Invalid code';
+      final controller = AuthController(repo);
+      await controller.login(
+        identifier: 'player@example.com',
+        password: 'Passw0rd1',
+      );
+
+      await expectLater(
+        controller.verifyMfaLogin('000000'),
+        throwsA(isA<NetworkException>()),
+      );
+      expect(controller.state, isA<AuthMfaChallenge>());
+    });
+
+    test('cancelMfaChallenge returns to Unauthenticated', () async {
+      final repo = FakeAuthRepository()
+        ..mfaChallengeTokenToReturn = 'challenge-token-1';
+      final controller = AuthController(repo);
+      await controller.login(
+        identifier: 'player@example.com',
+        password: 'Passw0rd1',
+      );
+      expect(controller.state, isA<AuthMfaChallenge>());
+
+      controller.cancelMfaChallenge();
+
+      expect(controller.state, isA<AuthUnauthenticated>());
+    });
   });
 
   group('AuthController.logout', () {

@@ -10,10 +10,3 @@ export interface AdminUser {
   status: 'ACTIVE' | 'SUSPENDED' | 'DISABLED';
   createdAt: string;
 }
-
-export interface AuthResponse {
-  user: AdminUser;
-  accessToken: string;
-  refreshToken: string;
-  refreshTokenExpiresAt: string;
-}

@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 import ReconciliationPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -38,15 +37,13 @@ function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
 describe('ReconciliationPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
   });
 
   it('shows an empty-state message when a run finds no anomalies', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/reconciliation/run': { generatedAt: new Date().toISOString(), anomalies: [] },
       }),
     );
@@ -64,11 +61,10 @@ describe('ReconciliationPage', () => {
   });
 
   it('renders anomalies returned by a run', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/reconciliation/run': {
           generatedAt: new Date().toISOString(),
           anomalies: [
@@ -99,9 +95,8 @@ describe('ReconciliationPage', () => {
   });
 
   it('does not run automatically before the button is clicked', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     const fetchMock = mockFetchRoutedByUrl({
-      '/auth/me': ADMIN_USER,
+      '/admin/session/me': ADMIN_USER,
       '/admin/reconciliation/run': { generatedAt: new Date().toISOString(), anomalies: [] },
     });
     vi.stubGlobal('fetch', fetchMock);

@@ -24,6 +24,14 @@ import { SystemAccountModule } from './system-account/system-account.module.js';
 import { SettlementModule } from './settlement/settlement.module.js';
 import { MatchStakesModule } from './match-stakes/match-stakes.module.js';
 import { DisputesModule } from './disputes/disputes.module.js';
+import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
+import { CsrfGuard } from './admin-auth/csrf.guard.js';
+import { AuditModule } from './audit/audit.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
+import { PasswordResetModule } from './password-reset/password-reset.module.js';
+import { VerificationModule } from './verification/verification.module.js';
+import { EligibilityModule } from './eligibility/eligibility.module.js';
+import { NotificationOutboxModule } from './notification-outbox/notification-outbox.module.js';
 
 @Module({
   imports: [
@@ -93,7 +101,17 @@ import { DisputesModule } from './disputes/disputes.module.js';
     SettlementModule,
     MatchStakesModule,
     DisputesModule,
+    AdminAuthModule,
+    AuditModule,
+    NotificationsModule,
+    PasswordResetModule,
+    VerificationModule,
+    EligibilityModule,
+    NotificationOutboxModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: CsrfGuard },
+  ],
 })
 export class AppModule {}

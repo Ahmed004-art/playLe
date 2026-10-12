@@ -1,7 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider, useAuth } from './auth-context';
-import { tokenStorage } from './token-storage';
 
 const ADMIN_USER = {
   id: 'user-1',
@@ -14,8 +13,6 @@ const ADMIN_USER = {
   status: 'ACTIVE' as const,
   createdAt: new Date().toISOString(),
 };
-
-const PLAIN_USER = { ...ADMIN_USER, role: 'USER' as const };
 
 function Probe() {
   const { status, user, login, logout } = useAuth();
@@ -40,30 +37,28 @@ function renderWithProvider() {
 describe('AuthProvider', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
+    document.cookie = 'admin_csrf_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/';
   });
 
-  it('starts unauthenticated when there is no stored token', async () => {
-    renderWithProvider();
-
-    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
-  });
-
-  it('restores an authenticated admin session from a valid stored token', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ADMIN_USER }),
-    );
+  it('restores an authenticated admin session via GET /admin/session/me (cookie-based, no token check)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ADMIN_USER });
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithProvider();
 
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
     expect(screen.getByTestId('username')).toHaveTextContent('theadmin');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/admin/session/me');
+    expect(init?.credentials).toBe('include');
+    // No Authorization header — the session travels as an httpOnly cookie.
+    expect((init?.headers as Record<string, string> | undefined)?.Authorization).toBeUndefined();
   });
 
-  it('clears the session and lands unauthenticated when the stored token is invalid', async () => {
-    tokenStorage.setTokens('stale-token', 'stale-refresh');
+  it('lands unauthenticated when /admin/session/me returns 401 on initial load, without crashing', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -76,49 +71,21 @@ describe('AuthProvider', () => {
     renderWithProvider();
 
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
-    expect(tokenStorage.getAccessToken()).toBeNull();
+    expect(screen.getByTestId('username')).toHaveTextContent('');
   });
 
-  it('a non-admin login is rejected and no session is persisted', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          user: PLAIN_USER,
-          accessToken: 'at',
-          refreshToken: 'rt',
-          refreshTokenExpiresAt: new Date().toISOString(),
-        }),
-      }),
-    );
-
-    renderWithProvider();
-    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
-
-    await act(async () => {
-      screen.getByText('login').click();
+  it('logs in an admin successfully using only the returned user body (no tokens anywhere)', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/admin/session/me')) {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: async () => ({ message: 'Invalid or expired access token' }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ADMIN_USER });
     });
-
-    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
-    expect(tokenStorage.getAccessToken()).toBeNull();
-  });
-
-  it('logs in an admin successfully and persists the session', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          user: ADMIN_USER,
-          accessToken: 'at',
-          refreshToken: 'rt',
-          refreshTokenExpiresAt: new Date().toISOString(),
-        }),
-      }),
-    );
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithProvider();
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
@@ -128,15 +95,56 @@ describe('AuthProvider', () => {
     });
 
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
-    expect(tokenStorage.getAccessToken()).toBe('at');
+    expect(screen.getByTestId('username')).toHaveTextContent('theadmin');
+
+    const loginCall = fetchMock.mock.calls.find((call) => call[0].includes('/admin/session/login'));
+    expect(loginCall).toBeDefined();
+    const [, init] = loginCall as [string, RequestInit];
+    expect(init?.credentials).toBe('include');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      identifier: 'admin@example.com',
+      password: 'Passw0rd1',
+    });
+    // The response body is the bare user object — nothing token-shaped was
+    // read off it, and nothing was ever written to localStorage.
+    expect(window.localStorage.length).toBe(0);
   });
 
-  it('logs out and clears the stored session', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ADMIN_USER }),
-    );
+  it('a failed login (401) never sets authenticated state', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/admin/session/me')) {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: async () => ({ message: 'Invalid or expired access token' }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+        json: async () => ({ message: 'Invalid credentials' }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProvider();
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
+
+    await act(async () => {
+      screen.getByText('login').click();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
+    expect(screen.getByTestId('username')).toHaveTextContent('');
+  });
+
+  it('logs out, resets state, and sends the CSRF header on the logout call', async () => {
+    document.cookie = 'admin_csrf_token=csrf-abc123; path=/';
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ADMIN_USER });
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithProvider();
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
@@ -145,12 +153,17 @@ describe('AuthProvider', () => {
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, status: 204, json: async () => undefined }),
     );
+    const logoutFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
 
     await act(async () => {
       screen.getByText('logout').click();
     });
 
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
-    expect(tokenStorage.getAccessToken()).toBeNull();
+
+    const [url, init] = logoutFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/admin/session/logout');
+    expect(init?.credentials).toBe('include');
+    expect((init?.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc123');
   });
 });

@@ -1,7 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 import MatchesPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -57,15 +56,13 @@ function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
 describe('MatchesPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
   });
 
   it('lists matches for an authenticated admin', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/matches': { items: [ACTIVE_MATCH], nextCursor: null },
       }),
     );
@@ -81,11 +78,10 @@ describe('MatchesPage', () => {
   });
 
   it('shows an empty-state message when there are no matches in a status', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/matches': { items: [], nextCursor: null },
       }),
     );
@@ -100,11 +96,10 @@ describe('MatchesPage', () => {
   });
 
   it('has no action to set or override a match result', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/matches': { items: [ACTIVE_MATCH], nextCursor: null },
       }),
     );

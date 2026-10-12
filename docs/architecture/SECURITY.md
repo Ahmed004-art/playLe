@@ -1,11 +1,12 @@
 # Security Foundation
 
-This document describes the security posture established through Phase 5
+This document describes the security posture established through Phase 6
 and the security work that remains for later phases. **The application is
-not production-secure after Phase 5** — in particular, no real payment
-provider is connected yet (see ADR-013), and all match-stake testing uses
-test wallets, not real money. This is a foundation, not a completed
-security program.
+not production-secure after Phase 6** — in particular, Monime webhook
+signature verification still fails closed (see ADR-019), no live Monime
+deposit/payout has been exercised outside test credentials, and all
+match-stake testing uses test wallets, not real money. This is a
+foundation, not a completed security program.
 
 ## Implemented in Phase 1
 
@@ -285,30 +286,165 @@ Full architecture and reasoning:
   before every commit — an unbalanced computation is refused, never
   written.
 
-## Explicitly NOT Implemented Through Phase 5
+## Implemented in Phase 6 — Production Payments, Account Security & Responsible Gaming
 
-- Email/SMS verification delivery (schema fields exist, no provider
-  integration or OTP flow — see ADR-011).
-- Password reset flow (not required this phase; no reset-token table
-  exists).
-- Multi-factor authentication.
-- Device/session management UI (sessions are revocable at the data layer
-  via refresh-token rotation, but there's no "your active sessions" UI).
+Full architecture and reasoning:
+[ADR-019](../decisions/ADR-019-production-payments.md),
+[ADR-020](../decisions/ADR-020-account-security.md),
+[ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md).
+
+- **Admin sessions moved off `localStorage` to httpOnly cookies.** The
+  admin app's access/refresh tokens are now delivered as
+  `admin_access_token`/`admin_refresh_token` (httpOnly, `SameSite=Lax`,
+  `Secure` when `ADMIN_SESSION_SECURE_COOKIES=true`) by
+  `AdminSessionController` (`POST /admin/session/login|refresh|logout`,
+  `GET /admin/session/me`), rather than a JSON response body the frontend
+  put in `localStorage`. This reuses the *same* `AuthService`/
+  `TokenService` rotating-refresh-token machinery every other client
+  already uses — a transport change, not a second auth system.
+  `JwtAuthGuard` only reads the cookie when no `Authorization` header is
+  present, so every existing Bearer-token client/test is unaffected. A
+  login with valid credentials but a non-admin role revokes the session
+  it just issued and returns the identical generic "Invalid credentials"
+  a wrong password would — no privilege-leak. The admin frontend itself
+  (`api-client.ts`, `auth-context.tsx`) was migrated to this contract and
+  `token-storage.ts` was deleted; see "Known Limitations" below — the
+  localStorage note there is now historical, not current.
+- **CSRF: double-submit, scoped to cookie-authenticated requests only.**
+  `CsrfGuard` (global `APP_GUARD`) is a no-op for any request carrying an
+  `Authorization` header (not cookie/CSRF-exploitable), for any
+  non-mutating method, and for `POST /admin/session/login` itself (no
+  CSRF cookie exists before login). Every other mutating `/admin/*`
+  request must echo the non-httpOnly `admin_csrf_token` cookie's value
+  back in an `X-CSRF-Token` header, or it is rejected and recorded as
+  `CSRF_REJECTED` in the new append-only `AdminAuditLog`.
+- **Password reset: single-use, hashed, anti-enumeration.**
+  `PasswordResetToken` mirrors `RefreshToken`'s pattern — only a SHA-256
+  hash of the token is ever persisted, never the raw value. `POST
+  /auth/password-reset/request` returns the identical generic message
+  regardless of whether the identifier matches an account (verified by
+  an e2e test asserting byte-identical response bodies). Confirming a
+  reset revokes every existing session for the account, same policy as
+  `AuthService.changePassword`.
+- **Email/phone verification codes.** `VerificationChallenge` stores only
+  a hash of a 6-digit code (`crypto.randomInt`), 10-minute expiry, a
+  5-attempt throttle after which the challenge is consumed and a fresh
+  one must be requested, and a newer request supersedes (never stacks
+  alongside) an older unconsumed one for the same purpose. Delivery
+  (password reset and verification both) goes only through
+  `FakeDeliveryAdapter` (`src/notifications/`) — it logs and retains a
+  bounded in-memory record for tests/local inspection and is explicitly
+  documented as never a production delivery mechanism; no real email/SMS
+  provider is integrated this phase.
+- **MFA (TOTP), hand-rolled, no new dependency.** `src/mfa/totp.util.ts`
+  implements RFC 4226 (HOTP)/RFC 6238 (TOTP) from scratch with
+  `node:crypto` only, verified against the official RFC 6238 SHA-1 test
+  vector — not `otplib`/`speakeasy` (CLAUDE.md "avoid unnecessary
+  dependencies"). Secrets are encrypted at rest (AES-256-GCM,
+  `MFA_ENCRYPTION_KEY`, required and validated at boot like
+  `JWT_ACCESS_SECRET`). An enrollment enforces nothing until confirmed
+  with one real code; resuming an unconfirmed enrollment returns the
+  same secret rather than invalidating an already-scanned QR code, so an
+  incomplete enrollment can never lock anyone out. Eight single-use
+  recovery codes are hashed and shown exactly once at confirmation.
+  `AuthService.login` pauses for a short-lived (5-minute) single-purpose
+  JWT "MFA challenge" token once an account has confirmed MFA — it
+  carries the pending-login identity, is accepted only by
+  `MfaService.verifyChallenge`, and is never accepted by `JwtAuthGuard`.
+  Disabling MFA requires a fresh valid TOTP code — a stolen access token
+  alone cannot turn it off.
+- **Session management**: extends the existing `RefreshToken` table
+  (already captured `familyId`/`userAgent`/`ipAddress` at issuance) with
+  `GET /auth/sessions`, `POST /auth/sessions/:id/revoke` (IDOR-safe —
+  404s, not another user's session, scoped by `userId`), `POST
+  /auth/sessions/revoke-all` — the same IDOR-safe precedent used
+  throughout this codebase since Phase 3.
+- **Payment-provider idempotency / exactly-once payouts.** Every outbound
+  Monime call carries a `providerIdempotencyKey`, minted once and
+  persisted on a `ProviderOperation` row; a retry of the *same*
+  PlayLe-side attempt reuses that key rather than minting a fresh one. A
+  network error during payout submission is recorded as an `UNKNOWN`
+  `ProviderOperation` and the withdrawal moves to `PROCESSING` —
+  **never** retried with a new idempotency key, since the real-world
+  outcome of the original request is genuinely unknown. Resolution is
+  only ever a later webhook, an explicit `checkPayoutStatus` query
+  against that exact operation, or an admin resolving it by hand after
+  out-of-band reconciliation (still mandatory-reason, still audited,
+  never a "just mark it paid" shortcut). See ADR-019.
+- **Production activation requires two independent deliberate choices.**
+  A `mon_test_...` token always runs; a live `mon_...` token additionally
+  requires `MONIME_LIVE_PAYMENTS_ENABLED=true` — flipping
+  `PAYMENTS_PROVIDER=monime` alone can never silently start making real
+  payment-provider calls. Separately, `REAL_MONEY_GAMING_ENABLED` and the
+  new `ELIGIBILITY_POLICY_CONFIGURED` must **both** be true before any
+  real-money action proceeds, so flipping either alone can never
+  silently enable real-money play with no configured legal policy behind
+  it (see ADR-021).
+- **Webhook signature verification remains fail-closed — not resolved.**
+  The exact byte string Monime's `Monime-Signature` header HMAC-SHA256
+  covers was not verifiable against any source reachable during this
+  implementation. `MonimeProvider.verifyWebhookSignature` therefore
+  **always returns invalid**, exactly extending (never weakening) the
+  fail-closed stance Phase 3 shipped. This is explicitly not fixed in
+  Phase 6 — see ADR-019, "Open/Unverified", and
+  `docs/development/MONIME_SETUP.md`.
+- **Self-exclusion has no lift path anywhere in this codebase, by
+  design.** `ResponsibleGamingRestriction` rows are never destructively
+  edited — a change is always a new row, so history is always
+  reconstructable. `SELF_EXCLUSION` is the one restriction type with no
+  lift method — not in `ResponsibleGamingService`, not on any admin
+  controller, not reachable by any role. This is a deliberate decision,
+  not an oversight: absent a defined, legally-authorized
+  compliance-officer process (which doesn't exist in this codebase and
+  can't be invented by an automated implementation), the only safe
+  default is that self-exclusion can't be turned back off, silently or
+  deliberately, by an ordinary admin action. Self-exclusion/cooling-off
+  block deposits and real-money stakes but never withdrawals —
+  `EligibilityService.assertCanWithdraw` is an explicit no-op, since
+  letting an at-risk user get their own money *out* is the
+  responsible-gambling-correct behavior, not a loophole. See ADR-021.
+- **Centralized eligibility, one call site.** `EligibilityService`
+  (`src/eligibility/`) is now the only place real-money eligibility is
+  checked; the two inline checks previously duplicated inside
+  `MatchStakesService` were deleted in favor of calling it, and
+  `DepositsService.create` now calls it too.
+
+## Explicitly NOT Implemented Through Phase 6
+
+- Real email/SMS delivery for password reset and verification codes —
+  the OTP flows themselves (`VerificationService`, `PasswordResetService`)
+  are implemented as of Phase 6, but delivery goes only through
+  `FakeDeliveryAdapter` (logs + in-memory record); no real provider
+  credentials exist (see ADR-020).
+- A dedicated "your active sessions" UI in the mobile/admin apps — the
+  backend (`GET /auth/sessions`, revoke, revoke-all) is implemented as of
+  Phase 6 (see ADR-020); no frontend surfaces it yet.
 - KYC / identity verification of withdrawal destinations (`destinationDetails`
   is stored as unverified metadata — see ADR-012).
-- Real-money deposits or payouts — `ManualProvider` is active and makes
-  no network call; `MonimeProvider` is an inert boundary pending verified
-  Monime access (see ADR-013, `docs/development/MONIME_SETUP.md`).
-- Real-money payouts of actual winnings via a production payment
-  provider — the engine above works entirely against test wallets;
-  `ManualProvider` remains the active provider (see ADR-013).
+- Live real-money deposits or payouts — `MonimeProvider` now makes real
+  HTTP calls against Monime's test environment (Phase 6), but a live
+  (`mon_...`) token additionally requires `MONIME_LIVE_PAYMENTS_ENABLED=true`,
+  and inbound webhook signature verification still always fails closed
+  (see "Webhook signature verification remains fail-closed" above and
+  ADR-019), so a live deposit/payout cannot yet be automatically
+  confirmed. `ManualProvider` remains the default active provider.
 - Additional games beyond Tic-Tac-Toe (both the `GameModule` contract
-  and the Phase 5 financial pipeline are designed to support them
-  without changes, but none are implemented).
-- A production activation flag beyond `REAL_MONEY_GAMING_ENABLED` — no
-  separate legal/compliance/KYC gate exists yet; that is explicitly
-  future work before any of this handles real user funds (see ADR-016,
-  "production activation boundary").
+  and the financial pipeline are designed to support them without
+  changes, but none are implemented).
+- A verified legal/compliance real-money eligibility policy — Phase 6
+  added a required second flag (`ELIGIBILITY_POLICY_CONFIGURED`) and a
+  documented conservative placeholder minimum age
+  (`REAL_MONEY_MINIMUM_AGE`), but no actual legal review or KYC has been
+  performed; the flag only records that the owner confirms a policy
+  exists, never that this codebase determined one is correct (see
+  ADR-021).
+- Rolling-window spend tracking and `LOSS_LIMIT` enforcement at
+  settlement — `DEPOSIT_LIMIT`/`STAKE_LIMIT` are enforced as a per-action
+  ceiling, not a cumulative sum, and `LOSS_LIMIT` is recorded/visible but
+  not yet enforced (documented simplification, not a claim of complete
+  spend tracking — see ADR-021).
+- Any self-exclusion-lift process — by design, not an oversight; see
+  "Self-exclusion has no lift path" above and ADR-021.
 - Match-level anti-cheat/anomaly detection (e.g. detecting a player
   deliberately disconnecting to avoid a loss) beyond the disconnect
   grace-period forfeit rule already implemented.
@@ -371,6 +507,14 @@ since Phase 2 (via a throwaway one-off script, not a new runtime call
 path). `npm audit` after Phase 5 reports the same findings as Phase 4,
 unchanged.
 
+**Phase 6 update**: exactly one new runtime dependency, `cookie-parser`
+(`apps/api`, plus its `@types/cookie-parser` dev typings) — needed to
+read the new httpOnly `admin_access_token`/`admin_refresh_token`/
+`admin_csrf_token` cookies, since the framework has no built-in cookie
+parser. MFA (TOTP/HOTP) was deliberately hand-rolled against
+`node:crypto` rather than adding `otplib`/`speakeasy` (see ADR-020). No
+other new dependency was added anywhere (API, admin, or mobile).
+
 ## Known Limitations
 
 - The development database and Redis instances run with default/simple
@@ -382,25 +526,29 @@ unchanged.
   application itself.
 - No automated secret-scanning is wired into CI yet; the current
   safeguard is `.gitignore` plus manual review before every commit.
-- **The admin app stores session tokens in `localStorage`**, which is
-  readable by any script on the page (XSS risk). This was accepted in
-  Phase 2 because there were no real operations to protect; **that is no
-  longer true** — the admin app now approves/rejects withdrawals and
-  adjusts wallet balances. This is flagged explicitly as a gap that must
-  be closed (move to httpOnly, SameSite cookies set by the API — see
-  `apps/admin/src/lib/token-storage.ts` and ADR-011) before any of this
-  is used against real money in production.
-- No password-reset or email/SMS verification flow exists yet — an
-  account with a forgotten password currently has no self-service
-  recovery path.
+- ~~The admin app stores session tokens in `localStorage`~~ — **closed in
+  Phase 6**. The admin app now uses httpOnly, `SameSite=Lax` cookies
+  issued by `AdminSessionController`, with CSRF protection via
+  `CsrfGuard`; `apps/admin/src/lib/token-storage.ts` was deleted. See
+  "Implemented in Phase 6" above and ADR-020.
+- No real email/SMS delivery provider exists yet — password-reset and
+  verification *codes* are generated, hashed, and consumed correctly as
+  of Phase 6 (`POST /auth/password-reset/request|confirm`,
+  `POST/GET /auth/verification/request|confirm`), but delivery is a
+  tested `FakeDeliveryAdapter` only (see ADR-020) — an account can run
+  the self-service recovery flow, but the actual code never reaches a
+  real inbox/phone outside of logs/test fixtures.
 - `JWT_ACCESS_SECRET` is a single static secret per environment with no
   rotation mechanism.
 - `Withdrawal.destinationDetails` (e.g. a mobile-money phone number) is
   stored as-given, with no verification that it belongs to the
   requesting user — KYC/destination-ownership verification is explicitly
   future work (see ADR-012).
-- No real payment provider is connected — see "Explicitly NOT
-  Implemented" above and ADR-013.
+- No *live* payment provider is connected — `MonimeProvider` makes real
+  calls against Monime's test environment as of Phase 6, but a live
+  token requires a separate flag and inbound webhook signature
+  verification still always fails closed — see "Explicitly NOT
+  Implemented" above and ADR-019.
 - The matchmaking concurrency/atomicity guarantee (the Redis Lua
   queue-pop script) is exercised by `test/matchmaking.e2e-spec.ts`, which
   requires a real Redis instance (normally provided by
@@ -424,18 +572,24 @@ unchanged.
 
 - Authorization: role-based access control for player vs. admin vs.
   future staff roles beyond the current USER/ADMIN split.
-- Email/SMS verification delivery, password reset, multi-factor
-  authentication, session/device management UI.
-- Financial security: a real Monime (or other provider) webhook
-  signature implementation once documentation/credentials are verified,
-  reconciliation jobs, anomaly detection (Fraud module). Idempotency
-  itself is implemented as of Phase 3 (see above).
+- A real email/SMS delivery provider for password reset and
+  verification codes (the flows themselves, and session/device
+  management endpoints, are implemented as of Phase 6 — see above; no
+  dedicated session-management UI exists in the mobile/admin apps yet).
+- Financial security: a real Monime webhook signature implementation
+  once the canonical HMAC string is verified (see ADR-019), rolling-
+  window spend tracking and `LOSS_LIMIT` enforcement (see ADR-021),
+  anomaly detection beyond the read-only reconciliation checks already
+  implemented (Phases 5/6). Idempotency itself is implemented as of
+  Phase 3 (see above).
 - KYC integration ahead of/alongside withdrawal automation and
   destination-account verification.
 - Payment provider credential handling via a proper secrets manager, not
   `.env` files, once deployed.
-- Structured audit logging for every authentication, financial, and
-  administrative action, with tamper-evident storage.
+- Structured, tamper-evident audit logging beyond the current
+  `AdminAuditLog` (Phase 6, admin session/CSRF/MFA/password-reset events
+  only) — extending it to every authentication and financial action, not
+  just admin-facing ones, remains future work.
 - Rate limiting tuned per endpoint, with stricter limits on
   authentication and financial endpoints.
 - Automated dependency and secret scanning in CI.

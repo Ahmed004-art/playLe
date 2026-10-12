@@ -15,7 +15,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import type { User } from '@prisma/client';
+import type { ProviderEvent, ProviderOperation, User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
@@ -46,7 +46,9 @@ import {
   AdminLedgerQueryDto,
   AdminDepositsQueryDto,
   AdminWithdrawalsQueryDto,
+  AdminProviderOperationsQueryDto,
 } from './dto/admin-list-query.dto.js';
+import { PaginationQueryDto } from '../common/dto/pagination.dto.js';
 
 /**
  * Financial admin visibility + withdrawal approval. Reuses the exact
@@ -135,7 +137,7 @@ export class AdminFinanceController {
       limit: query.limit,
     });
     return {
-      items: page.items.map(toDepositResponse),
+      items: page.items.map((deposit) => toDepositResponse(deposit)),
       nextCursor: page.nextCursor,
     };
   }
@@ -232,5 +234,36 @@ export class AdminFinanceController {
       dto.reason,
     );
     return toWithdrawalResponse(withdrawal);
+  }
+
+  @Get('provider-operations')
+  @ApiOperation({
+    summary:
+      'List every outbound payment-provider call (deposit initiation, ' +
+      'payout submission/status checks), optionally filtered by userId.',
+  })
+  async listProviderOperations(
+    @Query() query: AdminProviderOperationsQueryDto,
+  ): Promise<{ items: ProviderOperation[]; nextCursor: string | null }> {
+    return this.adminFinanceService.listProviderOperations({
+      userId: query.userId,
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  @Get('provider-events')
+  @ApiOperation({
+    summary:
+      'List every inbound webhook delivery attempt, valid or not — the ' +
+      'full raw audit trail (see ProviderEvent).',
+  })
+  async listProviderEvents(
+    @Query() query: PaginationQueryDto,
+  ): Promise<{ items: ProviderEvent[]; nextCursor: string | null }> {
+    return this.adminFinanceService.listProviderEvents({
+      cursor: query.cursor,
+      limit: query.limit,
+    });
   }
 }

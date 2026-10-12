@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 import DisputeDetailPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -60,15 +59,14 @@ function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
 describe('DisputeDetailPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
+    document.cookie = 'admin_csrf_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/';
   });
 
   it('shows the dispute detail and resolve form for an open dispute', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/disputes/dispute-1': OPEN_DISPUTE,
       }),
     );
@@ -84,11 +82,10 @@ describe('DisputeDetailPage', () => {
   });
 
   it('has no amount or refund input anywhere on the resolve form', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/disputes/dispute-1': OPEN_DISPUTE,
       }),
     );
@@ -112,9 +109,8 @@ describe('DisputeDetailPage', () => {
   });
 
   it('requires a resolution of at least 10 characters before submitting', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     const fetchMock = mockFetchRoutedByUrl({
-      '/auth/me': ADMIN_USER,
+      '/admin/session/me': ADMIN_USER,
       '/admin/disputes/dispute-1': OPEN_DISPUTE,
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -133,10 +129,10 @@ describe('DisputeDetailPage', () => {
     expect(fetchMock.mock.calls.filter((call) => call[0].includes('/resolve'))).toHaveLength(0);
   });
 
-  it('submits the resolve action with the selected status and resolution text', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
+  it('submits the resolve action with the selected status and resolution text, and the CSRF header', async () => {
+    document.cookie = 'admin_csrf_token=csrf-dispute1; path=/';
     const fetchMock = mockFetchRoutedByUrl({
-      '/auth/me': ADMIN_USER,
+      '/admin/session/me': ADMIN_USER,
       '/admin/disputes/dispute-1/resolve': RESOLVED_DISPUTE,
       '/admin/disputes/dispute-1': OPEN_DISPUTE,
     });
@@ -158,19 +154,23 @@ describe('DisputeDetailPage', () => {
       expect(fetchMock.mock.calls.some((call) => call[0].includes('/resolve'))).toBe(true),
     );
     const resolveCall = fetchMock.mock.calls.find((call) => call[0].includes('/resolve'));
-    const body = JSON.parse(resolveCall?.[1]?.body as string);
+    const [, resolveInit] = resolveCall as [string, RequestInit];
+    const body = JSON.parse(resolveInit?.body as string);
     expect(body).toEqual({
       status: 'UNDER_REVIEW',
       resolution: 'Reviewed replay; outcome stands as settled.',
     });
+    expect(resolveInit?.credentials).toBe('include');
+    expect((resolveInit?.headers as Record<string, string>)['X-CSRF-Token']).toBe(
+      'csrf-dispute1',
+    );
   });
 
   it('shows a final-state message instead of the resolve form for a resolved dispute', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/disputes/dispute-1': RESOLVED_DISPUTE,
       }),
     );

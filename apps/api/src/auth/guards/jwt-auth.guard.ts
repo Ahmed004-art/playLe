@@ -9,6 +9,14 @@ import type { User } from '@prisma/client';
 import { TokenService } from '../token.service.js';
 import { UsersService } from '../../users/users.service.js';
 
+/**
+ * Must match `ADMIN_ACCESS_COOKIE` in `src/admin-auth/session-cookies.ts`
+ * — duplicated as a literal (rather than imported) so this foundational
+ * `auth/` module never depends on the later `admin-auth/` module; only
+ * the cookie *name* is shared, not any behavior.
+ */
+const ADMIN_ACCESS_COOKIE = 'admin_access_token';
+
 export interface AuthenticatedRequest extends Request {
   user: User;
 }
@@ -52,9 +60,18 @@ export class JwtAuthGuard implements CanActivate {
 
   private extractToken(request: Request): string | undefined {
     const header = request.headers.authorization;
-    if (!header) return undefined;
+    if (header) {
+      const [scheme, token] = header.split(' ');
+      if (scheme === 'Bearer' && token) return token;
+    }
 
-    const [scheme, token] = header.split(' ');
-    return scheme === 'Bearer' ? token : undefined;
+    // Falls back to the httpOnly admin-session cookie (see
+    // src/admin-auth/) — never read for a request that already carried
+    // an Authorization header, so ordinary Bearer-token clients are
+    // unaffected. Requires `cookie-parser` middleware (see main.ts).
+    const cookies: unknown = request.cookies;
+    if (!cookies || typeof cookies !== 'object') return undefined;
+    const value = (cookies as Record<string, unknown>)[ADMIN_ACCESS_COOKIE];
+    return typeof value === 'string' ? value : undefined;
   }
 }

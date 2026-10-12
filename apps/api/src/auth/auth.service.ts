@@ -1,13 +1,16 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   UnauthorizedException,
   UnprocessableEntityException,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, type User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { UsersService } from '../users/users.service.js';
+import { MfaService } from '../mfa/mfa.service.js';
 import { PasswordService } from './password.service.js';
 import { TokenService, type IssuedTokenPair } from './token.service.js';
 import { calculateAge } from './utils/age.util.js';
@@ -16,6 +19,10 @@ import type { RegisterDto } from './dto/register.dto.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { ChangePasswordDto } from './dto/change-password.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
+
+export type LoginResult =
+  | ({ user: User } & IssuedTokenPair)
+  | { mfaRequired: true; mfaChallengeToken: string };
 
 interface RequestMeta {
   userAgent?: string;
@@ -30,6 +37,8 @@ export class AuthService {
     private readonly passwordService: PasswordService,
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService<AppConfiguration, true>,
+    @Inject(forwardRef(() => MfaService))
+    private readonly mfaService: MfaService,
   ) {}
 
   async register(
@@ -87,10 +96,7 @@ export class AuthService {
     return { user, ...tokens };
   }
 
-  async login(
-    dto: LoginDto,
-    meta: RequestMeta = {},
-  ): Promise<{ user: User } & IssuedTokenPair> {
+  async login(dto: LoginDto, meta: RequestMeta = {}): Promise<LoginResult> {
     const identifier = dto.identifier.includes('@')
       ? normalizeEmail(dto.identifier)
       : (normalizePhoneNumber(dto.identifier) ?? dto.identifier);
@@ -115,9 +121,37 @@ export class AuthService {
       );
     }
 
+    if (await this.mfaService.isEnrolled(user.id)) {
+      // No tokens issued yet — the caller must complete
+      // `MfaService.verifyChallenge` first (see `/auth/mfa/verify`).
+      return {
+        mfaRequired: true,
+        mfaChallengeToken: this.tokenService.signMfaChallengeToken(user.id),
+      };
+    }
+
     await this.usersService.updateLastLogin(user.id);
     const tokens = await this.tokenService.issueTokenPair(user, meta);
 
+    return { user: { ...user, lastLoginAt: new Date() }, ...tokens };
+  }
+
+  /** Completes a login that `login()` paused for an MFA challenge. */
+  async completeMfaLogin(
+    mfaChallengeToken: string,
+    code: string,
+    meta: RequestMeta = {},
+  ): Promise<{ user: User } & IssuedTokenPair> {
+    const user = await this.mfaService.verifyChallenge(mfaChallengeToken, code);
+
+    if (user.status !== 'ACTIVE') {
+      throw new UnauthorizedException(
+        `Account is ${user.status.toLowerCase()}`,
+      );
+    }
+
+    await this.usersService.updateLastLogin(user.id);
+    const tokens = await this.tokenService.issueTokenPair(user, meta);
     return { user: { ...user, lastLoginAt: new Date() }, ...tokens };
   }
 

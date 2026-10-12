@@ -83,6 +83,11 @@ Full architecture: [ADR-011](../decisions/ADR-011-authentication.md).
 | `POST /api/v1/auth/logout` | Yes (Bearer) | Revokes the given refresh token. |
 | `GET /api/v1/auth/me` | Yes (Bearer) | The authenticated user's own safe account info. |
 | `POST /api/v1/auth/change-password` | Yes (Bearer) | Revokes every session on success — re-authentication required. |
+| `POST /api/v1/auth/mfa/verify` | No (MFA challenge token in body) | Phase 6. Completes a login `/auth/login` paused for an MFA challenge — `{ mfaChallengeToken, code }` (TOTP or recovery code), returns the normal token pair. |
+
+As of Phase 6, `POST /auth/login` (and `POST /admin/session/login`)
+returns `{ mfaRequired: true, mfaChallengeToken }` instead of tokens when
+the account has MFA enrolled — see "Account Security Endpoints" below.
 
 `register` and `login` return the same shape:
 
@@ -122,10 +127,17 @@ unless noted.
 | `POST /api/v1/withdrawals` | Requires `Idempotency-Key` header. Minimum Le5; holds the amount immediately (`availableBalanceMinor -= amount`, `heldBalanceMinor += amount`); requires admin approval before any payout. |
 | `GET /api/v1/withdrawals`, `GET /api/v1/withdrawals/:id` | Own withdrawals. |
 | `POST /api/v1/withdrawals/:id/cancel` | Only while `PENDING_REVIEW`; releases the hold. |
-| `POST /api/v1/payments/webhooks/monime` | No auth guard (external caller) — authenticity via provider signature verification instead, which currently always rejects for the real Monime path (see ADR-013). |
+| `POST /api/v1/payments/webhooks/monime` | No auth guard (external caller) — authenticity via provider signature verification instead, which **always rejects** for the real Monime path (confirmed HMAC-SHA256 algorithm, unverified canonical string — see ADR-019, fail-closed, unresolved as of Phase 6). Routes to deposit- or payout-handling by event-type prefix. |
 
 A deposit only reaches `COMPLETED` (crediting the ledger) via a verified
-provider event — never from a client call claiming success.
+provider event — never from a client call claiming success. As of
+Phase 6, a real `MonimeProvider` call (Payment Code for a deposit,
+Payout for a withdrawal) is test-mode-exercisable; a deposit response
+may include `paymentInstructions` (USSD code + expiry); a deposit can
+also reach `EXPIRED` (`deposit.expired` webhook, no ledger effect) and
+a withdrawal can sit in the new `PROCESSING` state between `APPROVED`
+and its terminal outcome while a live payout is in flight — see
+ADR-019.
 
 ### Admin financial endpoints (require `role: 'ADMIN'`)
 
@@ -134,8 +146,24 @@ provider event — never from a client call claiming success.
 | `GET /api/v1/admin/wallets/:userId` | Any user's balances. |
 | `GET /api/v1/admin/ledger?userId=` | Ledger entries, optionally filtered by user. |
 | `GET /api/v1/admin/deposits`, `GET /api/v1/admin/withdrawals` | Optionally filtered by `userId`/`status`. |
-| `POST /api/v1/admin/withdrawals/:id/approve` \| `/reject` \| `/complete` \| `/fail` | Each requires `{ reason }` (≥10 chars), recorded against the acting admin. |
+| `POST /api/v1/admin/withdrawals/:id/approve` \| `/reject` \| `/complete` \| `/fail` | Each requires `{ reason }` (≥10 chars), recorded against the acting admin. As of Phase 6, `approve` also submits the live payout; `complete`/`fail` additionally accept a withdrawal in `PROCESSING` (a stuck/unknown-outcome payout resolved by hand after out-of-band reconciliation) — still mandatory-reason, still audited, never a "just mark it paid" shortcut. |
 | `POST /api/v1/admin/wallets/:userId/adjustments` | `{ direction: 'CREDIT'\|'DEBIT', amountMinor, reason }` — the **only** balance-editing path besides deposits/withdrawals; a `DEBIT` cannot drive the balance negative. |
+| `GET /api/v1/admin/provider-operations` | Phase 6. Every outbound payment-provider call (deposit-initiation, payout submission/status checks), optionally filtered by `userId`, cursor-paginated. |
+| `GET /api/v1/admin/provider-events` | Phase 6. Every inbound webhook delivery attempt, valid or not — the full raw audit trail, cursor-paginated. |
+
+### Admin payment-reconciliation endpoints (require `role: 'ADMIN'`, Phase 6)
+
+Full architecture: [ADR-019](../decisions/ADR-019-production-payments.md).
+`PaymentReconciliationService` is distinct from Phase 5's
+`GET /admin/reconciliation/run` (match-financial reconciliation, below)
+— this one only ever checks deposit/withdrawal/provider-event
+consistency, never match/settlement state, and never mutates money.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/admin/payment-reconciliation/run` | Runs all 9 anomaly checks now, persists any newly-detected ones (deduplicated against already-`OPEN` rows), and returns the report. |
+| `GET /api/v1/admin/payment-reconciliation/anomalies` | List recorded anomalies, optionally filtered by `status`, cursor-paginated. |
+| `POST /api/v1/admin/payment-reconciliation/anomalies/:id/resolve` | `{ resolutionNote }` (≥10 chars). Marks an anomaly resolved after the admin has reviewed/fixed the underlying issue through the ordinary deposit/withdrawal/ledger paths — never itself a money-mutating action. |
 
 ## Game Platform & Matchmaking Endpoints (Phase 4)
 
@@ -224,11 +252,68 @@ the match's own authoritative result once it reaches a terminal state.
 | `POST /api/v1/admin/disputes/:id/resolve` | `{ status, resolution }` (≥10 chars). Status + audit only — **never moves money**. An upheld dispute's actual correction, if any, is a separate call to the existing `POST /admin/wallets/:userId/adjustments`. |
 | `GET /api/v1/admin/reconciliation/run` | Runs every anomaly check (orphaned holds, missing/duplicate/unbalanced settlements, wallet/ledger mismatches) now and returns the report. Never modifies any record. |
 
+## Account Security Endpoints (Phase 6)
+
+Full architecture: [ADR-020](../decisions/ADR-020-account-security.md).
+
+| Endpoint | Auth required | Notes |
+|---|---|---|
+| `POST /api/v1/admin/session/login` | No | `{ identifier, password }`. Issues `admin_access_token`/`admin_refresh_token` (httpOnly) + `admin_csrf_token` (readable) cookies instead of a JSON token body. A non-admin role revokes the session it just issued and returns the same generic "Invalid credentials" as a wrong password. Returns `{ mfaRequired: true, mfaChallengeToken }` instead when MFA is enrolled. |
+| `POST /api/v1/admin/session/mfa/verify` | No (MFA challenge token in body) | Completes an admin login paused for MFA; sets cookies instead of returning tokens. |
+| `POST /api/v1/admin/session/refresh` | Yes (cookie) | Rotates the session cookies. |
+| `POST /api/v1/admin/session/logout` | Yes (cookie) | Clears the session cookies and revokes the refresh token. |
+| `GET /api/v1/admin/session/me` | Yes (cookie) | The authenticated admin's own safe account info. |
+| `GET /api/v1/auth/sessions` | Yes (Bearer) | Lists the authenticated user's active sessions (derived from `RefreshToken`). |
+| `POST /api/v1/auth/sessions/:id/revoke` | Yes (Bearer) | Revokes one session. `404` (not `403`) for another user's session — IDOR-safe. |
+| `POST /api/v1/auth/sessions/revoke-all` | Yes (Bearer) | Ends every session for the account. |
+| `GET /api/v1/auth/mfa/status` | Yes (Bearer) | Whether MFA is currently enabled. |
+| `POST /api/v1/auth/mfa/enroll` | Yes (Bearer) | Starts (or resumes) TOTP enrollment; returns the secret/QR data. Enforces nothing until confirmed. |
+| `POST /api/v1/auth/mfa/confirm` | Yes (Bearer) | `{ code }`. Proves the enrolled device works; enables MFA and returns 8 single-use recovery codes (shown once). |
+| `POST /api/v1/auth/mfa/disable` | Yes (Bearer) | `{ code }`. Requires a current, valid TOTP code — a stolen access token alone cannot disable MFA. |
+| `POST /api/v1/auth/password-reset/request` | No | `{ identifier }`. Always returns the identical generic message whether or not the identifier matches an account. |
+| `POST /api/v1/auth/password-reset/confirm` | No | `{ token, newPassword }`. Revokes every existing session for the account on success. |
+| `POST /api/v1/auth/verification/request` | Yes (Bearer) | `{ channel: 'EMAIL'\|'SMS' }`. Sends a one-time 6-digit code via `FakeDeliveryAdapter` — no real email/SMS provider. |
+| `POST /api/v1/auth/verification/confirm` | Yes (Bearer) | `{ channel, code }`. 5-attempt throttle; a fresh request supersedes an older unconsumed one for the same purpose. |
+
+CSRF: every mutating `/admin/*` request made with cookie auth (no
+`Authorization` header) must echo the `admin_csrf_token` cookie's value
+in an `X-CSRF-Token` header, except `POST /admin/session/login` itself.
+A request with an `Authorization` header is exempt (not
+cookie/CSRF-exploitable).
+
+## Eligibility & Responsible-Gaming Endpoints (Phase 6)
+
+Full architecture: [ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md).
+`REAL_MONEY_GAMING_ENABLED` and `ELIGIBILITY_POLICY_CONFIGURED` must
+both be `true` before any real-money deposit or stake proceeds.
+
+| Endpoint | Auth required | Notes |
+|---|---|---|
+| `GET /api/v1/auth/responsible-gaming/status` | Yes (Bearer) | The authenticated user's currently active restrictions. |
+| `POST /api/v1/auth/responsible-gaming/self-exclude` | Yes (Bearer) | Permanently self-excludes from real-money play. **There is no endpoint, for any role, that lifts this.** |
+| `POST /api/v1/auth/responsible-gaming/cooling-off` | Yes (Bearer) | `{ durationMinutes }`. Starts a time-limited cooling-off period. |
+| `POST /api/v1/auth/responsible-gaming/deposit-limit` | Yes (Bearer) | `{ limitMinor }`. Per-deposit amount ceiling (not a rolling-period sum). |
+| `POST /api/v1/auth/responsible-gaming/stake-limit` | Yes (Bearer) | `{ limitMinor }`. Per-stake amount ceiling (not a rolling-period sum). |
+| `POST /api/v1/auth/responsible-gaming/loss-limit` | Yes (Bearer) | `{ limitMinor }`. Recorded and visible; **not yet enforced at settlement**. |
+
+Self-exclusion and cooling-off block deposits and real-money stakes but
+**never** withdrawals — letting an at-risk user withdraw their own money
+is the responsible-gaming-correct behavior, not a loophole.
+
+### Admin responsible-gaming endpoint (require `role: 'ADMIN'`)
+
+| Endpoint | Notes |
+|---|---|
+| `GET /api/v1/admin/responsible-gaming` | Restriction history, optionally filtered by `userId`. Read-only — no action anywhere lifts or edits a restriction. |
+
 ## Phase Scope
 
 Authentication/identity (Phase 2), wallet/ledger/deposits/withdrawals
 (Phase 3), the game platform/matchmaking/challenges/real-time layer
-(Phase 4), and match stakes/settlement/disputes/reconciliation
-(Phase 5, above) exist. Production Monime payment-provider integration,
-additional games, and social features are not implemented yet — see
-`CLAUDE.md` for the full "do not build yet" list.
+(Phase 4), match stakes/settlement/disputes/reconciliation (Phase 5),
+and production (test-mode) Monime payment integration, admin session
+security, account security, and eligibility/responsible gaming
+(Phase 6, above) exist. A *live* Monime integration (webhook signature
+verification is unresolved and fails closed), additional games, and
+social features are not implemented yet — see `CLAUDE.md` for the full
+"do not build yet" list.

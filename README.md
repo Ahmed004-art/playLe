@@ -6,22 +6,28 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 5 — REAL-MONEY MATCH STAKES, HOLDS, PRIZE POOLS
-> & DETERMINISTIC SETTLEMENT**
+> **CURRENT PHASE: PHASE 6 — PRODUCTION PAYMENT INTEGRATION, FINANCIAL
+> OPERATIONS, ACCOUNT SECURITY & RESPONSIBLE-GAMING FOUNDATIONS**
 >
-> Phases 1-4 (foundation, identity/authentication, wallet/ledger/financial
-> foundation, game platform/matchmaking/real-time) are complete. Phase 5
-> connects the two: players stake equal amounts (held via the Phase 3
-> ledger), a completed match's authoritative result drives deterministic
-> settlement — win payout minus a 10% platform fee to a real seeded
-> platform account, draw/cancellation refunds, disconnect-forfeit
-> settlement — with exactly-once guarantees, crash recovery, on-demand
-> reconciliation, and a dispute foundation. See
-> [ADR-016](docs/decisions/ADR-016-match-financial-architecture.md),
-> [ADR-017](docs/decisions/ADR-017-deterministic-settlement.md), and
-> [ADR-018](docs/decisions/ADR-018-financial-state-machines.md). Real
-> money is exercised against test wallets only — no production Monime
-> integration, no additional games, no social features. See "Roadmap"
+> Phases 1-5 (foundation, identity/authentication, wallet/ledger/financial
+> foundation, game platform/matchmaking/real-time, and match stakes/
+> settlement/disputes/reconciliation) are complete. Phase 6's backend,
+> account security, and eligibility/responsible-gaming work is implemented
+> and tested (unit + e2e, passing locally against a real Postgres
+> instance), and the admin frontend has been migrated off `localStorage`
+> to a new httpOnly-cookie contract and verified: a real Monime payment
+> integration (Payment Codes for deposits, Payouts for withdrawals,
+> status polling, and a dedicated payment-reconciliation service), admin
+> session cookies with CSRF protection, password reset, email/phone
+> verification, session management, TOTP-based MFA, and a centralized
+> real-money eligibility service with responsible-gaming limits/
+> cooling-off/self-exclusion. See
+> [ADR-019](docs/decisions/ADR-019-production-payments.md),
+> [ADR-020](docs/decisions/ADR-020-account-security.md), and
+> [ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md).
+> Webhook signature verification still fails closed pending one
+> unverifiable Monime fact, so no live payment is auto-confirmed yet; CI
+> has not yet been updated/re-verified for this phase. See "Roadmap"
 > and `CLAUDE.md` for what's in scope.
 
 ## Overview
@@ -167,9 +173,10 @@ this repository.
   idempotency, concurrency-safe balance updates, payment-provider
   abstraction. See
   [ADR-012](docs/decisions/ADR-012-financial-architecture.md) and
-  [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md). Real
-  Monime (or other provider) integration is pending verified
-  credentials/documentation — see `docs/development/MONIME_SETUP.md`.
+  [ADR-013](docs/decisions/ADR-013-payment-provider-abstraction.md). The
+  real Monime integration this unlocked arrived in Phase 6 — see
+  [ADR-019](docs/decisions/ADR-019-production-payments.md) and
+  `docs/development/MONIME_SETUP.md`.
 - **Phase 4 — Game Platform Core, Matchmaking, Real-Time Multiplayer &
   Tic-Tac-Toe** ✅ complete. A generic game-module contract/registry,
   match lifecycle and persistence, matchmaking, direct challenges,
@@ -178,21 +185,35 @@ this repository.
   [ADR-014](docs/decisions/ADR-014-realtime-command-transport.md) and
   [ADR-015](docs/decisions/ADR-015-game-module-architecture.md).
 - **Phase 5 — Real-Money Match Stakes, Holds, Prize Pools &
-  Deterministic Settlement** (current). Equal-stake holds, prize pools,
+  Deterministic Settlement** ✅ complete. Equal-stake holds, prize pools,
   a 10% platform fee to a real seeded platform account, deterministic
   win/draw/cancellation/disconnect-forfeit settlement, exactly-once
   guarantees, crash recovery, on-demand reconciliation, and a dispute
   foundation. See
   [ADR-016](docs/decisions/ADR-016-match-financial-architecture.md),
   [ADR-017](docs/decisions/ADR-017-deterministic-settlement.md), and
-  [ADR-018](docs/decisions/ADR-018-financial-state-machines.md). Real
-  Monime payouts, KYC, and additional games remain out of scope.
-- Later phases (not yet scheduled/implemented) are expected to cover, in
-  order of dependency: production Monime payment-provider integration,
-  additional games on the same game-module/financial contract, admin
-  operational tooling, social features, and notifications. Each phase
-  will be specified explicitly before implementation begins — see
-  `CLAUDE.md`, "Phase Discipline".
+  [ADR-018](docs/decisions/ADR-018-financial-state-machines.md).
+- **Phase 6 — Production Payment Integration, Financial Operations,
+  Account Security & Responsible-Gaming Foundations** (current). A real
+  Monime integration (Payment Codes for deposits, Payouts for
+  withdrawals, status polling, provider-operation tracking, and a
+  payment-reconciliation service distinct from Phase 5's match
+  reconciliation); admin httpOnly session cookies with CSRF protection,
+  replacing `localStorage`; password reset; email/phone verification;
+  session listing/revocation; TOTP-based MFA; and a centralized
+  real-money eligibility service with responsible-gaming limits,
+  cooling-off, and (permanent, no-lift-path) self-exclusion. See
+  [ADR-019](docs/decisions/ADR-019-production-payments.md),
+  [ADR-020](docs/decisions/ADR-020-account-security.md), and
+  [ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md).
+  Webhook signature verification still fails closed pending one
+  unverifiable Monime fact, so live payments aren't auto-confirmed yet;
+  no real email/SMS delivery provider is integrated (a
+  `FakeDeliveryAdapter` only); KYC, additional games, and social
+  features remain out of scope.
+- The next phase is not yet defined/scheduled. Each phase is specified
+  explicitly before implementation begins — see `CLAUDE.md`, "Phase
+  Discipline".
 
 ## Contribution / Development Workflow
 

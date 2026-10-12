@@ -20,6 +20,12 @@ import '../disputes/disputes_controller.dart';
 import '../disputes/disputes_repository.dart';
 import '../match/match_controller.dart';
 import '../match/match_repository.dart';
+import '../mfa/mfa_controller.dart';
+import '../mfa/mfa_repository.dart';
+import '../sessions/sessions_controller.dart';
+import '../sessions/sessions_repository.dart';
+import '../responsible_gaming/responsible_gaming_controller.dart';
+import '../responsible_gaming/responsible_gaming_repository.dart';
 
 /// Dependency injection strategy: a single `get_it` service locator.
 ///
@@ -121,5 +127,26 @@ Future<void> setupServiceLocator() async {
   );
   sl.registerLazySingleton<DisputesController>(
     () => DisputesController(sl<DisputesRepository>()),
+  );
+
+  sl.registerLazySingleton<MfaRepository>(
+    () => HttpMfaRepository(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<MfaController>(
+    () => MfaController(sl<MfaRepository>()),
+  );
+
+  sl.registerLazySingleton<SessionsRepository>(
+    () => HttpSessionsRepository(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<SessionsController>(
+    () => SessionsController(sl<SessionsRepository>()),
+  );
+
+  sl.registerLazySingleton<ResponsibleGamingRepository>(
+    () => HttpResponsibleGamingRepository(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<ResponsibleGamingController>(
+    () => ResponsibleGamingController(sl<ResponsibleGamingRepository>()),
   );
 }

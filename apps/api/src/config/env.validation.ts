@@ -80,6 +80,13 @@ class EnvironmentVariables {
   @Min(1)
   AUTH_THROTTLE_TTL_MS: number = 60000;
 
+  @IsString()
+  @MinLength(64, {
+    message:
+      "MFA_ENCRYPTION_KEY must be a 64-character hex string (32 bytes) — generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+  })
+  MFA_ENCRYPTION_KEY!: string;
+
   @IsIn(['manual', 'monime'])
   PAYMENTS_PROVIDER: string = 'manual';
 
@@ -133,6 +140,9 @@ class EnvironmentVariables {
 
   @IsIn(['true', 'false'])
   REAL_MONEY_GAMING_ENABLED: string = 'false';
+
+  @IsIn(['true', 'false'])
+  ELIGIBILITY_POLICY_CONFIGURED: string = 'false';
 
   @IsInt()
   @Min(13)

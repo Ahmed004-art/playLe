@@ -1,7 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth-context';
-import { tokenStorage } from '@/lib/token-storage';
 import DisputesPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -50,15 +49,13 @@ function mockFetchRoutedByUrl(routes: Record<string, unknown>) {
 describe('DisputesPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    tokenStorage.clear();
   });
 
   it('lists disputes for an authenticated admin', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/disputes': { items: [OPEN_DISPUTE], nextCursor: null },
       }),
     );
@@ -74,11 +71,10 @@ describe('DisputesPage', () => {
   });
 
   it('shows an empty-state message when there are no disputes in a status', async () => {
-    tokenStorage.setTokens('access-token', 'refresh-token');
     vi.stubGlobal(
       'fetch',
       mockFetchRoutedByUrl({
-        '/auth/me': ADMIN_USER,
+        '/admin/session/me': ADMIN_USER,
         '/admin/disputes': { items: [], nextCursor: null },
       }),
     );

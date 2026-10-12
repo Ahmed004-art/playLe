@@ -17,8 +17,9 @@ Schema lives at `apps/api/prisma/schema.prisma`. Migrations live at
 - **`User`** — the account record: `email` (unique), `phoneNumber`
   (unique, optional), `username` (unique), `passwordHash`, `role`
   (`USER`/`ADMIN`), `status` (`ACTIVE`/`SUSPENDED`/`DISABLED`),
-  `dateOfBirth`, `emailVerifiedAt`/`phoneVerifiedAt` (both `null` until a
-  future verification phase), `lastLoginAt`, `createdAt`/`updatedAt`.
+  `dateOfBirth`, `emailVerifiedAt`/`phoneVerifiedAt` (schema placeholders
+  since Phase 2; now actually set by Phase 6's `VerificationService` —
+  see below), `lastLoginAt`, `createdAt`/`updatedAt`.
   `passwordHash` must never be serialized into an API response — see
   `UsersService.toSafeUser()`.
 - **`RefreshToken`** — session state supporting rotation and reuse
@@ -132,11 +133,80 @@ isn't financial history, so these cascade/null out normally.
 - **`Challenge`** gained optional `stakeAmountMinor`/`stakeCurrency` —
   immutable once set; `null` means ordinary free play.
 
+### Production Payments, Account Security & Responsible Gaming (Phase 6 — see [ADR-019](../decisions/ADR-019-production-payments.md)/[ADR-020](../decisions/ADR-020-account-security.md)/[ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md))
+
+- **`ProviderOperation`** — one row per outbound provider call
+  (deposit-initiation or payout), keyed by a unique
+  `providerIdempotencyKey` so a retry of the same PlayLe-side attempt
+  reuses it rather than minting a new one. `kind`
+  (`ProviderOperationKind`), `status` (`ProviderOperationStatus`,
+  includes `UNKNOWN` for a network error whose real-world outcome is
+  genuinely unverifiable), optional `relatedDepositId`/
+  `relatedWithdrawalId`, `requestSnapshot`/`responseSnapshot` (`Json`).
+- **`PaymentReconciliationAnomaly`** — a finding recorded by
+  `PaymentReconciliationService` (never a mutation): `type`
+  (`PaymentAnomalyType`), `status` (`PaymentAnomalyStatus`, default
+  `OPEN`), optional `relatedDepositId`/`relatedWithdrawalId`, `details`
+  (`Json`), admin resolution fields (`resolvedByAdminId`,
+  `resolutionNote`). Deduplicated against already-`OPEN` rows across
+  repeated reconciliation runs.
+- **`PasswordResetToken`** — mirrors `RefreshToken`'s pattern: only
+  `tokenHash` (SHA-256) is persisted, never the raw token.
+  `expiresAt`/`usedAt` (single-use), `requestIp`. Cascade-deletes with
+  its `User`.
+- **`VerificationChallenge`** — an email/phone verification code
+  challenge: `channel` (`VerificationChannel`), `purpose`
+  (`VerificationPurpose`), `target`, `codeHash` (never the raw code),
+  `attempts` (5-attempt throttle), `expiresAt`, `consumedAt`.
+- **`MfaTotpCredential`** — one per `User` (`userId` unique).
+  `secretEncrypted` (AES-256-GCM, never plaintext), `confirmedAt`
+  (enrollment enforces nothing until this is set), `disabledAt`. Has
+  many `MfaRecoveryCode`.
+- **`MfaRecoveryCode`** — a single-use recovery code for an
+  `MfaTotpCredential`: `codeHash` (never the raw code), `usedAt`.
+- **`ResponsibleGamingRestriction`** — never destructively edited; a
+  change is always a new row, so full history is reconstructable.
+  `type` (`ResponsibleGamingRestrictionType`: includes
+  `SELF_EXCLUSION`, which has no lift method anywhere in the codebase),
+  `status` (`ResponsibleGamingRestrictionStatus`), `config` (`Json`,
+  type-specific, e.g. `{"limitMinor": "50000"}` for a
+  `DEPOSIT_LIMIT`/`STAKE_LIMIT`/`LOSS_LIMIT`), `startsAt`/`endsAt`/
+  `liftedAt`. `userId` uses
+  `onDelete: Restrict` — financial/compliance history.
+- **`NotificationOutbox`** — a financial/security notification queued
+  in the *same* transaction as its triggering ledger write, delivered
+  later by a separate sweep. `type` (`NotificationType`), `payload`
+  (`Json`), `status` (`NotificationOutboxStatus`, default `PENDING`),
+  `attempts` (5-attempt cap), `failureReason`, `sentAt`. Delivery
+  failure never rolls back or retries the financial operation that
+  produced the row.
+- **`AdminAuditLog`** — append-only record of admin-session/security
+  events (`AdminAuditAction`: `LOGIN_SUCCESS`, `LOGIN_FAILED`, `LOGOUT`,
+  `SESSION_REFRESH`, `CSRF_REJECTED`, `MFA_ENROLLED`, `MFA_DISABLED`,
+  `MFA_CHALLENGE_FAILED`, `PASSWORD_RESET_REQUESTED`,
+  `PASSWORD_RESET_COMPLETED`). `adminId` (`onDelete: SetNull`),
+  `detail`, `ipAddress`, `userAgent`.
+- **Extended enums**: `DepositStatus` gained `EXPIRED` (a provider-side
+  payment code/session expired before the user paid — real-provider
+  deposits only, a `MANUAL` deposit never reaches this state);
+  `WithdrawalStatus` gained `PROCESSING` (submitted to the payout
+  provider, outcome not yet confirmed — funds stay held; nothing is
+  released or re-submitted automatically from this state).
+- **Two migrations**: `20261012000324_phase6_payments_security_schema`
+  (all of the models/enums above except `AdminAuditLog`) and a later,
+  separate `20261012005049_phase6_admin_audit_log` (adds only the
+  `AdminAuditAction` enum and the `admin_audit_logs` table — the audit
+  log was introduced as a follow-on to the rest of the Phase 6 schema,
+  not part of the original migration).
+
 ## Phase Scope
 
 Phase 2 established identity/session data. Phase 3 added the financial
 foundation above. Phase 4 added the game platform above. Phase 5 added
-the match financial engine above, connecting the two. Social-graph
+the match financial engine above, connecting the two. Phase 6 added
+production-payment provider tracking/reconciliation, account-security
+(password reset, verification, MFA, admin audit log), and
+responsible-gaming/notification-outbox models above. Social-graph
 tables are still designed in their own dedicated future phase.
 
 ## Local Development Database
@@ -208,15 +278,20 @@ See [ADR-009](../decisions/ADR-009-financial-ledger.md). The remaining
 future schema (non-exhaustive, designed in each dedicated phase):
 
 - Social-graph tables (follows/friends).
-- `AuditLogEntry`
-- Verification tokens/OTP records (email/SMS verification — not yet
-  designed; `User.emailVerifiedAt`/`phoneVerifiedAt` already reserve the
-  fields that will be set once this lands)
-- Real payment-provider payout records (paying real winnings out via
-  Monime or another provider) once that integration is verified.
+- A rolling-window spend/loss-tracking schema for real `LOSS_LIMIT`
+  enforcement beyond the per-action ceiling `ResponsibleGamingRestriction`
+  already supports (see ADR-021).
+- A defined compliance-officer role/process and whatever schema it
+  would need to lift a `SELF_EXCLUSION` restriction — not designed, and
+  not expected to be added without a real legal/compliance process
+  behind it (see ADR-021).
 
 `User`, `RefreshToken`, `Wallet`, `LedgerEntry`, `Deposit`, `Withdrawal`,
 `ProviderEvent` (Phase 3), `Game`, `Match`, `MatchPlayer`,
-`MatchCommand`, `Challenge` (Phase 4), and `MatchStake`,
-`MatchStakePlayer`, `Settlement`, `SettlementEntry`, `Dispute` (Phase 5)
-are no longer "future" — they exist.
+`MatchCommand`, `Challenge` (Phase 4), `MatchStake`,
+`MatchStakePlayer`, `Settlement`, `SettlementEntry`, `Dispute` (Phase 5),
+and `ProviderOperation`, `PaymentReconciliationAnomaly`,
+`PasswordResetToken`, `VerificationChallenge`, `MfaTotpCredential`,
+`MfaRecoveryCode`, `ResponsibleGamingRestriction`,
+`NotificationOutbox`, `AdminAuditLog` (Phase 6) are no longer "future"
+— they exist.

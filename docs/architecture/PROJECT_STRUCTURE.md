@@ -30,7 +30,8 @@ playle/
         auth/                    Registration, login, sessions, guards — see ADR-011
         ledger/                  LedgerService — sole writer of wallet balances/ledger rows (ADR-012)
         wallet/                  Wallet balance + transaction-history reads
-        payments/                PaymentProviderPort + Manual/Monime providers (ADR-013)
+        payments/                PaymentProviderPort + Manual/Monime providers (ADR-013), real Monime
+                                  HTTP calls + PaymentReconciliationService as of Phase 6 (ADR-019)
         deposits/                Deposit lifecycle + provider webhook handling
         withdrawals/             Withdrawal lifecycle + admin approval state machine
         games/                   Game catalog + GameModule/GameRegistry contract; tic-tac-toe/ holds
@@ -44,22 +45,43 @@ playle/
                                   ReconciliationService — see ADR-017
         disputes/                Dispute create/list/resolve — status/audit only, never moves money
         admin/                   Financial admin visibility + withdrawal review, match visibility,
-                                  financial-match inspection, dispute resolution, reconciliation trigger
+                                  financial-match inspection, dispute resolution, reconciliation trigger,
+                                  provider-operation/event visibility, payment reconciliation (ADR-019)
+        admin-auth/              httpOnly-cookie admin session login/refresh/logout/me — see ADR-020
+        audit/                   AdminAuditService — append-only AdminAuditLog writer, dependency-free
+                                  so AdminAuthModule/MfaModule can both use it without a cycle
+        password-reset/          Single-use, hashed password-reset tokens; anti-enumeration — see ADR-020
+        verification/            Email/phone one-time verification codes — see ADR-020
+        mfa/                     Hand-rolled TOTP/HOTP (RFC 6238/4226), enrollment, login challenge,
+                                  recovery codes — see ADR-020
+        notifications/           DeliveryPort + FakeDeliveryAdapter — shared delivery abstraction,
+                                  no real email/SMS provider — see ADR-020
+        notification-outbox/     Financial/security notifications enqueued in the same transaction as
+                                  their triggering ledger write, delivered by a separate sweep — ADR-019
+        eligibility/             Centralized real-money eligibility (EligibilityService) + responsible-
+                                  gaming limits/cooling-off/self-exclusion (ResponsibleGamingService,
+                                  no lift path) — see ADR-021
       prisma/
         schema.prisma            Prisma schema (User, RefreshToken, Wallet, LedgerEntry, Deposit,
                                   Withdrawal, ProviderEvent, Game, Match, MatchPlayer, MatchCommand,
                                   Challenge, MatchStake, MatchStakePlayer, Settlement, SettlementEntry,
-                                  Dispute)
+                                  Dispute, ProviderOperation, PaymentReconciliationAnomaly,
+                                  PasswordResetToken, VerificationChallenge, MfaTotpCredential,
+                                  MfaRecoveryCode, ResponsibleGamingRestriction, NotificationOutbox,
+                                  AdminAuditLog)
         migrations/
-      test/                      e2e tests (auth, wallet, matches, matchmaking, realtime, match-stakes)
+      test/                      e2e tests (auth, wallet, matches, matchmaking, realtime, match-stakes,
+                                  payments-phase6, admin session/MFA/password-reset/verification/
+                                  responsible-gaming)
 
     admin/                     Next.js admin application
       src/
         app/                     App Router pages (dashboard, /login, /withdrawals, /wallets,
                                   /matches, /matches/[id] (incl. Phase 5 financial section),
                                   /disputes, /disputes/[id], /reconciliation)
-        lib/                     API client, auth context/token storage, config, wallet/match/
-                                  dispute/reconciliation types, formatting
+        lib/                     API client (httpOnly-cookie + CSRF contract as of Phase 6 — see
+                                  ADR-020; no more token-storage.ts), auth context, config,
+                                  wallet/match/dispute/reconciliation types, formatting
         components/              Shared UI components (AuthGuard, HealthStatus)
 
   packages/

@@ -68,7 +68,10 @@ export class DepositsController {
       dto.amountMinor,
       idempotencyKey,
     );
-    return toDepositResponse(deposit);
+    const instructions = await this.depositsService.getPaymentInstructions(
+      deposit.id,
+    );
+    return toDepositResponse(deposit, instructions);
   }
 
   @Get()
@@ -80,7 +83,7 @@ export class DepositsController {
   ): Promise<{ items: DepositResponseDto[]; nextCursor: string | null }> {
     const page = await this.depositsService.list(user.id, query);
     return {
-      items: page.items.map(toDepositResponse),
+      items: page.items.map((deposit) => toDepositResponse(deposit)),
       nextCursor: page.nextCursor,
     };
   }
@@ -96,6 +99,9 @@ export class DepositsController {
     @Param('id') id: string,
   ): Promise<DepositResponseDto> {
     const deposit = await this.depositsService.findById(user.id, id);
-    return toDepositResponse(deposit);
+    const instructions = await this.depositsService.getPaymentInstructions(
+      deposit.id,
+    );
+    return toDepositResponse(deposit, instructions);
   }
 }
