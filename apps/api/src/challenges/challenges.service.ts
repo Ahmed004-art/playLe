@@ -12,6 +12,7 @@ import { UsersService } from '../users/users.service.js';
 import { MatchesService } from '../matches/matches.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
 import { MatchStakesService } from '../match-stakes/match-stakes.service.js';
+import { EligibilityService } from '../eligibility/eligibility.service.js';
 import type { StakeRequestDto } from '../match-stakes/dto/stake-request.dto.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
@@ -25,6 +26,7 @@ export class ChallengesService {
     private readonly matchesService: MatchesService,
     private readonly emitter: RealtimeEmitterService,
     private readonly matchStakesService: MatchStakesService,
+    private readonly eligibilityService: EligibilityService,
     private readonly configService: ConfigService<AppConfiguration, true>,
   ) {}
 
@@ -114,6 +116,23 @@ export class ChallengesService {
     const challenge = await this.findForParticipant(userId, challengeId);
     if (challenge.opponentId !== userId) {
       throw new ForbiddenException('Only the challenged player can accept');
+    }
+
+    // The challenger's eligibility was already checked when they
+    // *created* this challenge (`create`, via `validateStakeRequest`) —
+    // but that says nothing about the opponent's own restriction state.
+    // A self-excluded (or over their own rolling limit) opponent must
+    // not be able to enter a staked match just by accepting an incoming
+    // challenge rather than initiating one themselves.
+    if (challenge.stakeAmountMinor != null) {
+      const opponent = await this.usersService.findById(userId);
+      if (!opponent) {
+        throw new NotFoundException('Challenge not found');
+      }
+      await this.eligibilityService.assertCanStake(
+        opponent,
+        challenge.stakeAmountMinor,
+      );
     }
 
     const resolved = await this.prisma.$transaction(async (tx) => {

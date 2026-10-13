@@ -33,6 +33,9 @@ function DashboardContent() {
         <p style={{ marginTop: 8 }}>
           <Link href="/reconciliation">Reconciliation →</Link>
         </p>
+        <p style={{ marginTop: 8 }}>
+          <Link href="/responsible-gaming">Responsible Gaming →</Link>
+        </p>
       </div>
       <div className="card">
         <h2>API Connectivity</h2>

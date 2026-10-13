@@ -71,14 +71,25 @@ owner.
 
 ## Responsible gaming / eligibility (from Phase 6)
 
-### 7. Rolling-window spend tracking and loss-limit enforcement at settlement
-**Status**: Not implemented — a documented simplification, not an
-oversight. **Evidence**: ADR-021 "Amount limits are per-action
-ceilings, not rolling-period sums"; `LOSS_LIMIT` is recorded/visible via
-`GET /auth/responsible-gaming/status` but not enforced anywhere.
-**Severity**: Medium — relevant to real-money launch readiness, not to
-anything currently running (real-money gaming itself stays disabled by
-default — see #9). **Owner**: a future, explicitly-scoped phase.
+### 7. Rolling-window spend tracking and loss-limit enforcement at settlement — closed in Phase 8
+**Status**: Implemented and enforced. **Evidence**: ADR-023
+"Server-Enforced Rolling-Window Spending & Loss Limits";
+`EligibilityService.assertCanStake`/`assertCanDeposit` now run real
+rolling-window checks (`STAKE_LIMIT`/`DEPOSIT_LIMIT`/`LOSS_LIMIT`), called
+from inside `MatchStakesService.confirmStake`'s transaction (after the
+existing wallet row lock — see ADR-023 "Enforcement point") and from
+`DepositsService.create`. `ChallengesService.accept` also now checks the
+*opponent's* eligibility, closing a real pre-existing gap found during
+the Phase 8 audit (a self-excluded/over-limit opponent could previously
+accept an incoming staked challenge unchecked). Covered by
+`test/responsible-gaming-limits.e2e-spec.ts` (12 tests, real Postgres,
+including a genuine double-`settle()` call proving no double-counting on
+retry) and `eligibility.service.spec.ts` (16 unit tests); both passing
+locally and verified green in CI (see the Phase 8 report for the commit
+SHA and run URL). **Residual limitation, not closed by this item**: see
+#18 below — the `DEPOSIT_LIMIT` rolling check has a documented,
+accepted concurrency gap specific to async provider-webhook completion.
+**Severity**: N/A (implemented, tested, verified). **Owner**: N/A.
 
 ### 8. Self-exclusion has no lift path — by design, preserved
 **Status**: Intentional, permanent, verified unchanged. **Evidence**:
@@ -186,6 +197,37 @@ that a game module's `validateMove`/`applyMove` interprets — the opaque
 `@IsObject()` payload DTO already allows this without a schema change.
 **Severity**: Low — a UX nicety, not a correctness gap. **Owner**: a
 future phase.
+
+## Responsible gaming / eligibility (from Phase 8)
+
+### 18. `DEPOSIT_LIMIT` rolling check has no wallet-lock-equivalent concurrency guarantee
+**Status**: Accepted, documented limitation — not a bug, and not
+something Phase 8 attempted to fully close. **Evidence**: ADR-023
+"Deposit-limit rolling check: a documented, accepted concurrency
+limitation". Deposit completion is driven by an asynchronous Monime
+webhook, so — unlike a stake confirmation, which holds the user's wallet
+row lock for the whole eligibility check — there is no request in flight
+at the moment a deposit actually completes against which a lock could be
+held. The check still correctly blocks *initiating* a new deposit once
+the rolling sum of already-**completed** deposits would exceed the
+limit; it just cannot guarantee two deposits racing through completion
+at the same instant can never together exceed the limit by a small
+margin. **Severity**: Low — bounded by the per-deposit maximum, and
+real-money gaming/deposits stay disabled by default regardless (see #9).
+**Owner**: a future phase, only if a stronger guarantee is ever required
+(e.g. by re-checking the rolling sum again inside the webhook-completion
+transaction itself and reversing/flagging an over-limit completion after
+the fact).
+
+### 19. Rolling-window length is a fixed platform parameter, not user-configurable — by design, preserved
+**Status**: Intentional, verified as implemented. **Evidence**: ADR-023
+"The rolling window is a fixed platform parameter, not user-configurable";
+`RESPONSIBLE_GAMING_WINDOW_HOURS` lives in server config, not on
+`ResponsibleGamingRestriction`, and has no corresponding user-facing
+control. **Do not close this item by adding a per-user window** without
+re-deriving why that would reopen the "shrink your own window to evade a
+limit" bypass ADR-023 closes. **Severity**: N/A (correct, verified
+state). **Owner**: N/A.
 
 ---
 

@@ -27,6 +27,8 @@ const SUBJECTS: Record<NotificationType, string> = {
     'You have self-excluded from PlayLe real-money play',
   PASSWORD_RESET_REQUESTED: 'Your PlayLe password reset code',
   VERIFICATION_CODE_ISSUED: 'Your PlayLe verification code',
+  RESPONSIBLE_GAMING_LIMIT_REACHED:
+    'A PlayLe responsible-gaming limit was reached',
 };
 
 /**

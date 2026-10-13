@@ -11,6 +11,10 @@ import type {
 import type { AdminMatch, AdminMatchFinancial } from './match-types';
 import type { AdminDispute } from './dispute-types';
 import type { ReconciliationReport } from './reconciliation-types';
+import type {
+  AdminResponsibleGamingRestriction,
+  AdminResponsibleGamingUsage,
+} from './responsible-gaming-types';
 
 /**
  * API client abstraction. Admin UI code calls functions from this module
@@ -221,4 +225,24 @@ export function resolveDispute(
 
 export function runReconciliation(): Promise<ReconciliationReport> {
   return request<ReconciliationReport>('/admin/reconciliation/run');
+}
+
+// --- Responsible-gaming visibility (Phase 8) ---
+// Read-only: there is no endpoint here to lift a restriction (including
+// self-exclusion) or to alter rolling-window usage — see ADR-021/ADR-023.
+
+export function listResponsibleGamingHistory(
+  userId: string,
+): Promise<AdminResponsibleGamingRestriction[]> {
+  return request<AdminResponsibleGamingRestriction[]>(
+    `/admin/responsible-gaming?userId=${encodeURIComponent(userId)}`,
+  );
+}
+
+export function fetchResponsibleGamingUsage(
+  userId: string,
+): Promise<AdminResponsibleGamingUsage> {
+  return request<AdminResponsibleGamingUsage>(
+    `/admin/responsible-gaming/${encodeURIComponent(userId)}/usage`,
+  );
 }

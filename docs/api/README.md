@@ -285,30 +285,33 @@ in an `X-CSRF-Token` header, except `POST /admin/session/login` itself.
 A request with an `Authorization` header is exempt (not
 cookie/CSRF-exploitable).
 
-## Eligibility & Responsible-Gaming Endpoints (Phase 6)
+## Eligibility & Responsible-Gaming Endpoints (Phase 6, rolling-window enforcement in Phase 8)
 
-Full architecture: [ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md).
+Full architecture: [ADR-021](../decisions/ADR-021-eligibility-and-responsible-gaming.md)
+and [ADR-023](../decisions/ADR-023-rolling-window-responsible-gaming.md).
 `REAL_MONEY_GAMING_ENABLED` and `ELIGIBILITY_POLICY_CONFIGURED` must
 both be `true` before any real-money deposit or stake proceeds.
 
 | Endpoint | Auth required | Notes |
 |---|---|---|
 | `GET /api/v1/auth/responsible-gaming/status` | Yes (Bearer) | The authenticated user's currently active restrictions. |
+| `GET /api/v1/auth/responsible-gaming/usage` | Yes (Bearer) | The authenticated user's current rolling-window sums (stake held, realized losses, deposited) — the same figures actually enforced (Phase 8, ADR-023). |
 | `POST /api/v1/auth/responsible-gaming/self-exclude` | Yes (Bearer) | Permanently self-excludes from real-money play. **There is no endpoint, for any role, that lifts this.** |
 | `POST /api/v1/auth/responsible-gaming/cooling-off` | Yes (Bearer) | `{ durationMinutes }`. Starts a time-limited cooling-off period. |
-| `POST /api/v1/auth/responsible-gaming/deposit-limit` | Yes (Bearer) | `{ limitMinor }`. Per-deposit amount ceiling (not a rolling-period sum). |
-| `POST /api/v1/auth/responsible-gaming/stake-limit` | Yes (Bearer) | `{ limitMinor }`. Per-stake amount ceiling (not a rolling-period sum). |
-| `POST /api/v1/auth/responsible-gaming/loss-limit` | Yes (Bearer) | `{ limitMinor }`. Recorded and visible; **not yet enforced at settlement**. |
+| `POST /api/v1/auth/responsible-gaming/deposit-limit` | Yes (Bearer) | `{ limitMinor }`. Enforced as a rolling-window ceiling over completed deposits (Phase 8), in addition to the existing per-deposit maximum. |
+| `POST /api/v1/auth/responsible-gaming/stake-limit` | Yes (Bearer) | `{ limitMinor }`. Enforced as a rolling-window ceiling over held stakes (Phase 8), in addition to the existing per-stake maximum. |
+| `POST /api/v1/auth/responsible-gaming/loss-limit` | Yes (Bearer) | `{ limitMinor }`. Enforced as a rolling-window ceiling over realized (`LOSER`-role) settlement losses (Phase 8) — a win, draw, or cancelled match never counts toward it. |
 
 Self-exclusion and cooling-off block deposits and real-money stakes but
 **never** withdrawals — letting an at-risk user withdraw their own money
 is the responsible-gaming-correct behavior, not a loophole.
 
-### Admin responsible-gaming endpoint (require `role: 'ADMIN'`)
+### Admin responsible-gaming endpoints (require `role: 'ADMIN'`)
 
 | Endpoint | Notes |
 |---|---|
 | `GET /api/v1/admin/responsible-gaming` | Restriction history, optionally filtered by `userId`. Read-only — no action anywhere lifts or edits a restriction. |
+| `GET /api/v1/admin/responsible-gaming/:userId/usage` | That user's current rolling-window usage (Phase 8) — the same figures `EligibilityService` enforces. Read-only. |
 
 ## Phase Scope
 
@@ -316,11 +319,12 @@ Authentication/identity (Phase 2), wallet/ledger/deposits/withdrawals
 (Phase 3), the game platform/matchmaking/challenges/real-time layer
 (Phase 4), match stakes/settlement/disputes/reconciliation (Phase 5),
 production (test-mode) Monime payment integration/admin session
-security/account security/eligibility-responsible gaming (Phase 6), and
-a second game, Checkers, proving the game-platform endpoints above are
-genuinely game-agnostic (Phase 7, above) exist. A *live* Monime
-integration (webhook signature verification is unresolved and fails
-closed), additional games beyond Tic-Tac-Toe and Checkers, and social
-features are not implemented yet — see `CLAUDE.md` and
+security/account security/eligibility-responsible gaming (Phase 6), a
+second game, Checkers, proving the game-platform endpoints above are
+genuinely game-agnostic (Phase 7), and real rolling-window
+stake/deposit/loss-limit enforcement (Phase 8, above) exist. A *live*
+Monime integration (webhook signature verification is unresolved and
+fails closed), additional games beyond Tic-Tac-Toe and Checkers, and
+social features are not implemented yet — see `CLAUDE.md` and
 `docs/development/OUTSTANDING_WORK.md` for the full "do not build yet"
 list and every other known-open item.

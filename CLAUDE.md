@@ -79,8 +79,8 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 7 — Repository Audit, Modern Game Design System &
-Production-Quality Checkers.**
+**Current phase: Phase 8 — Server-Enforced Responsible Gaming &
+Financial Safety.**
 See `docs/development/WORKFLOW.md` for the phase pipeline,
 [ADR-019](docs/decisions/ADR-019-production-payments.md) for the real
 Monime payment/payout/webhook/reconciliation architecture,
@@ -88,37 +88,40 @@ Monime payment/payout/webhook/reconciliation architecture,
 cookies, CSRF, password reset, verification, and MFA,
 [ADR-021](docs/decisions/ADR-021-eligibility-and-responsible-gaming.md)
 for the centralized real-money eligibility and responsible-gaming
-foundation, and [ADR-022](docs/decisions/ADR-022-checkers-game-module.md)
-for the Checkers rules engine and the shared mobile game design system.
-See `docs/development/OUTSTANDING_WORK.md` for the durable, cross-phase
+foundation, [ADR-022](docs/decisions/ADR-022-checkers-game-module.md)
+for the Checkers rules engine and the shared mobile game design system,
+and [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md)
+for the real, server-enforced rolling-window spending/loss-limit
+semantics implemented this phase. See
+`docs/development/OUTSTANDING_WORK.md` for the durable, cross-phase
 register of everything still open (Monime webhook signature
-verification, business eligibility, rolling-window spend/loss-limit
-enforcement, no turn timer, and more — nothing here is closed just
-because a later phase shipped).
+verification, business eligibility, no turn timer, and more — nothing
+here is closed just because a later phase shipped).
 
 Phase 1 (foundation), Phase 2 (identity/authentication), Phase 3
 (wallet/ledger/financial foundation), Phase 4 (game platform/
 matchmaking/real-time), Phase 5 (match stakes, settlement, disputes,
-reconciliation), and Phase 6 (production Monime integration, admin/
-mobile account security, eligibility/responsible-gaming foundations) are
-complete. Phase 7 — a repository-wide audit (verified against the real
-code/schema/tests/CI, not assumed from prior reports); a shared mobile
-game design system (`core/theme/app_spacing.dart`/`app_radii.dart`/
-`app_motion.dart`, board/piece/king color tokens, and the generic match
-chrome — status bar, stake strip, result banners, dispute dialog —
-extracted out of Tic-Tac-Toe into `core/match/widgets/` and reused by
-both games); and a complete, server-authoritative Checkers game module
-(`apps/api/src/games/checkers/`) with a polished mobile UI
-(`apps/mobile/lib/features/checkers/`) — is implemented and tested (35
-backend unit tests, 17 backend e2e tests, 21 new mobile tests, all 98
-pre-existing mobile tests still passing unchanged, mobile
-`flutter analyze`/Android debug build, admin unaffected) and CI is
-green, verified against a real GitHub Actions run — see the Phase 7
-report for the exact run URL. Checkers required zero changes to
-matchmaking, challenges, the command pipeline, realtime, stake
-confirmation, or settlement — only a new `GameModule` implementation, one
-registration-array edit, and one seed migration (see ADR-015 and
-ADR-022).
+reconciliation), Phase 6 (production Monime integration, admin/mobile
+account security, eligibility/responsible-gaming foundations), and
+Phase 7 (repository audit, shared mobile game design system, Checkers)
+are complete. Phase 8's backend work — real rolling-window
+`STAKE_LIMIT`/`DEPOSIT_LIMIT`/`LOSS_LIMIT` enforcement inside
+`EligibilityService`, enforced from inside `MatchStakesService.confirmStake`'s
+existing wallet-locked transaction and from `DepositsService.create`; a
+fixed, non-user-configurable rolling-window length
+(`RESPONSIBLE_GAMING_WINDOW_HOURS`); a previously-unchecked opponent-side
+eligibility gap in `ChallengesService.accept` fixed; a new
+`RESPONSIBLE_GAMING_LIMIT_REACHED` notification; and new
+`GET /auth/responsible-gaming/usage` / `GET /admin/responsible-gaming/:userId/usage`
+read endpoints — is implemented and tested (see ADR-023 and the Phase 8
+report for exact test counts, verification results, and the CI run
+URL). The mobile responsible-gaming screen now shows real rolling-window
+usage against each configured limit, and a new read-only admin
+Responsible Gaming page (`/responsible-gaming`) exposes the same
+restriction history and usage by user ID. This phase did not implement
+another game, change the 10% settlement-fee calculation, alter the
+immutable-ledger model, add any self-exclusion-lift path, or enable
+real-money gaming/production payments.
 
 ## Repository Structure
 

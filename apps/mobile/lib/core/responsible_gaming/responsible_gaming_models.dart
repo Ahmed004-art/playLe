@@ -53,3 +53,28 @@ class RestrictionInfo {
   /// `COOLING_OFF`, whose `config` is `{}`.
   String? get limitMinor => config['limitMinor'] as String?;
 }
+
+/// Mirrors the API's `ResponsibleGamingUsageDto` (Phase 8) — what is
+/// actually compared against a configured `STAKE_LIMIT`/`LOSS_LIMIT`/
+/// `DEPOSIT_LIMIT` right now, for the fixed rolling window every limit
+/// shares. See docs/decisions/ADR-023-rolling-window-responsible-gaming.md.
+class UsageInfo {
+  const UsageInfo({
+    required this.windowHours,
+    required this.stakeHeldMinor,
+    required this.lossMinor,
+    required this.depositedMinor,
+  });
+
+  factory UsageInfo.fromJson(Map<String, dynamic> json) => UsageInfo(
+    windowHours: json['windowHours'] as int,
+    stakeHeldMinor: json['stakeHeldMinor'] as String,
+    lossMinor: json['lossMinor'] as String,
+    depositedMinor: json['depositedMinor'] as String,
+  );
+
+  final int windowHours;
+  final String stakeHeldMinor;
+  final String lossMinor;
+  final String depositedMinor;
+}

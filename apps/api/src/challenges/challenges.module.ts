@@ -6,6 +6,7 @@ import { MatchesModule } from '../matches/matches.module.js';
 import { RealtimeModule } from '../realtime/realtime.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { MatchStakesModule } from '../match-stakes/match-stakes.module.js';
+import { EligibilityModule } from '../eligibility/eligibility.module.js';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { MatchStakesModule } from '../match-stakes/match-stakes.module.js';
     MatchesModule,
     RealtimeModule,
     MatchStakesModule,
+    EligibilityModule,
   ],
   controllers: [ChallengesController],
   providers: [ChallengesService],

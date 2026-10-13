@@ -6,27 +6,34 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 7 — REPOSITORY AUDIT, MODERN GAME DESIGN
-> SYSTEM & PRODUCTION-QUALITY CHECKERS**
+> **CURRENT PHASE: PHASE 8 — SERVER-ENFORCED RESPONSIBLE GAMING &
+> FINANCIAL SAFETY**
 >
-> Phases 1-6 (foundation, identity/authentication, wallet/ledger/
+> Phases 1-7 (foundation, identity/authentication, wallet/ledger/
 > financial foundation, game platform/matchmaking/real-time, match
-> stakes/settlement/disputes/reconciliation, and production Monime
-> payment/account-security/eligibility foundations) are complete. Phase
-> 7 opened with a full repository audit (verified against the real
-> code/schema/tests/CI — see `docs/development/OUTSTANDING_WORK.md` for
-> every item carried forward, confirmed, or newly found) and then built
-> a shared mobile game design system plus a complete, server-
-> authoritative Checkers game — the platform's second game, proving
-> Phase 4's `GameModule` contract generalizes with zero platform changes
-> (one new module, one registration edit, one seed migration). See
-> [ADR-022](docs/decisions/ADR-022-checkers-game-module.md) for the
-> rules engine (mandatory capture, multi-jump, promotion, the explicit
-> 40-move draw rule) and the design-system extraction. Everything from
-> Phase 6 (Monime, webhook verification, eligibility, responsible
-> gaming) is unchanged and still tracked in `OUTSTANDING_WORK.md`. CI is
-> green, verified against a real GitHub Actions run. See "Roadmap" and
-> `CLAUDE.md` for what's in scope.
+> stakes/settlement/disputes/reconciliation, production Monime
+> payment/account-security/eligibility foundations, and a repository
+> audit plus the Checkers game/shared mobile design system) are
+> complete. Phase 8 turned outstanding-work item 7 — rolling-window
+> spend/loss-limit enforcement, previously recorded as a deliberate
+> Phase 6 simplification — into real, server-enforced behavior:
+> `STAKE_LIMIT`/`DEPOSIT_LIMIT`/`LOSS_LIMIT` are now checked against
+> actual rolling-window sums (ledger entries for spending,
+> `SettlementEntry.role: 'LOSER'` for losses) from inside the same
+> wallet-locked transaction that already makes every other financial
+> mutation concurrency-safe — no new locking mechanism, and the rolling
+> window length is a fixed platform parameter so a user cannot shrink
+> their own window to evade a limit. A real pre-existing gap — an
+> incoming staked challenge's *opponent* was never eligibility-checked
+> on accept — was found and fixed. See
+> [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md)
+> for the full semantics (what counts as spending/a loss, the
+> prospective-vs-retrospective check rules, and the documented
+> deposit-limit concurrency limitation). Everything from Phase 6/7
+> (Monime, webhook verification, eligibility, no turn timer, and more)
+> is unchanged and still tracked in `OUTSTANDING_WORK.md`. See "Roadmap"
+> and `CLAUDE.md` for what's in scope, and the Phase 8 report for exact
+> verification results and the CI run URL.
 
 ## Overview
 
@@ -211,7 +218,7 @@ this repository.
   `docs/development/OUTSTANDING_WORK.md` for this and every other item
   still open.
 - **Phase 7 — Repository Audit, Modern Game Design System &
-  Production-Quality Checkers** (current). A verified repository audit;
+  Production-Quality Checkers** ✅ complete. A verified repository audit;
   a shared mobile game design system (spacing/radius/motion tokens,
   board/piece/king colors, generic match chrome extracted out of
   Tic-Tac-Toe into reusable widgets); and a complete, server-
@@ -223,6 +230,19 @@ this repository.
   [ADR-022](docs/decisions/ADR-022-checkers-game-module.md). Two
   pre-existing race conditions unrelated to Checkers (found during this
   phase's audit) were also fixed — see the Phase 7 report.
+- **Phase 8 — Server-Enforced Responsible Gaming & Financial Safety**
+  (current). Real rolling-window `STAKE_LIMIT`/`DEPOSIT_LIMIT`/
+  `LOSS_LIMIT` enforcement, closing outstanding-work item 7 (previously
+  a documented Phase 6 simplification): what counts as spending/a loss
+  is drawn strictly from ledger entries and `SettlementEntry.role`, the
+  check runs inside the existing wallet-locked stake-confirmation
+  transaction (no new locking), and the rolling window length is a
+  fixed platform parameter so it can't be shrunk to evade a limit. A
+  real pre-existing gap — challenge-accept never checked the
+  *opponent's* eligibility — was found and fixed. See
+  [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md).
+  Mobile and admin gained read-only visibility into current rolling
+  usage against configured limits.
 - The next phase is not yet defined/scheduled. Each phase is specified
   explicitly before implementation begins — see `CLAUDE.md`, "Phase
   Discipline".

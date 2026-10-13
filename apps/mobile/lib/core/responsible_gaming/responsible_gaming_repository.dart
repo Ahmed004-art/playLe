@@ -9,6 +9,10 @@ import 'responsible_gaming_models.dart';
 abstract class ResponsibleGamingRepository {
   Future<List<RestrictionInfo>> getStatus();
 
+  /// The authenticated user's current rolling-window usage (Phase 8) —
+  /// what is actually compared against any configured limit above.
+  Future<UsageInfo> getUsage();
+
   /// Permanently self-excludes from real-money play. Cannot be undone
   /// through this app — there is no lift endpoint anywhere.
   Future<RestrictionInfo> selfExclude();
@@ -40,6 +44,14 @@ class HttpResponsibleGamingRepository implements ResponsibleGamingRepository {
         .cast<Map<String, dynamic>>()
         .map(RestrictionInfo.fromJson)
         .toList();
+  }
+
+  @override
+  Future<UsageInfo> getUsage() async {
+    final response = await apiClient.get<Map<String, dynamic>>(
+      '/auth/responsible-gaming/usage',
+    );
+    return UsageInfo.fromJson(response.data!);
   }
 
   @override

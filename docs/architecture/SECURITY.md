@@ -421,7 +421,49 @@ Full architecture and reasoning:
   `MatchStakesService` were deleted in favor of calling it, and
   `DepositsService.create` now calls it too.
 
-## Explicitly NOT Implemented Through Phase 7
+## Implemented in Phase 8 — Server-Enforced Responsible Gaming & Financial Safety
+
+Full architecture: [ADR-023](../decisions/ADR-023-rolling-window-responsible-gaming.md).
+
+- **Rolling-window `STAKE_LIMIT`/`DEPOSIT_LIMIT`/`LOSS_LIMIT` are now
+  genuinely enforced**, not just recorded. `STAKE_LIMIT`/`DEPOSIT_LIMIT`
+  sum real `LedgerEntry` rows (`STAKE_HOLD`/completed `DEPOSIT`) within a
+  fixed rolling window; `LOSS_LIMIT` sums real `SettlementEntry` rows
+  with `role: 'LOSER'` only — a win, draw, or refund is excluded by
+  construction, not by a separate filter that could drift out of sync
+  with settlement.
+- **The rolling window length is a fixed platform parameter
+  (`RESPONSIBLE_GAMING_WINDOW_HOURS`), never user-configurable.** A
+  per-user window would let a user shrink their own window to weaken an
+  otherwise-correct limit amount — closed by construction rather than by
+  validation.
+- **Enforcement reuses the existing wallet row lock, not a new
+  mechanism.** `EligibilityService.assertCanStake`'s rolling checks run
+  inside `MatchStakesService.confirmStake`'s transaction, immediately
+  after `LedgerService.lockWallet` already takes its
+  `SELECT ... FOR UPDATE` lock — so two concurrent stake confirmations
+  for the same user are serialized before either one's rolling-sum query
+  runs, the same guarantee every other financial mutation in this
+  codebase already relies on.
+- **Exactly-once settlement accounting was verified, not assumed.** A
+  dedicated e2e test calls `SettlementService.settle` twice for the same
+  match and asserts the loser's `SettlementEntry` count stays at exactly
+  1, proving the pre-existing `Settlement.matchStakeId` uniqueness
+  constraint also protects the new rolling-loss sum from double-counting
+  on retry or crash recovery.
+- **A real pre-existing eligibility gap was found and fixed.**
+  `ChallengesService.accept()` checked only the challenger's eligibility
+  (at creation time); the opponent's eligibility was never checked
+  before this phase, meaning a self-excluded or over-limit user could
+  accept an incoming staked challenge. Fixed by calling
+  `EligibilityService.assertCanStake` for the opponent inside `accept()`.
+- **A documented, accepted limitation, not silently claimed as fully
+  solved**: `DEPOSIT_LIMIT`'s rolling check cannot hold a lock against a
+  future asynchronous provider-webhook completion the way the stake
+  check can hold a lock against a concurrent request — see ADR-023
+  "Deposit-limit rolling check" and `OUTSTANDING_WORK.md` item 18.
+
+## Explicitly NOT Implemented Through Phase 8
 
 - Real email/SMS delivery for password reset and verification codes —
   the OTP flows themselves (`VerificationService`, `PasswordResetService`)
@@ -455,11 +497,6 @@ Full architecture and reasoning:
   performed; the flag only records that the owner confirms a policy
   exists, never that this codebase determined one is correct (see
   ADR-021).
-- Rolling-window spend tracking and `LOSS_LIMIT` enforcement at
-  settlement — `DEPOSIT_LIMIT`/`STAKE_LIMIT` are enforced as a per-action
-  ceiling, not a cumulative sum, and `LOSS_LIMIT` is recorded/visible but
-  not yet enforced (documented simplification, not a claim of complete
-  spend tracking — see ADR-021).
 - Any self-exclusion-lift process — by design, not an oversight; see
   "Self-exclusion has no lift path" above and ADR-021.
 - Match-level anti-cheat/anomaly detection (e.g. detecting a player
@@ -564,6 +601,12 @@ Checkers' board rendering uses only Flutter's built-in widgets.
   real inbox/phone outside of logs/test fixtures.
 - `JWT_ACCESS_SECRET` is a single static secret per environment with no
   rotation mechanism.
+- The `DEPOSIT_LIMIT` rolling-window check cannot offer the same
+  concurrency guarantee as the `STAKE_LIMIT`/`LOSS_LIMIT` checks, since
+  deposit completion is driven by an asynchronous provider webhook with
+  no request in flight to lock against (Phase 8; see ADR-023 and
+  `OUTSTANDING_WORK.md` item 18). It still correctly blocks initiating a
+  new deposit once already-completed deposits would exceed the limit.
 - `Withdrawal.destinationDetails` (e.g. a mobile-money phone number) is
   stored as-given, with no verification that it belongs to the
   requesting user — KYC/destination-ownership verification is explicitly
@@ -602,11 +645,12 @@ Checkers' board rendering uses only Flutter's built-in widgets.
   mobile app's `sessions_screen.dart` surfaces session management, but
   no equivalent exists in the admin app yet).
 - Financial security: a real Monime webhook signature implementation
-  once the canonical HMAC string is verified (see ADR-019), rolling-
-  window spend tracking and `LOSS_LIMIT` enforcement (see ADR-021),
-  anomaly detection beyond the read-only reconciliation checks already
+  once the canonical HMAC string is verified (see ADR-019), anomaly
+  detection beyond the read-only reconciliation checks already
   implemented (Phases 5/6). Idempotency itself is implemented as of
-  Phase 3 (see above).
+  Phase 3 (see above). Rolling-window spend/loss-limit enforcement is
+  implemented as of Phase 8 (see ADR-023 and "Implemented in Phase 8"
+  below).
 - KYC integration ahead of/alongside withdrawal automation and
   destination-account verification.
 - Payment provider credential handling via a proper secrets manager, not

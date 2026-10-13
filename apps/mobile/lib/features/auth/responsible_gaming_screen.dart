@@ -329,6 +329,19 @@ class _ResponsibleGamingScreenState extends State<ResponsibleGamingScreen> {
           const Divider(height: 32),
           Text('Deposit limit', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
+          Text(
+            'A rolling ${state.usage.windowHours}-hour deposit total ceiling, '
+            'in addition to a per-deposit maximum.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+          ),
+          _UsageSummary(
+            usedMinor: state.usage.depositedMinor,
+            limitMinor: _limitFor(state, 'DEPOSIT_LIMIT'),
+            windowHours: state.usage.windowHours,
+          ),
+          const SizedBox(height: 8),
           _LimitForm(
             controller: _depositLimitController,
             busy: _busy,
@@ -337,6 +350,20 @@ class _ResponsibleGamingScreenState extends State<ResponsibleGamingScreen> {
           ),
           const Divider(height: 32),
           Text('Stake limit', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text(
+            'A rolling ${state.usage.windowHours}-hour staked total ceiling, '
+            'in addition to a per-stake maximum. Enforced the instant you '
+            'confirm a stake — concurrent matches cannot combine to bypass it.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+          ),
+          _UsageSummary(
+            usedMinor: state.usage.stakeHeldMinor,
+            limitMinor: _limitFor(state, 'STAKE_LIMIT'),
+            windowHours: state.usage.windowHours,
+          ),
           const SizedBox(height: 8),
           _LimitForm(
             controller: _stakeLimitController,
@@ -348,11 +375,18 @@ class _ResponsibleGamingScreenState extends State<ResponsibleGamingScreen> {
           Text('Loss limit', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           Text(
-            'Recorded and visible, but not yet enforced automatically at '
-            'settlement.',
+            'Once your losses over the last ${state.usage.windowHours} hours '
+            'reach this amount, you cannot confirm a new stake until the '
+            'period rolls forward. A win, draw, or cancelled match never '
+            'counts toward it.',
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+          ),
+          _UsageSummary(
+            usedMinor: state.usage.lossMinor,
+            limitMinor: _limitFor(state, 'LOSS_LIMIT'),
+            windowHours: state.usage.windowHours,
           ),
           const SizedBox(height: 8),
           _LimitForm(
@@ -362,6 +396,50 @@ class _ResponsibleGamingScreenState extends State<ResponsibleGamingScreen> {
             buttonLabel: 'Set loss limit',
           ),
         ],
+      ),
+    );
+  }
+
+  String? _limitFor(ResponsibleGamingLoaded state, String type) {
+    for (final r in state.restrictions) {
+      if (r.type == type && r.status == 'ACTIVE') return r.limitMinor;
+    }
+    return null;
+  }
+}
+
+/// "Used Le X of your Le Y limit in the last Zh" — shown only once the
+/// user has actually configured a limit of this type; a raw usage
+/// number with no limit to compare against isn't useful context.
+class _UsageSummary extends StatelessWidget {
+  const _UsageSummary({
+    required this.usedMinor,
+    required this.limitMinor,
+    required this.windowHours,
+  });
+
+  final String usedMinor;
+  final String? limitMinor;
+  final int windowHours;
+
+  @override
+  Widget build(BuildContext context) {
+    final limit = limitMinor;
+    if (limit == null) return const SizedBox.shrink();
+
+    final used = BigInt.tryParse(usedMinor) ?? BigInt.zero;
+    final limitValue = BigInt.tryParse(limit) ?? BigInt.zero;
+    final atOrOverLimit = limitValue > BigInt.zero && used >= limitValue;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        'Used ${formatMinorAmount(usedMinor)} of your '
+        '${formatMinorAmount(limit)} limit in the last ${windowHours}h',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: atOrOverLimit ? AppColors.error : AppColors.secondary,
+          fontWeight: atOrOverLimit ? FontWeight.w600 : FontWeight.normal,
+        ),
       ),
     );
   }

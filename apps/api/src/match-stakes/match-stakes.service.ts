@@ -189,8 +189,19 @@ export class MatchStakesService {
 
       // Lock the wallet before the conditional update — same ordering
       // discipline as every other hold in this codebase (see
-      // LedgerService.lockWallet).
+      // LedgerService.lockWallet). Re-checking eligibility *here*, with
+      // `tx`, is what makes the Phase 8 rolling-window stake/loss checks
+      // actually concurrency-safe: two concurrent `confirmStake` calls
+      // for the same user (different matches) both need this same
+      // wallet lock, so the second one's rolling sum is guaranteed to
+      // see the first's already-applied `STAKE_HOLD` — see
+      // EligibilityService.assertCanStake's doc comment and ADR-023.
       await this.ledgerService.lockWallet(tx, walletId);
+      await this.eligibilityService.assertCanStake(
+        user,
+        stake.stakeAmountMinor,
+        tx,
+      );
 
       const { count } = await tx.matchStakePlayer.updateMany({
         where: { matchStakeId: stake.id, userId: user.id, heldAt: null },

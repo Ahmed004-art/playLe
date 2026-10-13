@@ -257,6 +257,123 @@ describe('Eligibility & responsible gaming (e2e)', () => {
       .expect(403);
   });
 
+  it('a rolling-window deposit limit blocks a second deposit that would push the total over it', async () => {
+    const { accessToken, userId } = await registerUser('rolldepositlimit');
+    const admin = await registerUser('rolldepositlimita');
+    await makeAdmin(admin.userId);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/responsible-gaming/deposit-limit')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ limitMinor: '6000' })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/deposits')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ amountMinor: '5000' })
+      .expect(201);
+
+    // The deposit creation above is still PENDING — it only counts
+    // toward the rolling total once it actually *completes* (a
+    // `DEPOSIT` ledger entry exists only then). Simulate completion
+    // the same way `DepositsService.completeFromProviderEvent` would,
+    // directly crediting the ledger so the rolling check has something
+    // real to sum.
+    const wallet = await prisma.wallet.findUniqueOrThrow({
+      where: { userId },
+    });
+    await prisma.ledgerEntry.create({
+      data: {
+        walletId: wallet.id,
+        userId,
+        type: 'DEPOSIT',
+        availableDeltaMinor: 5000n,
+        heldDeltaMinor: 0n,
+        availableBalanceAfterMinor: 5000n,
+        heldBalanceAfterMinor: 0n,
+        currency: 'SLE',
+      },
+    });
+
+    // A second deposit of 5000 would bring the rolling total to 10000,
+    // over the 6000 limit.
+    await request(app.getHttpServer())
+      .post('/api/v1/deposits')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ amountMinor: '5000' })
+      .expect(403);
+  });
+
+  it("exposes the user's own current rolling-window usage", async () => {
+    const { accessToken, userId } = await registerUser('ownusage');
+    const wallet = await prisma.wallet.findUniqueOrThrow({
+      where: { userId },
+    });
+    await prisma.ledgerEntry.create({
+      data: {
+        walletId: wallet.id,
+        userId,
+        type: 'DEPOSIT',
+        availableDeltaMinor: 2500n,
+        heldDeltaMinor: 0n,
+        availableBalanceAfterMinor: 2500n,
+        heldBalanceAfterMinor: 0n,
+        currency: 'SLE',
+      },
+    });
+
+    const usage = await request(app.getHttpServer())
+      .get('/api/v1/auth/responsible-gaming/usage')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect(usage.body.depositedMinor).toBe('2500');
+    expect(usage.body.stakeHeldMinor).toBe('0');
+    expect(usage.body.lossMinor).toBe('0');
+    expect(typeof usage.body.windowHours).toBe('number');
+  });
+
+  it("lets an admin view another user's current rolling-window usage, read-only", async () => {
+    const { userId } = await registerUser('adminviewusage');
+    const admin = await registerUser('adminviewusagea');
+    await makeAdmin(admin.userId);
+    const wallet = await prisma.wallet.findUniqueOrThrow({
+      where: { userId },
+    });
+    await prisma.ledgerEntry.create({
+      data: {
+        walletId: wallet.id,
+        userId,
+        type: 'DEPOSIT',
+        availableDeltaMinor: 1200n,
+        heldDeltaMinor: 0n,
+        availableBalanceAfterMinor: 1200n,
+        heldBalanceAfterMinor: 0n,
+        currency: 'SLE',
+      },
+    });
+
+    const usage = await request(app.getHttpServer())
+      .get(`/api/v1/admin/responsible-gaming/${userId}/usage`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+
+    expect(usage.body.depositedMinor).toBe('1200');
+  });
+
+  it("rejects a non-admin from viewing another user's usage", async () => {
+    const { accessToken } = await registerUser('usageunauth');
+    const { userId: otherUserId } = await registerUser('usageunauthother');
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/admin/responsible-gaming/${otherUserId}/usage`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(403);
+  });
+
   it('a cooling-off period blocks a deposit until it ends', async () => {
     const { accessToken } = await registerUser('coolingoff');
 

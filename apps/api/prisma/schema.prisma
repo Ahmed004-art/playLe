@@ -262,6 +262,10 @@ model LedgerEntry {
   @@index([walletId])
   @@index([type])
   @@index([relatedMatchStakeId])
+  /// Serves the Phase 8 rolling-window spend query (sum of STAKE_HOLD —
+  /// or DEPOSIT — entries for a user within the last N hours) — see
+  /// EligibilityService and ADR-023.
+  @@index([userId, type, createdAt])
   @@map("ledger_entries")
 }
 
@@ -726,6 +730,10 @@ model SettlementEntry {
   createdAt DateTime @default(now())
 
   @@index([settlementId])
+  /// Serves the Phase 8 rolling-window loss query (sum of LOSER-role
+  /// entries for a user within the last N hours) — see
+  /// EligibilityService and ADR-023.
+  @@index([userId, role, createdAt])
   @@map("settlement_entries")
 }
 
@@ -1032,6 +1040,10 @@ enum NotificationType {
   SELF_EXCLUSION_ACTIVATED
   PASSWORD_RESET_REQUESTED
   VERIFICATION_CODE_ISSUED
+  /// A stake/deposit was blocked, or a loss limit was reached, by a
+  /// Phase 8 rolling-window responsible-gaming check — see
+  /// docs/decisions/ADR-023-rolling-window-responsible-gaming.md.
+  RESPONSIBLE_GAMING_LIMIT_REACHED
 }
 
 enum NotificationOutboxStatus {

@@ -9,9 +9,12 @@ class ResponsibleGamingLoading extends ResponsibleGamingState {
 }
 
 class ResponsibleGamingLoaded extends ResponsibleGamingState {
-  const ResponsibleGamingLoaded(this.restrictions);
+  const ResponsibleGamingLoaded(this.restrictions, this.usage);
 
   final List<RestrictionInfo> restrictions;
+
+  /// The authenticated user's current rolling-window usage (Phase 8).
+  final UsageInfo usage;
 
   bool get isSelfExcluded => restrictions.any(
     (r) => r.type == 'SELF_EXCLUSION' && r.status == 'ACTIVE',

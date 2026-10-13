@@ -104,6 +104,14 @@ export interface AppConfiguration {
     throttleLimit: number;
     throttleTtlMs: number;
   };
+  responsibleGaming: {
+    /**
+     * Fixed, non-user-configurable rolling-window length (hours) for
+     * STAKE_LIMIT/LOSS_LIMIT/DEPOSIT_LIMIT enforcement — see
+     * docs/decisions/ADR-023-rolling-window-responsible-gaming.md.
+     */
+    windowHours: number;
+  };
 }
 
 export default (): AppConfiguration => ({
@@ -206,5 +214,11 @@ export default (): AppConfiguration => ({
     ),
     throttleLimit: parseInt(process.env.STAKES_THROTTLE_LIMIT ?? '30', 10),
     throttleTtlMs: parseInt(process.env.STAKES_THROTTLE_TTL_MS ?? '60000', 10),
+  },
+  responsibleGaming: {
+    windowHours: parseInt(
+      process.env.RESPONSIBLE_GAMING_WINDOW_HOURS ?? '24',
+      10,
+    ),
   },
 });

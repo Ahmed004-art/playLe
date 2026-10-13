@@ -173,6 +173,18 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1)
   STAKES_THROTTLE_TTL_MS: number = 60000;
+
+  /**
+   * The rolling-window length for STAKE_LIMIT/LOSS_LIMIT/DEPOSIT_LIMIT
+   * enforcement (Phase 8) — deliberately a fixed platform parameter, not
+   * user-configurable, so a user cannot evade their own limit by
+   * shortening the window right before a large stake. See
+   * docs/decisions/ADR-023-rolling-window-responsible-gaming.md.
+   */
+  @IsInt()
+  @Min(1)
+  @Max(24 * 90)
+  RESPONSIBLE_GAMING_WINDOW_HOURS: number = 24;
 }
 
 export function validate(

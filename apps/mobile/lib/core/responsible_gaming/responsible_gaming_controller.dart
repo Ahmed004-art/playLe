@@ -22,7 +22,8 @@ class ResponsibleGamingController extends ChangeNotifier {
     _setState(const ResponsibleGamingLoading());
     try {
       final restrictions = await _repository.getStatus();
-      _setState(ResponsibleGamingLoaded(restrictions));
+      final usage = await _repository.getUsage();
+      _setState(ResponsibleGamingLoaded(restrictions, usage));
     } catch (e) {
       AppLogger.instance.warning(
         'Failed to load responsible-gaming status: $e',

@@ -199,6 +199,29 @@ isn't financial history, so these cascade/null out normally.
   log was introduced as a follow-on to the rest of the Phase 6 schema,
   not part of the original migration).
 
+## Phase 8 — Rolling-Window Responsible-Gaming Enforcement
+
+No new models. Rolling-window enforcement (see
+[ADR-023](../decisions/ADR-023-rolling-window-responsible-gaming.md))
+reads the existing `LedgerEntry`/`SettlementEntry` tables directly —
+only indexes and one notification enum value were added:
+
+- `LedgerEntry` gained `@@index([userId, type, createdAt])` — the exact
+  shape of the `STAKE_HOLD`/`DEPOSIT` rolling-sum queries
+  `EligibilityService` now runs.
+- `SettlementEntry` gained `@@index([userId, role, createdAt])` — the
+  exact shape of the `LOSER`-role rolling-loss-sum query.
+- `NotificationType` gained `RESPONSIBLE_GAMING_LIMIT_REACHED`.
+- **Two migrations, for the enum-value reason explained under
+  "Migration Discipline" below**: `20261013020835_add_responsible_gaming_rolling_window_indexes`
+  (the two indexes) and
+  `20261013020931_add_responsible_gaming_limit_reached_notification`
+  (the enum value, added separately so a later migration or seed could
+  safely use it — not strictly required here since nothing inserts a
+  row using the new value in the same migration, but kept as two
+  migrations for consistency with that rule and because the indexes and
+  the notification type are unrelated changes).
+
 ## Phase Scope
 
 Phase 2 established identity/session data. Phase 3 added the financial
@@ -213,8 +236,10 @@ new models or columns** — Checkers reuses the existing generic `Game`/
 only database change is one seed migration,
 `20261012220000_seed_checkers_game`, inserting the `checkers` row into
 `games` (same hand-written-INSERT pattern as the original `tic_tac_toe`
-seed in `20261005102538_add_game_platform_core`). Social-graph tables
-are still designed in their own dedicated future phase.
+seed in `20261005102538_add_game_platform_core`). Phase 8 added two
+indexes and one notification enum value — no new models — see "Phase 8"
+above. Social-graph tables are still designed in their own dedicated
+future phase.
 
 ## Local Development Database
 
@@ -285,9 +310,6 @@ See [ADR-009](../decisions/ADR-009-financial-ledger.md). The remaining
 future schema (non-exhaustive, designed in each dedicated phase):
 
 - Social-graph tables (follows/friends).
-- A rolling-window spend/loss-tracking schema for real `LOSS_LIMIT`
-  enforcement beyond the per-action ceiling `ResponsibleGamingRestriction`
-  already supports (see ADR-021).
 - A defined compliance-officer role/process and whatever schema it
   would need to lift a `SELF_EXCLUSION` restriction — not designed, and
   not expected to be added without a real legal/compliance process
