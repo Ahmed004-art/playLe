@@ -239,9 +239,7 @@ export function listResponsibleGamingHistory(
   );
 }
 
-export function fetchResponsibleGamingUsage(
-  userId: string,
-): Promise<AdminResponsibleGamingUsage> {
+export function fetchResponsibleGamingUsage(userId: string): Promise<AdminResponsibleGamingUsage> {
   return request<AdminResponsibleGamingUsage>(
     `/admin/responsible-gaming/${encodeURIComponent(userId)}/usage`,
   );

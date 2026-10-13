@@ -126,9 +126,7 @@ describe('ResponsibleGamingPage', () => {
     });
     fireEvent.click(screen.getByText('Look up'));
 
-    await waitFor(() =>
-      expect(screen.getByText(/permanently self-excluded/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/permanently self-excluded/i)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /lift/i })).not.toBeInTheDocument();
   });
 

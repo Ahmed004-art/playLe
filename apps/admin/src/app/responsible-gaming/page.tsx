@@ -42,18 +42,14 @@ function ResponsibleGamingContent() {
       setUsage(usageRes);
       setLooked(true);
     } catch (e) {
-      setError(
-        e instanceof ApiRequestError ? e.message : 'Failed to load responsible-gaming data',
-      );
+      setError(e instanceof ApiRequestError ? e.message : 'Failed to load responsible-gaming data');
       setLooked(true);
     } finally {
       setLoading(false);
     }
   }
 
-  const isSelfExcluded = history.some(
-    (r) => r.type === 'SELF_EXCLUSION' && r.status === 'ACTIVE',
-  );
+  const isSelfExcluded = history.some((r) => r.type === 'SELF_EXCLUSION' && r.status === 'ACTIVE');
 
   return (
     <div className="page">
@@ -65,10 +61,10 @@ function ResponsibleGamingContent() {
       <div className="wideCard">
         <h1>Responsible Gaming</h1>
         <p className="statusLine">
-          Inspect any user&apos;s restriction history and current rolling-window usage by user
-          ID — the same figures and restrictions <code>EligibilityService</code> actually
-          enforces. Read-only: there is no action here that lifts self-exclusion or any other
-          restriction (see ADR-021/ADR-023).
+          Inspect any user&apos;s restriction history and current rolling-window usage by user ID —
+          the same figures and restrictions <code>EligibilityService</code> actually enforces.
+          Read-only: there is no action here that lifts self-exclusion or any other restriction (see
+          ADR-021/ADR-023).
         </p>
 
         <div className="inlineForm" style={{ margin: '16px 0' }}>
