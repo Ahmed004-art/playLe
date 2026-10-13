@@ -33,6 +33,11 @@ class MatchInfo {
     required this.winnerUserId,
     required this.resultIsDraw,
     required this.players,
+    this.terminationReason,
+    this.turnDeadlineAt,
+    this.pendingDrawOfferByUserId,
+    this.supportsResignation = true,
+    this.supportsDraws = true,
   });
 
   factory MatchInfo.fromJson(Map<String, dynamic> json) {
@@ -44,6 +49,13 @@ class MatchInfo {
       state: Map<String, dynamic>.from(json['state'] as Map),
       winnerUserId: json['winnerUserId'] as String?,
       resultIsDraw: json['resultIsDraw'] as bool,
+      terminationReason: json['terminationReason'] as String?,
+      turnDeadlineAt: json['turnDeadlineAt'] == null
+          ? null
+          : DateTime.parse(json['turnDeadlineAt'] as String),
+      pendingDrawOfferByUserId: json['pendingDrawOfferByUserId'] as String?,
+      supportsResignation: json['supportsResignation'] as bool? ?? false,
+      supportsDraws: json['supportsDraws'] as bool? ?? false,
       players: (json['players'] as List<dynamic>)
           .cast<Map<String, dynamic>>()
           .map(MatchPlayerInfo.fromJson)
@@ -58,6 +70,20 @@ class MatchInfo {
   final Map<String, dynamic> state;
   final String? winnerUserId;
   final bool resultIsDraw;
+
+  /// Distinguishes *how* a terminal match ended — `null` means a normal
+  /// game-rules win/draw. See
+  /// docs/decisions/ADR-024-match-lifecycle-integrity.md.
+  final String? terminationReason;
+
+  /// The deadline for whoever currently holds the turn to move.
+  /// Display-only — the server is the sole arbiter of expiry.
+  final DateTime? turnDeadlineAt;
+
+  /// The userId of whoever currently has an open draw offer, if any.
+  final String? pendingDrawOfferByUserId;
+  final bool supportsResignation;
+  final bool supportsDraws;
   final List<MatchPlayerInfo> players;
 
   bool get isFinished =>

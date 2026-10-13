@@ -165,11 +165,12 @@ consistency, never match/settlement state, and never mutates money.
 | `GET /api/v1/admin/payment-reconciliation/anomalies` | List recorded anomalies, optionally filtered by `status`, cursor-paginated. |
 | `POST /api/v1/admin/payment-reconciliation/anomalies/:id/resolve` | `{ resolutionNote }` (≥10 chars). Marks an anomaly resolved after the admin has reviewed/fixed the underlying issue through the ordinary deposit/withdrawal/ledger paths — never itself a money-mutating action. |
 
-## Game Platform & Matchmaking Endpoints (Phase 4; two games as of Phase 7)
+## Game Platform & Matchmaking Endpoints (Phase 4; two games as of Phase 7; lifecycle integrity as of Phase 9)
 
 Full architecture: [ADR-014](../decisions/ADR-014-realtime-command-transport.md),
 [ADR-015](../decisions/ADR-015-game-module-architecture.md),
-[ADR-022](../decisions/ADR-022-checkers-game-module.md). All routes
+[ADR-022](../decisions/ADR-022-checkers-game-module.md),
+[ADR-024](../decisions/ADR-024-match-lifecycle-integrity.md). All routes
 below require `Authorization: Bearer <accessToken>` unless noted. A
 match command (a move) travels over REST, not WebSocket — WebSocket is
 used only for server→client push and for joining a match's room. Every
@@ -181,14 +182,14 @@ changes to this surface.
 |---|---|
 | `GET /api/v1/games` | The game catalog — `tic_tac_toe` and, as of Phase 7, `checkers`. |
 | `GET /api/v1/games/:id` | A single game's catalog entry. |
-| `POST /api/v1/matchmaking/join` | `{ gameId }`. Returns `QUEUED` or, if an opponent was already waiting, `MATCHED` with the new `matchId` immediately. |
+| `POST /api/v1/matchmaking/join` | `{ gameId }`. Returns `QUEUED` or, if an opponent was already waiting, `MATCHED` with the new `matchId` immediately. Rejects (409) if the caller already holds a `WAITING`/`READY`/`ACTIVE` match (Phase 9 — previously only checked `ACTIVE`). |
 | `POST /api/v1/matchmaking/leave` | `{ gameId }`. Removes the caller from the queue. |
-| `POST /api/v1/challenges` | `{ gameId, opponentUserId }`. Rejects self-challenge and a duplicate pending challenge between the same two users for the same game. |
+| `POST /api/v1/challenges` | `{ gameId, opponentUserId }`. Rejects self-challenge, a duplicate pending challenge between the same two users for the same game, and (Phase 9) a challenger who already holds a `WAITING`/`READY`/`ACTIVE` match. |
 | `GET /api/v1/challenges` | Own sent + received challenges. |
-| `POST /api/v1/challenges/:id/accept` \| `/decline` \| `/cancel` | Atomic conditional transition (`PENDING` -> target status); exactly one of two concurrent accept attempts succeeds. Accept creates the `Match`. |
+| `POST /api/v1/challenges/:id/accept` \| `/decline` \| `/cancel` | Atomic conditional transition (`PENDING` -> target status); exactly one of two concurrent accept attempts succeeds. Accept creates the `Match` via `createMatchGuarded` (Phase 9), which also rejects if either participant already holds a conflicting match — the whole transaction (including the challenge's own status transition) rolls back, leaving the challenge `PENDING`. |
 | `GET /api/v1/matches` | Own match history, cursor-paginated. |
-| `GET /api/v1/matches/:id` | A single match, including players, state, and result. `404` (not `403`) for a non-participant. `state` is opaque and game-specific — for Checkers, see `CheckersState` in `apps/api/src/games/checkers/checkers.types.ts`. |
-| `POST /api/v1/matches/:id/commands` | `{ commandId, payload }` — `commandId` is a client-generated UUID, the idempotency key; a retried submission with the same id returns the original result rather than reapplying the move. Tic-Tac-Toe's `payload` is `{ cell }`; Checkers' is `{ from: {row, col}, to: {row, col} }` — one command per diagonal step or jump, several per turn during a multi-jump (see ADR-022). |
+| `GET /api/v1/matches/:id` | A single match, including players, state, result, `turnDeadlineAt` (Phase 9, display-only), `pendingDrawOfferByUserId` (Phase 9), and `supportsResignation`/`supportsDraws` capability flags (Phase 9). `404` (not `403`) for a non-participant. `state` is opaque and game-specific — for Checkers, see `CheckersState` in `apps/api/src/games/checkers/checkers.types.ts`. |
+| `POST /api/v1/matches/:id/commands` | `{ commandId, type?, payload }` — `commandId` is a client-generated UUID, the idempotency key; a retried submission with the same id returns the original result rather than reapplying the command. `type` defaults to `"MOVE"`; Phase 9 adds `"RESIGN"`, `"DRAW_OFFER"`, `"DRAW_ACCEPT"`, `"DRAW_REJECT"` (empty `payload`), all processed inside the same row-locked transaction as a move — see ADR-024. Tic-Tac-Toe's move `payload` is `{ cell }`; Checkers' is `{ from: {row, col}, to: {row, col} }` — one command per diagonal step or jump, several per turn during a multi-jump (see ADR-022). |
 
 ### Admin match endpoints (require `role: 'ADMIN'`)
 
@@ -212,7 +213,7 @@ trusts the client's claim.
 | `connected` | `{ userId }` | Right after a successful authenticated connection. |
 | `match:found` | `{ matchId }` | Pushed to both players' personal rooms when matchmaking forms a match. |
 | `match:state` | `{ matchId }` | After any accepted command; the client re-fetches `GET /matches/:id` rather than trusting a pushed state blob. |
-| `match:completed` | `{ matchId }` | When a match reaches a terminal status. |
+| `match:completed` | `{ matchId, winnerUserId, resultIsDraw, terminationReason }` | When a match reaches a terminal status. `terminationReason` (Phase 9) is populated consistently across every terminal path (normal completion, disconnect forfeit, turn timeout, resignation, agreed draw) — previously only the disconnect-forfeit path included a (differently-named) reason field at all. The client still re-fetches rather than trusting this payload as authoritative. |
 | `challenge:received` / `challenge:resolved` | `{ challengeId }` | On challenge create / accept / decline / cancel / expire. |
 | `player:left` / `player:reconnected` | `{ matchId, userId }` | On disconnect/reconnect of a match participant. |
 
@@ -321,10 +322,13 @@ Authentication/identity (Phase 2), wallet/ledger/deposits/withdrawals
 production (test-mode) Monime payment integration/admin session
 security/account security/eligibility-responsible gaming (Phase 6), a
 second game, Checkers, proving the game-platform endpoints above are
-genuinely game-agnostic (Phase 7), and real rolling-window
-stake/deposit/loss-limit enforcement (Phase 8, above) exist. A *live*
-Monime integration (webhook signature verification is unresolved and
-fails closed), additional games beyond Tic-Tac-Toe and Checkers, and
-social features are not implemented yet — see `CLAUDE.md` and
+genuinely game-agnostic (Phase 7), real rolling-window stake/deposit/
+loss-limit enforcement (Phase 8), and match lifecycle integrity —
+server-authoritative turn timers, resign/draw-offer commands, advisory-
+lock duplicate-match prevention, and richer terminal-outcome semantics
+(Phase 9, above) — exist. A *live* Monime integration (webhook
+signature verification is unresolved and fails closed), additional
+games beyond Tic-Tac-Toe and Checkers, and social features are not
+implemented yet — see `CLAUDE.md` and
 `docs/development/OUTSTANDING_WORK.md` for the full "do not build yet"
 list and every other known-open item.

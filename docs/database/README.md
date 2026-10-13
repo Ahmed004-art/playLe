@@ -222,6 +222,37 @@ only indexes and one notification enum value were added:
   migrations for consistency with that rule and because the indexes and
   the notification type are unrelated changes).
 
+## Phase 9 — Match Lifecycle Integrity
+
+No new models. See
+[ADR-024](../decisions/ADR-024-match-lifecycle-integrity.md).
+
+- `Game` gained `turnTimeoutSeconds Int?` — a per-game, server-trusted
+  turn-clock length (`null` means no timer). Both seeded games
+  (`tic_tac_toe`, `checkers`) are backfilled to `60`.
+- `Match` gained `turnDeadlineAt DateTime?` (the authoritative,
+  recoverable deadline for whoever currently holds the turn — a real
+  column, not an in-memory timer) and
+  `pendingDrawOfferByUserId String?`/`pendingDrawOfferExpiresAt DateTime?`
+  (a pending draw offer; the former is a proper FK relation to `User`,
+  `onDelete: SetNull`). New composite index
+  `@@index([status, turnDeadlineAt])` for the turn-timeout sweep's exact
+  query shape.
+- `MatchTerminationReason` gained `RESIGNATION`, `TURN_TIMEOUT`,
+  `DRAW_AGREED` — extending the existing enum rather than adding a new
+  column; a `null` value still means "normal game-rules outcome,"
+  unchanged and fully backward-compatible with every historical row.
+- `MatchCommand.type` needed no schema change — it was already a
+  free-form `String` column; `RESIGN`/`DRAW_OFFER`/`DRAW_ACCEPT`/
+  `DRAW_REJECT` are simply new values alongside `MOVE`.
+- **Two migrations**: `20261013154818_phase9_match_lifecycle_integrity`
+  (the new enum values, columns, index, and FK — a single migration,
+  since nothing in it both adds an enum value and uses it in the same
+  transaction) and a separate hand-written
+  `20261013154900_backfill_turn_timeout_seconds` (the `UPDATE` seeding
+  `turnTimeoutSeconds = 60` for both existing games — same
+  hand-written-data-migration convention as the original game seeds).
+
 ## Phase Scope
 
 Phase 2 established identity/session data. Phase 3 added the financial
@@ -238,7 +269,9 @@ only database change is one seed migration,
 `games` (same hand-written-INSERT pattern as the original `tic_tac_toe`
 seed in `20261005102538_add_game_platform_core`). Phase 8 added two
 indexes and one notification enum value — no new models — see "Phase 8"
-above. Social-graph tables are still designed in their own dedicated
+above. Phase 9 added new `Game`/`Match` columns and enum values — still
+no new models — see "Phase 9" above. Social-graph tables are still
+designed in their own dedicated
 future phase.
 
 ## Local Development Database

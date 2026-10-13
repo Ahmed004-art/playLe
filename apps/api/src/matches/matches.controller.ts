@@ -20,6 +20,7 @@ import type { User } from '@prisma/client';
 import { MatchesService } from './matches.service.js';
 import { SubmitCommandDto } from './dto/submit-command.dto.js';
 import { toMatchResponse, MatchResponseDto } from './dto/match-response.dto.js';
+import { GameRegistry } from '../games/game-registry.service.js';
 import {
   toCommandResponse,
   CommandResponseDto,
@@ -44,7 +45,19 @@ export class MatchesController {
   constructor(
     private readonly matchesService: MatchesService,
     private readonly matchStakesService: MatchStakesService,
+    private readonly gameRegistry: GameRegistry,
   ) {}
+
+  private capabilitiesFor(gameId: string): {
+    supportsResignation: boolean;
+    supportsDraws: boolean;
+  } {
+    const module = this.gameRegistry.get(gameId);
+    return {
+      supportsResignation: module.supportsResignation,
+      supportsDraws: module.supportsDraws,
+    };
+  }
 
   @Get()
   @ApiOperation({ summary: "The authenticated user's own match history." })
@@ -55,7 +68,9 @@ export class MatchesController {
   ): Promise<{ items: MatchResponseDto[]; nextCursor: string | null }> {
     const page = await this.matchesService.list(user.id, query);
     return {
-      items: page.items.map(toMatchResponse),
+      items: page.items.map((m) =>
+        toMatchResponse(m, this.capabilitiesFor(m.gameId)),
+      ),
       nextCursor: page.nextCursor,
     };
   }
@@ -72,7 +87,7 @@ export class MatchesController {
     @Param('id') id: string,
   ): Promise<MatchResponseDto> {
     const match = await this.matchesService.findByIdForUser(user.id, id);
-    return toMatchResponse(match);
+    return toMatchResponse(match, this.capabilitiesFor(match.gameId));
   }
 
   @Post(':id/commands')
@@ -93,6 +108,7 @@ export class MatchesController {
       id,
       dto.commandId,
       dto.payload,
+      dto.type,
     );
     return toCommandResponse(command);
   }

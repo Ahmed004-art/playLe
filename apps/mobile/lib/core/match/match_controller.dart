@@ -48,11 +48,38 @@ class MatchController extends ChangeNotifier {
     }
   }
 
-  Future<void> submitMove(Map<String, dynamic> payload) async {
+  Future<void> submitMove(Map<String, dynamic> payload) =>
+      _submitCommand(payload);
+
+  /// Resigns the current user's own match (Phase 9 — ADR-024). Always
+  /// forfeits the authenticated caller — there is no way to resign on
+  /// behalf of anyone else.
+  Future<void> resign() => _submitCommand(const {}, type: 'RESIGN');
+
+  /// Offers a draw to the opponent. Does not itself complete the match
+  /// — only the opponent's `DRAW_ACCEPT` does.
+  Future<void> offerDraw() => _submitCommand(const {}, type: 'DRAW_OFFER');
+
+  /// Accepts the opponent's pending draw offer. Rejected by the server
+  /// if there is no active offer, or if it's the caller's own offer.
+  Future<void> acceptDraw() => _submitCommand(const {}, type: 'DRAW_ACCEPT');
+
+  /// Declines/withdraws a pending draw offer — usable by either
+  /// participant (see ADR-024).
+  Future<void> rejectDraw() => _submitCommand(const {}, type: 'DRAW_REJECT');
+
+  Future<void> _submitCommand(
+    Map<String, dynamic> payload, {
+    String? type,
+  }) async {
     final matchId = _matchId;
     if (matchId == null) return;
 
-    final result = await _repository.submitCommand(matchId, payload);
+    final result = await _repository.submitCommand(
+      matchId,
+      payload,
+      type: type,
+    );
     final match = await _repository.getMatch(matchId);
     final financial = await _fetchFinancial(matchId);
     _setState(

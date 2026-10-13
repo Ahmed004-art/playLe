@@ -66,11 +66,12 @@ model User {
   ledgerAdjustmentsAuthored LedgerEntry[] @relation("LedgerAdjustmentAdmin")
   withdrawalReviewsAuthored Withdrawal[]  @relation("WithdrawalReviewAdmin")
 
-  matchPlayers       MatchPlayer[]
-  matchesWon         Match[]        @relation("MatchWinner")
-  matchCommands      MatchCommand[]
-  challengesSent     Challenge[]    @relation("ChallengeChallenger")
-  challengesReceived Challenge[]    @relation("ChallengeOpponent")
+  matchPlayers          MatchPlayer[]
+  matchesWon            Match[]        @relation("MatchWinner")
+  pendingDrawOffersMade Match[]        @relation("MatchPendingDrawOfferBy")
+  matchCommands         MatchCommand[]
+  challengesSent        Challenge[]    @relation("ChallengeChallenger")
+  challengesReceived    Challenge[]    @relation("ChallengeOpponent")
 
   matchStakePlayers MatchStakePlayer[]
   settlementEntries SettlementEntry[]
@@ -419,6 +420,18 @@ enum MatchTerminationReason {
   WAITING_TIMEOUT
   CANCELLED_BY_PLAYER
   ABANDONED_DISCONNECT
+  /// A participant resigned (Phase 9 — ADR-024). `winnerUserId` is the
+  /// opponent; `resultIsDraw` is false.
+  RESIGNATION
+  /// The current turn-holder's `turnDeadlineAt` elapsed (Phase 9 —
+  /// ADR-024). `winnerUserId` is the other participant; `resultIsDraw`
+  /// is false.
+  TURN_TIMEOUT
+  /// Both participants agreed to a draw via the draw-offer/accept
+  /// commands (Phase 9 — ADR-024), as distinct from a `null`
+  /// `terminationReason` board draw decided by the game's own rules.
+  /// `resultIsDraw` is true; `winnerUserId` is null.
+  DRAW_AGREED
 }
 
 enum ChallengeStatus {
@@ -441,6 +454,13 @@ model Game {
   enabled     Boolean @default(true)
   version     Int     @default(1)
   iconKey     String?
+
+  /// Server-trusted turn-clock length for this game (Phase 9 — see
+  /// ADR-024). `null` means no turn timer is enforced for this game.
+  /// Lives on the catalog row, not a client-supplied value or an env
+  /// var, so it can only change via a migration/admin-equivalent action
+  /// — never a request parameter.
+  turnTimeoutSeconds Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -472,6 +492,21 @@ model Match {
 
   terminationReason MatchTerminationReason?
 
+  /// The deadline for whoever currently holds the turn (per
+  /// `GameModule.currentTurnUserId`) to submit a move, refreshed on
+  /// every accepted move and cleared once the match ends. `null` means
+  /// no turn timer applies (free play or a game with no configured
+  /// timer). A real column, not an in-memory timer — survives API
+  /// restarts by construction. See ADR-024.
+  turnDeadlineAt DateTime?
+
+  /// A pending draw offer from one participant to the other (Phase 9 —
+  /// see ADR-024). An offer is not itself a completed draw; only
+  /// `DRAW_ACCEPT` from the *other* participant completes the match.
+  pendingDrawOfferByUserId  String?
+  pendingDrawOfferBy        User?     @relation("MatchPendingDrawOfferBy", fields: [pendingDrawOfferByUserId], references: [id], onDelete: SetNull)
+  pendingDrawOfferExpiresAt DateTime?
+
   createdAt   DateTime  @default(now())
   readyAt     DateTime?
   startedAt   DateTime?
@@ -486,6 +521,7 @@ model Match {
 
   @@index([status])
   @@index([gameId])
+  @@index([status, turnDeadlineAt])
   @@map("matches")
 }
 

@@ -463,7 +463,58 @@ Full architecture: [ADR-023](../decisions/ADR-023-rolling-window-responsible-gam
   check can hold a lock against a concurrent request — see ADR-023
   "Deposit-limit rolling check" and `OUTSTANDING_WORK.md` item 18.
 
-## Explicitly NOT Implemented Through Phase 8
+## Implemented in Phase 9 — Match Lifecycle Integrity, Matchmaking Correctness & Game Result Semantics
+
+Full architecture: [ADR-024](../decisions/ADR-024-match-lifecycle-integrity.md).
+
+- **Duplicate-match prevention is now a real, race-closed guarantee, not
+  just an advisory check.** `MatchesService.createMatchGuarded` acquires
+  sorted Postgres advisory transaction locks
+  (`pg_advisory_xact_lock(hashtext(userId))`) for every involved user,
+  then re-checks none of them holds a `WAITING`/`READY`/`ACTIVE` match,
+  then creates the match — all inside one transaction. Used by both
+  `MatchmakingService.join`'s post-pop step and
+  `ChallengesService.accept`, so two concurrent match-forming attempts
+  sharing a user (matchmaking vs. challenge-accept, or two concurrent
+  challenge-accepts) can never both succeed. Verified by a real
+  concurrent-request e2e test (two challenges accepted simultaneously by
+  the same user — exactly one succeeds, the other's challenge rolls back
+  to `PENDING`, not left half-resolved) and, for the matchmaking-specific
+  path, a real-Redis e2e test.
+- **Redis/Postgres consistency-boundary mismatches are explicitly
+  recovered from, not pretended impossible.** If `createMatchGuarded`
+  rejects one of the users the Redis Lua script already popped,
+  `MatchmakingService.join` re-checks each popped user and safely
+  re-queues whoever is genuinely still free, rather than silently
+  dropping them from the system. Verified by a dedicated real-Redis e2e
+  test that deliberately constructs this exact race.
+- **Server-authoritative turn timers, closing a real stalling vector.**
+  A connected player who simply never moves can no longer hold an
+  `ACTIVE` match (and any held stake) indefinitely — `Match.turnDeadlineAt`
+  (a real, recoverable column) is enforced by
+  `MatchTimeoutService.processTurnTimeout` under the exact same
+  `SELECT ... FOR UPDATE` row lock `MatchesService.submitCommand` already
+  takes, so a move racing a timeout sweep can never both win, and the
+  mechanism needs no in-memory state to survive an API restart or to be
+  safe across multiple API instances.
+- **Resign and draw-offer commands reuse the existing server-authoritative
+  pipeline, not a new one.** `RESIGN`/`DRAW_OFFER`/`DRAW_ACCEPT`/
+  `DRAW_REJECT` are processed inside the exact same row-locked transaction
+  a move already uses. A resignation always forfeits the authenticated
+  submitter — there is no payload field for "who resigns" — so a losing
+  participant resigning on behalf of the opponent is impossible by
+  construction. A draw offer is never itself a completed draw; only the
+  *other* participant's `DRAW_ACCEPT` completes the match, and accepting
+  your own offer is rejected explicitly.
+- **No financial code path changed.** Resignation, turn timeout, and an
+  agreed draw all settle through the exact same `SettlementService.settle`
+  — they only ever set the same `Match.winnerUserId`/`resultIsDraw`
+  fields a normal game-rules completion already sets (plus a new
+  `terminationReason` value distinguishing *how*), so the settlement
+  math, the exactly-once guarantee, and the Phase 8 eligibility checks
+  are all exercised completely unchanged.
+
+## Explicitly NOT Implemented Through Phase 9
 
 - Real email/SMS delivery for password reset and verification codes —
   the OTP flows themselves (`VerificationService`, `PasswordResetService`)
@@ -575,6 +626,12 @@ stale. No new admin dependency.
 **Phase 7 update**: zero new dependencies anywhere (API, admin, or
 mobile) — confirmed via `git diff` on every `package.json`/`pubspec.yaml`.
 Checkers' board rendering uses only Flutter's built-in widgets.
+
+**Phase 9 update**: zero new dependencies anywhere (API, admin, or
+mobile) — confirmed via `git diff` on every `package.json`/`pubspec.yaml`.
+Advisory locks use a plain `$executeRaw` call against the existing
+Postgres connection; the turn-timer countdown uses `dart:async`'s
+built-in `Timer.periodic`.
 
 ## Known Limitations
 

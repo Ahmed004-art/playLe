@@ -9,6 +9,8 @@ function fakeModule(gameId: string): GameModule {
     version: 1,
     minPlayers: 2,
     maxPlayers: 2,
+    supportsResignation: true,
+    supportsDraws: true,
     createInitialState: () => ({}),
     currentTurnUserId: () => null,
     validateMove: () => ({ valid: false }),

@@ -6,34 +6,36 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 8 — SERVER-ENFORCED RESPONSIBLE GAMING &
-> FINANCIAL SAFETY**
+> **CURRENT PHASE: PHASE 9 — MATCH LIFECYCLE INTEGRITY, MATCHMAKING
+> CORRECTNESS & GAME RESULT SEMANTICS**
 >
-> Phases 1-7 (foundation, identity/authentication, wallet/ledger/
+> Phases 1-8 (foundation, identity/authentication, wallet/ledger/
 > financial foundation, game platform/matchmaking/real-time, match
 > stakes/settlement/disputes/reconciliation, production Monime
-> payment/account-security/eligibility foundations, and a repository
-> audit plus the Checkers game/shared mobile design system) are
-> complete. Phase 8 turned outstanding-work item 7 — rolling-window
-> spend/loss-limit enforcement, previously recorded as a deliberate
-> Phase 6 simplification — into real, server-enforced behavior:
-> `STAKE_LIMIT`/`DEPOSIT_LIMIT`/`LOSS_LIMIT` are now checked against
-> actual rolling-window sums (ledger entries for spending,
-> `SettlementEntry.role: 'LOSER'` for losses) from inside the same
-> wallet-locked transaction that already makes every other financial
-> mutation concurrency-safe — no new locking mechanism, and the rolling
-> window length is a fixed platform parameter so a user cannot shrink
-> their own window to evade a limit. A real pre-existing gap — an
-> incoming staked challenge's *opponent* was never eligibility-checked
-> on accept — was found and fixed. See
-> [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md)
-> for the full semantics (what counts as spending/a loss, the
-> prospective-vs-retrospective check rules, and the documented
-> deposit-limit concurrency limitation). Everything from Phase 6/7
-> (Monime, webhook verification, eligibility, no turn timer, and more)
-> is unchanged and still tracked in `OUTSTANDING_WORK.md`. See "Roadmap"
-> and `CLAUDE.md` for what's in scope, and the Phase 8 report for exact
-> verification results and the CI run URL.
+> payment/account-security/eligibility foundations, a repository audit
+> plus the Checkers game/shared mobile design system, and server-
+> enforced rolling-window responsible-gaming limits) are complete.
+> Phase 9 closed five previously-tracked outstanding-work items: a
+> real, server-authoritative turn/move timer that survives API restarts
+> and can never be bypassed by a racing move (the deadline is a real
+> `Match` column, and expiry is processed under the exact same row lock
+> a move submission already uses); matchmaking's `WAITING`-blind
+> duplicate-match check, fixed with a new advisory-lock-based guard that
+> closes the race between matchmaking and direct challenges (or two
+> concurrent challenge-accepts) sharing a user, including explicit
+> recovery when Redis's queue and Postgres's match state briefly
+> disagree; resign and draw-offer commands, added through the existing
+> command pipeline rather than a parallel mechanism; and richer
+> terminal-outcome semantics (resignation/timeout/agreed-draw) added to
+> the existing `MatchTerminationReason` column rather than any change to
+> `GameResult` or `SettlementService`. See
+> [ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md) for the
+> full design and rationale. Everything from Phase 6/7/8 (Monime,
+> webhook verification, business eligibility, the deposit-limit
+> concurrency limitation, and more) is unchanged and still tracked in
+> `OUTSTANDING_WORK.md`. See "Roadmap" and `CLAUDE.md` for what's in
+> scope, and the Phase 9 report for exact verification results and the
+> CI run URL.
 
 ## Overview
 
@@ -231,7 +233,7 @@ this repository.
   pre-existing race conditions unrelated to Checkers (found during this
   phase's audit) were also fixed — see the Phase 7 report.
 - **Phase 8 — Server-Enforced Responsible Gaming & Financial Safety**
-  (current). Real rolling-window `STAKE_LIMIT`/`DEPOSIT_LIMIT`/
+  ✅ complete. Real rolling-window `STAKE_LIMIT`/`DEPOSIT_LIMIT`/
   `LOSS_LIMIT` enforcement, closing outstanding-work item 7 (previously
   a documented Phase 6 simplification): what counts as spending/a loss
   is drawn strictly from ledger entries and `SettlementEntry.role`, the
@@ -243,6 +245,25 @@ this repository.
   [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md).
   Mobile and admin gained read-only visibility into current rolling
   usage against configured limits.
+- **Phase 9 — Match Lifecycle Integrity, Matchmaking Correctness &
+  Game Result Semantics** (current). Closed five previously-tracked
+  outstanding-work items. A real, server-authoritative turn/move timer
+  (`Game.turnTimeoutSeconds`/`Match.turnDeadlineAt`) enforced under the
+  same row lock a move submission already uses, so a move racing a
+  timeout sweep can never both win, and restart-safe/multi-instance-safe
+  by construction (the deadline is a real column, not an in-memory
+  timer). Matchmaking's `WAITING`-blind duplicate-match check fixed via
+  a new `MatchesService.createMatchGuarded` — sorted Postgres advisory
+  transaction locks closing the race between matchmaking and direct
+  challenges (or two concurrent challenge-accepts) sharing a user, with
+  explicit recovery when Redis's queue and Postgres's match state
+  briefly disagree. Resign and draw-offer commands
+  (`RESIGN`/`DRAW_OFFER`/`DRAW_ACCEPT`/`DRAW_REJECT`), added through the
+  existing `MatchCommand` pipeline. Richer terminal-outcome semantics —
+  `RESIGNATION`/`TURN_TIMEOUT`/`DRAW_AGREED` added to the existing
+  `MatchTerminationReason` column, deliberately without touching the
+  binary `GameResult` interface or `SettlementService`. See
+  [ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md).
 - The next phase is not yet defined/scheduled. Each phase is specified
   explicitly before implementation begins — see `CLAUDE.md`, "Phase
   Discipline".

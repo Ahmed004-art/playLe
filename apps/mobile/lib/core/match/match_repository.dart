@@ -6,10 +6,16 @@ import 'match_models.dart';
 abstract class MatchRepository {
   Future<MatchInfo> getMatch(String matchId);
   Future<List<MatchInfo>> listMatches();
+
+  /// `type` defaults to `'MOVE'` — `'RESIGN'`/`'DRAW_OFFER'`/
+  /// `'DRAW_ACCEPT'`/`'DRAW_REJECT'` (Phase 9) go through this same
+  /// method, since the server treats them all as one command pipeline.
+  /// See docs/decisions/ADR-024-match-lifecycle-integrity.md.
   Future<CommandResult> submitCommand(
     String matchId,
-    Map<String, dynamic> payload,
-  );
+    Map<String, dynamic> payload, {
+    String? type,
+  });
 
   /// The match's stake/settlement, if any (both `null` for free play) —
   /// see `GET /matches/:id/financial` in
@@ -45,11 +51,16 @@ class HttpMatchRepository implements MatchRepository {
   @override
   Future<CommandResult> submitCommand(
     String matchId,
-    Map<String, dynamic> payload,
-  ) async {
+    Map<String, dynamic> payload, {
+    String? type,
+  }) async {
     final response = await apiClient.post<Map<String, dynamic>>(
       '/matches/$matchId/commands',
-      data: {'commandId': generateUuidV4(), 'payload': payload},
+      data: {
+        'commandId': generateUuidV4(),
+        'payload': payload,
+        ...?(type != null ? {'type': type} : null),
+      },
     );
     return CommandResult.fromJson(response.data!);
   }

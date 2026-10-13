@@ -12,6 +12,7 @@ import { DepositsModule } from '../deposits/deposits.module.js';
 import { WithdrawalsModule } from '../withdrawals/withdrawals.module.js';
 import { MatchesModule } from '../matches/matches.module.js';
 import { MatchStakesModule } from '../match-stakes/match-stakes.module.js';
+import { GamesModule } from '../games/games.module.js';
 import { DisputesModule } from '../disputes/disputes.module.js';
 import { SettlementModule } from '../settlement/settlement.module.js';
 import { PaymentsModule } from '../payments/payments.module.js';
@@ -25,6 +26,7 @@ import { PaymentsModule } from '../payments/payments.module.js';
     WithdrawalsModule,
     MatchesModule,
     MatchStakesModule,
+    GamesModule,
     DisputesModule,
     SettlementModule,
     PaymentsModule,

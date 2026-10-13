@@ -94,6 +94,7 @@ class FakeMatchRepository implements MatchRepository {
     rejectionReason: null,
   );
   List<Map<String, dynamic>> submittedPayloads = [];
+  List<String?> submittedTypes = [];
   MatchFinancialInfo financialToReturn = const MatchFinancialInfo.empty();
   int confirmStakeCallCount = 0;
   Object? confirmStakeError;
@@ -107,9 +108,11 @@ class FakeMatchRepository implements MatchRepository {
   @override
   Future<CommandResult> submitCommand(
     String matchId,
-    Map<String, dynamic> payload,
-  ) async {
+    Map<String, dynamic> payload, {
+    String? type,
+  }) async {
     submittedPayloads.add(payload);
+    submittedTypes.add(type);
     return commandResultToReturn;
   }
 

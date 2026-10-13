@@ -98,6 +98,10 @@ class _MatchScreenState extends State<MatchScreen> {
                       onMove: (cell) =>
                           widget.matchController.submitMove({'cell': cell}),
                       onExit: () => context.go('/account'),
+                      onResign: widget.matchController.resign,
+                      onOfferDraw: widget.matchController.offerDraw,
+                      onAcceptDraw: widget.matchController.acceptDraw,
+                      onRejectDraw: widget.matchController.rejectDraw,
                       onDispute: (reason) async {
                         await widget.disputesController.create(
                           match.id,
@@ -115,6 +119,10 @@ class _MatchScreenState extends State<MatchScreen> {
                         'to': {'row': to.row, 'col': to.col},
                       }),
                       onExit: () => context.go('/account'),
+                      onResign: widget.matchController.resign,
+                      onOfferDraw: widget.matchController.offerDraw,
+                      onAcceptDraw: widget.matchController.acceptDraw,
+                      onRejectDraw: widget.matchController.rejectDraw,
                       onDispute: (reason) async {
                         await widget.disputesController.create(
                           match.id,

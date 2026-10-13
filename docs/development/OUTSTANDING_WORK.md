@@ -148,55 +148,85 @@ Both fixed and reverified against the existing `matches.e2e-spec.ts`/
 passing) before any Checkers-specific work began. See the Phase 7
 report for commit details.
 
-### 13. No turn/move timer
-**Status**: Not implemented — identified during the Phase 7 audit, not
-a Checkers-specific gap (applies equally to Tic-Tac-Toe). A connected
-player who simply never moves can hold an `ACTIVE` match (and any held
-stake) indefinitely; only a *disconnect* triggers the existing
-abandonment grace-period forfeit. **Severity**: Medium for a staked
-match's UX (not a financial-integrity issue — funds stay correctly held,
-never lost or duplicated). **Owner**: a future, explicitly-scoped phase.
+### 13. No turn/move timer — closed in Phase 9
+**Status**: Implemented and enforced. **Evidence**: ADR-024
+"Server-authoritative turn timers". `Game.turnTimeoutSeconds` (a
+per-game catalog value, both seeded games set to 60s) drives
+`Match.turnDeadlineAt`, refreshed on every accepted move (including each
+step of a Checkers multi-jump continuation) and checked by
+`MatchTimeoutService.expireTimedOutTurns`/`processTurnTimeout`, which
+locks the same `Match` row `MatchesService.submitCommand` already locks
+— so a move racing a timeout can never both win, and the mechanism is
+multi-instance-safe and restart-safe by construction (the deadline is a
+real column, not an in-memory timer). Covered by
+`test/match-lifecycle.e2e-spec.ts` (expiry, race-with-a-real-move,
+duplicate-processing idempotency, deadline refresh) and
+`test/checkers.e2e-spec.ts` (multi-jump preserves/bounds the timer
+correctly) — both passing locally against real Postgres; verified in
+CI. **Severity**: N/A (implemented, tested, verified). **Owner**: N/A.
 
-### 14. Matchmaking's "already in a match" check ignores `WAITING`
-**Status**: Not implemented — identified during the Phase 7 audit, a
-pre-existing platform gap. `MatchmakingService.join` only checks for an
-existing *ACTIVE* match before queuing, not a `WAITING` one (e.g. a
-staked match still waiting on stake confirmation). **Severity**: Low —
-free-play matches skip `WAITING` entirely (they start `ACTIVE`
-immediately), so this only matters for a staked match mid-stake-
-confirmation, a narrow window. **Owner**: a future, explicitly-scoped
-phase.
+### 14. Matchmaking's "already in a match" check ignores `WAITING` — closed in Phase 9
+**Status**: Implemented and enforced. **Evidence**: ADR-024
+"Duplicate-match prevention". `MatchmakingService.join`'s advisory check
+now includes `WAITING`/`READY`, not just `ACTIVE`; the authoritative
+guard is a new `MatchesService.createMatchGuarded` (sorted Postgres
+advisory transaction locks per involved user, then a conflict check,
+then the match creation — all in one transaction), used by both
+matchmaking's post-pop step and `ChallengesService.accept`, closing the
+race between two concurrent match-forming attempts sharing a user
+(previously possible across matchmaking and challenge-accept, or two
+concurrent challenge-accepts). Covered by
+`test/match-lifecycle.e2e-spec.ts` (concurrent challenge-accepts sharing
+a user; the WAITING-blind case) and `test/matchmaking.e2e-spec.ts`
+(real-Redis stale-queue-recovery test — a popped-but-conflicting user is
+excluded, a popped-and-still-free user is safely re-queued, not
+dropped). **Severity**: N/A (implemented, tested; the Redis-dependent
+test is verified in CI only — see item 11). **Owner**: N/A.
 
-### 15. `match-timeout.service.ts`'s own doc comment is stale
-**Status**: Not implemented — identified during the Phase 7 audit. The
-class comment says an expired `WAITING` match is "currently unreachable
-in practice", but a staked match genuinely does start `WAITING` and can
-genuinely expire (see `MatchesService.createMatch`). Cosmetic only — the
-sweep logic itself is correct and tested. **Severity**: Negligible
-(documentation accuracy only). **Owner**: whoever next touches that
-file; not worth a dedicated change on its own.
+### 15. `match-timeout.service.ts`'s own doc comment is stale — closed in Phase 9
+**Status**: Fixed. **Evidence**: the class doc comment no longer claims
+an expired `WAITING` match is "currently unreachable in practice" — it
+now accurately states a staked match genuinely reaches and can expire
+from `WAITING` (unchanged logic; this was always a real, tested path).
+**Severity**: N/A. **Owner**: N/A.
 
-## Game platform (from Phase 7)
+## Game platform (from Phase 7, substantially addressed in Phase 9)
 
-### 16. `GameResult` is binary (winner-or-draw, no reason)
-**Status**: Unchanged from Phase 4/ADR-015; confirmed during the Phase
-7 audit while implementing Checkers. A richer result (e.g.
-"no-legal-move" vs. "no-remaining-pieces" vs. a future resignation)
-would need an addition to the shared `GameResult` type or a
-module-specific field inside `state`. Checkers currently encodes its own
-finer-grained reasoning only inside its own state, not in the shared
-contract. **Severity**: Low — doesn't block anything; a future game
-needing richer result semantics can extend `GameResult` additively.
-**Owner**: a future phase, if a game actually needs it.
+### 16. `GameResult` is binary (winner-or-draw, no reason) — substantially addressed in Phase 9
+**Status**: The platform-level complaint (no way to represent
+resignation/timeout/agreed-draw *anywhere* in the shared contract) is
+closed. **Evidence**: ADR-024 "Terminal-outcome semantics: extend
+`MatchTerminationReason`, not `GameResult`" — `MatchTerminationReason`
+gained `RESIGNATION`/`TURN_TIMEOUT`/`DRAW_AGREED`, which combined with
+the pre-existing `winnerUserId`/`resultIsDraw` now distinguishes every
+outcome required (normal win, board draw, resignation, timeout,
+disconnect forfeit, stake-commit cancellation, agreed draw) without
+touching the `GameModule`-facing `GameResult` interface itself — a
+deliberate choice, since `SettlementService` and both game modules
+needed zero changes. **Remaining, narrower nuance, deliberately not
+addressed**: Checkers' own internal distinction between "no legal move"
+and "no remaining pieces" still lives only in its private state, not in
+the shared contract — unchanged from Phase 7, genuinely optional future
+work if a game ever needs to expose it beyond its own state.
+**Severity**: Low (the narrow remainder). **Owner**: a future phase, if
+a game actually needs it.
 
-### 17. No resign or draw-offer command type
-**Status**: Not implemented. `MatchCommand.type` is hard-coded `'MOVE'`
-throughout `MatchesService`. A resign/draw-offer flow would need either
-a new command type or an in-payload convention (e.g. `{type: 'resign'}`)
-that a game module's `validateMove`/`applyMove` interprets — the opaque
-`@IsObject()` payload DTO already allows this without a schema change.
-**Severity**: Low — a UX nicety, not a correctness gap. **Owner**: a
-future phase.
+### 17. No resign or draw-offer command type — closed in Phase 9
+**Status**: Implemented. **Evidence**: ADR-024 "Resign and draw offers".
+`MatchCommand.type` now accepts `RESIGN`/`DRAW_OFFER`/`DRAW_ACCEPT`/
+`DRAW_REJECT` alongside `MOVE` (no schema change was needed — `type` was
+already a free-form column), all processed inside the exact same
+row-locked transaction as a move. New `Match.pendingDrawOfferByUserId`/
+`pendingDrawOfferExpiresAt` columns; new `GameModule.supportsResignation`/
+`supportsDraws` capability flags (both true for Tic-Tac-Toe and
+Checkers). Mobile UI: `MatchActionBar`/`DrawOfferBanner` (new shared
+widgets under `core/match/widgets/`, reusing the Phase 7 design system),
+wired into both `TicTacToeScreen` and `CheckersScreen`. Covered by 8 new
+backend e2e tests (idempotent resign, non-participant rejection, late
+resignation not overwriting a real result, draw offer/accept/reject,
+self-accept rejection, duplicate-offer rejection, expiry, implicit
+withdrawal via a move) and 8 new mobile widget tests — all passing.
+**Severity**: N/A (implemented, tested, verified). **Owner**: N/A.
 
 ## Responsible gaming / eligibility (from Phase 8)
 

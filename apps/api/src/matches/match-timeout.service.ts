@@ -6,24 +6,30 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { GameRegistry } from '../games/game-registry.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
 import { SettlementService } from '../settlement/settlement.service.js';
+import { MATCH_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 import type { AppConfiguration } from '../config/configuration.js';
 
 /**
  * Periodic sweep for every time-based state transition the platform
- * needs: an expired `WAITING` match (currently unreachable in practice —
- * Phase 4's only game is 2-player and starts `ACTIVE` immediately — but
- * real, tested code for when a future game needs a real waiting room), an
- * expired `PENDING` challenge, and an `ACTIVE` match whose disconnected
- * player's grace period has elapsed.
+ * needs: an expired `WAITING` match (a staked match genuinely can reach
+ * this — see `MatchesService.createMatch` — this is real, exercised
+ * code, not a dormant path for a hypothetical future game), an expired
+ * `PENDING` challenge, an `ACTIVE` match whose disconnected player's
+ * grace period has elapsed, an `ACTIVE` match whose current turn-holder's
+ * clock has elapsed (Phase 9 — ADR-024), and stale (expired, unanswered)
+ * draw offers.
  *
  * A plain `setInterval` rather than `@nestjs/schedule` — that package
  * isn't installed, and a single periodic task doesn't justify adding it
  * (see CLAUDE.md, "avoid unnecessary dependencies"). Every sweep query is
- * an atomic, status-conditioned `updateMany`, so running this from
- * multiple instances later is safe — each row is only ever transitioned
- * once regardless of how many instances race to sweep it.
+ * either an atomic, status-conditioned `updateMany`, or (for turn
+ * timeouts) the same row-locked transaction `MatchesService.submitCommand`
+ * uses, so running this from multiple instances later is safe — each row
+ * is only ever transitioned once regardless of how many instances race
+ * to sweep it.
  */
 @Injectable()
 export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
@@ -32,6 +38,7 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly gameRegistry: GameRegistry,
     private readonly emitter: RealtimeEmitterService,
     private readonly settlementService: SettlementService,
     private readonly configService: ConfigService<AppConfiguration, true>,
@@ -59,6 +66,8 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
     await this.expireWaitingMatches();
     await this.expireChallenges();
     await this.abandonDisconnectedMatches();
+    await this.expireTimedOutTurns();
+    await this.clearStaleDrawOffers();
     await this.recoverStuckSettlements();
   }
 
@@ -209,7 +218,7 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
           matchId: player.matchId,
           winnerUserId: stillConnectedOpponent?.userId ?? null,
           resultIsDraw: false,
-          reason: 'ABANDONED_DISCONNECT',
+          terminationReason: 'ABANDONED_DISCONNECT',
         });
         this.logger.log(
           `Match ${player.matchId} abandoned (player ${player.userId} disconnected past grace period)`,
@@ -225,5 +234,113 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
           });
       }
     }
+  }
+
+  /**
+   * Finds every `ACTIVE` match whose `turnDeadlineAt` has elapsed and
+   * processes each one (Phase 9 — ADR-024). The actual state transition
+   * happens in `processTurnTimeout`, under the exact same
+   * `SELECT ... FOR UPDATE` row lock `MatchesService.submitCommand` uses
+   * — so a move racing a sweep tick for the same match is always safely
+   * serialized, never double-processed, regardless of how many API
+   * instances are running this sweep concurrently.
+   */
+  private async expireTimedOutTurns(): Promise<void> {
+    const timedOut = await this.prisma.match.findMany({
+      where: { status: 'ACTIVE', turnDeadlineAt: { lt: new Date() } },
+      select: { id: true },
+    });
+    for (const { id } of timedOut) {
+      await this.processTurnTimeout(id).catch((error: unknown) => {
+        this.logger.error(
+          `Turn-timeout processing failed for match ${id}: ${String(error)}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Forfeits the match to whoever did *not* hold the timed-out turn.
+   * Re-checks `status`/`turnDeadlineAt` fresh under the row lock before
+   * doing anything — idempotent and safe to call directly (tests call
+   * it synchronously rather than waiting for the real interval, the
+   * same convention `checkers.e2e-spec.ts` already uses for the other
+   * sweeps).
+   */
+  async processTurnTimeout(matchId: string): Promise<void> {
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM matches WHERE id = ${matchId} FOR UPDATE`;
+
+      const match = await tx.match.findUnique({ where: { id: matchId } });
+      if (
+        !match ||
+        match.status !== 'ACTIVE' ||
+        !match.turnDeadlineAt ||
+        match.turnDeadlineAt > new Date()
+      ) {
+        // Raced with a move, a resign, a draw-accept, or another sweep
+        // tick that already resolved this match — safe no-op.
+        return null;
+      }
+
+      const gameModule = this.gameRegistry.get(match.gameId);
+      const state = gameModule.deserializeState(match.state);
+      const timedOutUserId = gameModule.currentTurnUserId(state);
+
+      const opponent = timedOutUserId
+        ? await tx.matchPlayer.findFirst({
+            where: { matchId, userId: { not: timedOutUserId } },
+          })
+        : null;
+
+      return tx.match.update({
+        where: { id: matchId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          winnerUserId: opponent?.userId ?? null,
+          resultIsDraw: false,
+          terminationReason: 'TURN_TIMEOUT',
+          turnDeadlineAt: null,
+          pendingDrawOfferByUserId: null,
+          pendingDrawOfferExpiresAt: null,
+        },
+      });
+    }, MATCH_TRANSACTION_OPTIONS);
+
+    if (outcome) {
+      this.emitter.emitToMatch(matchId, 'match:completed', {
+        matchId,
+        winnerUserId: outcome.winnerUserId,
+        resultIsDraw: false,
+        terminationReason: 'TURN_TIMEOUT',
+      });
+      this.logger.log(`Match ${matchId} forfeited on turn timeout`);
+      await this.settlementService.settle(matchId).catch((error: unknown) => {
+        this.logger.error(
+          `Settlement failed for turn-timed-out match ${matchId}: ${String(error)}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Clears a pending draw offer that was never accepted or rejected
+   * before `pendingDrawOfferExpiresAt` elapsed. Lazy-expiry already
+   * makes `MatchesService.submitCommand` treat a stale offer as absent
+   * (see its `offerActive` check), so this is purely display hygiene —
+   * without it, a finished-waiting offer would keep showing as pending
+   * to the client until some other command happened to touch the match.
+   * Unconditional on `status`: clearing it on a non-`ACTIVE` match is
+   * harmless.
+   */
+  private async clearStaleDrawOffers(): Promise<void> {
+    await this.prisma.match.updateMany({
+      where: {
+        pendingDrawOfferByUserId: { not: null },
+        pendingDrawOfferExpiresAt: { lt: new Date() },
+      },
+      data: { pendingDrawOfferByUserId: null, pendingDrawOfferExpiresAt: null },
+    });
   }
 }

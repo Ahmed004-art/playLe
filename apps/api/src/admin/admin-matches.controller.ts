@@ -15,6 +15,7 @@ import {
 } from '../matches/dto/match-response.dto.js';
 import { AdminMatchesQueryDto } from './dto/admin-matches-query.dto.js';
 import { MatchStakesService } from '../match-stakes/match-stakes.service.js';
+import { GameRegistry } from '../games/game-registry.service.js';
 import {
   MatchFinancialResponseDto,
   toMatchStakeResponse,
@@ -35,7 +36,19 @@ export class AdminMatchesController {
   constructor(
     private readonly matchesService: MatchesService,
     private readonly matchStakesService: MatchStakesService,
+    private readonly gameRegistry: GameRegistry,
   ) {}
+
+  private capabilitiesFor(gameId: string): {
+    supportsResignation: boolean;
+    supportsDraws: boolean;
+  } {
+    const module = this.gameRegistry.get(gameId);
+    return {
+      supportsResignation: module.supportsResignation,
+      supportsDraws: module.supportsDraws,
+    };
+  }
 
   @Get()
   @ApiOperation({
@@ -52,7 +65,9 @@ export class AdminMatchesController {
       limit: query.limit,
     });
     return {
-      items: page.items.map(toMatchResponse),
+      items: page.items.map((m) =>
+        toMatchResponse(m, this.capabilitiesFor(m.gameId)),
+      ),
       nextCursor: page.nextCursor,
     };
   }
@@ -65,7 +80,7 @@ export class AdminMatchesController {
   @ApiResponse({ status: 200, type: MatchResponseDto })
   async findOne(@Param('id') id: string): Promise<MatchResponseDto> {
     const match = await this.matchesService.findByIdAdmin(id);
-    return toMatchResponse(match);
+    return toMatchResponse(match, this.capabilitiesFor(match.gameId));
   }
 
   @Get(':id/financial')

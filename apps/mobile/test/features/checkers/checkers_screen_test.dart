@@ -24,6 +24,7 @@ MatchInfo _match({
   String? winnerUserId,
   bool resultIsDraw = false,
   bool opponentConnected = true,
+  String? pendingDrawOfferByUserId,
 }) {
   return MatchInfo(
     id: 'match-1',
@@ -39,6 +40,7 @@ MatchInfo _match({
     },
     winnerUserId: winnerUserId,
     resultIsDraw: resultIsDraw,
+    pendingDrawOfferByUserId: pendingDrawOfferByUserId,
     players: [
       const MatchPlayerInfo(userId: 'user-1', seat: 0, connected: true),
       MatchPlayerInfo(userId: 'user-2', seat: 1, connected: opponentConnected),
@@ -51,6 +53,10 @@ Widget _wrap(
   Future<void> Function(Coord, Coord)? onMove,
   MatchFinancialInfo financial = const MatchFinancialInfo.empty(),
   Future<void> Function(String)? onDispute,
+  Future<void> Function()? onResign,
+  Future<void> Function()? onOfferDraw,
+  Future<void> Function()? onAcceptDraw,
+  Future<void> Function()? onRejectDraw,
 }) {
   return MaterialApp(
     home: CheckersScreen(
@@ -59,6 +65,10 @@ Widget _wrap(
       lastRejection: null,
       onMove: onMove ?? (_, _) async {},
       onExit: () {},
+      onResign: onResign ?? () async {},
+      onOfferDraw: onOfferDraw ?? () async {},
+      onAcceptDraw: onAcceptDraw ?? () async {},
+      onRejectDraw: onRejectDraw ?? () async {},
       financial: financial,
       onDispute: onDispute,
     ),
@@ -283,5 +293,64 @@ void main() {
         );
       },
     );
+
+    group('resignation and draw offers (Phase 9)', () {
+      testWidgets(
+        'shows Resign/Offer draw while active, hides them once finished',
+        (tester) async {
+          await tester.pumpWidget(_wrap(_match()));
+          expect(find.text('Resign'), findsOneWidget);
+          expect(find.text('Offer draw'), findsOneWidget);
+
+          await tester.pumpWidget(
+            _wrap(_match(status: 'COMPLETED', winnerUserId: 'user-1')),
+          );
+          expect(find.text('Resign'), findsNothing);
+          expect(find.text('Offer draw'), findsNothing);
+        },
+      );
+
+      testWidgets('resigning requires confirmation before calling onResign', (
+        tester,
+      ) async {
+        var resignCalled = false;
+        await tester.pumpWidget(
+          _wrap(
+            _match(),
+            onResign: () async {
+              resignCalled = true;
+            },
+          ),
+        );
+
+        await tester.tap(find.text('Resign'));
+        await tester.pumpAndSettle();
+        expect(find.text('Resign this match?'), findsOneWidget);
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Resign'));
+        await tester.pumpAndSettle();
+        expect(resignCalled, isTrue);
+      });
+
+      testWidgets(
+        "shows the opponent's offer with Accept/Decline, and Accept calls onAcceptDraw",
+        (tester) async {
+          var acceptCalled = false;
+          await tester.pumpWidget(
+            _wrap(
+              _match(pendingDrawOfferByUserId: 'user-2'),
+              onAcceptDraw: () async {
+                acceptCalled = true;
+              },
+            ),
+          );
+
+          expect(find.text('Your opponent offered a draw'), findsOneWidget);
+          await tester.tap(find.text('Accept'));
+          await tester.pump();
+          expect(acceptCalled, isTrue);
+        },
+      );
+    });
   });
 }

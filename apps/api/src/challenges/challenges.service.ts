@@ -48,6 +48,22 @@ export class ChallengesService {
       throw new NotFoundException('Opponent not found');
     }
 
+    // Advisory, matching `MatchmakingService.join`'s own early check
+    // (Phase 9 — ADR-024) — fails fast with a friendly message for the
+    // common case. The authoritative, race-safe guard is
+    // `createMatchGuarded`, run again at accept time.
+    const challengerAlreadyInMatch = await this.prisma.matchPlayer.findFirst({
+      where: {
+        userId: challengerId,
+        match: { status: { in: ['WAITING', 'READY', 'ACTIVE'] } },
+      },
+    });
+    if (challengerAlreadyInMatch) {
+      throw new ConflictException(
+        'You are already in an active or pending match',
+      );
+    }
+
     const existing = await this.prisma.challenge.findFirst({
       where: {
         gameId,
@@ -151,7 +167,15 @@ export class ChallengesService {
       const game = await tx.game.findUniqueOrThrow({
         where: { id: challenge.gameId },
       });
-      const match = await this.matchesService.createMatch(
+      // `createMatchGuarded`, not `createMatch` (Phase 9 — ADR-024): also
+      // closes the race where either party already holds a conflicting
+      // WAITING/READY/ACTIVE match formed via a different path (another
+      // challenge-accept, or matchmaking) between this challenge being
+      // created and now. A conflict here rolls back the whole
+      // transaction, including the `status: 'ACCEPTED'` claim above, so
+      // the challenge is left genuinely `PENDING` for a later attempt
+      // rather than stuck half-resolved.
+      const match = await this.matchesService.createMatchGuarded(
         game,
         [challenge.challengerId, challenge.opponentId],
         tx,

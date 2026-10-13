@@ -28,6 +28,18 @@ export interface GameModule<TState = unknown, TMove = unknown> {
   readonly minPlayers: number;
   readonly maxPlayers: number;
 
+  /**
+   * Capability flags (Phase 9 — see ADR-024). The generic command
+   * pipeline (`MatchesService`) checks these before accepting a
+   * `RESIGN`/`DRAW_OFFER`/`DRAW_ACCEPT`/`DRAW_REJECT` command, rather
+   * than assuming every game supports both — a future game that
+   * genuinely cannot represent a draw (e.g. a game with no tie state)
+   * sets `supportsDraws: false` and the command is rejected the same
+   * way an out-of-turn move is.
+   */
+  readonly supportsResignation: boolean;
+  readonly supportsDraws: boolean;
+
   createInitialState(playerUserIds: string[]): TState;
 
   /** The user who may submit the next move, or `null` once finished. */

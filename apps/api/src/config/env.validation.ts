@@ -134,6 +134,14 @@ class EnvironmentVariables {
   @Min(1)
   MATCH_TIMEOUT_SWEEP_INTERVAL_MS: number = 10000;
 
+  // Phase 9 — see docs/decisions/ADR-024-match-lifecycle-integrity.md.
+  // The turn clock itself is a per-game Game.turnTimeoutSeconds catalog
+  // value, not an env var — only the draw-offer window (a platform UX
+  // concern, not a game rule) is configured here.
+  @IsInt()
+  @Min(1)
+  MATCH_DRAW_OFFER_TIMEOUT_MS: number = 60000;
+
   // Phase 5 — see docs/decisions/ADR-016-match-financial-architecture.md.
   // Defaults are all safe-off/conservative — real-money gaming never turns
   // on because a variable is merely unset.

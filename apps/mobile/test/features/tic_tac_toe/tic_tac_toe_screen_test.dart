@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/match/match_models.dart';
 import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
+import 'package:playle_mobile/features/tic_tac_toe/tic_tac_toe_board.dart';
 import 'package:playle_mobile/features/tic_tac_toe/tic_tac_toe_screen.dart';
 
 import '../../core/match/fake_match_repository.dart'
@@ -14,6 +15,10 @@ MatchInfo _match({
   String? winnerUserId,
   bool resultIsDraw = false,
   bool opponentConnected = true,
+  String? pendingDrawOfferByUserId,
+  bool supportsResignation = true,
+  bool supportsDraws = true,
+  DateTime? turnDeadlineAt,
 }) {
   return MatchInfo(
     id: 'match-1',
@@ -27,6 +32,10 @@ MatchInfo _match({
     },
     winnerUserId: winnerUserId,
     resultIsDraw: resultIsDraw,
+    pendingDrawOfferByUserId: pendingDrawOfferByUserId,
+    supportsResignation: supportsResignation,
+    supportsDraws: supportsDraws,
+    turnDeadlineAt: turnDeadlineAt,
     players: [
       const MatchPlayerInfo(userId: 'user-1', seat: 0, connected: true),
       MatchPlayerInfo(userId: 'user-2', seat: 1, connected: opponentConnected),
@@ -39,6 +48,10 @@ Widget _wrap(
   Future<void> Function(int)? onMove,
   MatchFinancialInfo financial = const MatchFinancialInfo.empty(),
   Future<void> Function(String)? onDispute,
+  Future<void> Function()? onResign,
+  Future<void> Function()? onOfferDraw,
+  Future<void> Function()? onAcceptDraw,
+  Future<void> Function()? onRejectDraw,
 }) {
   return MaterialApp(
     home: TicTacToeScreen(
@@ -47,11 +60,22 @@ Widget _wrap(
       lastRejection: null,
       onMove: onMove ?? (_) async {},
       onExit: () {},
+      onResign: onResign ?? () async {},
+      onOfferDraw: onOfferDraw ?? () async {},
+      onAcceptDraw: onAcceptDraw ?? () async {},
+      onRejectDraw: onRejectDraw ?? () async {},
       financial: financial,
       onDispute: onDispute,
     ),
   );
 }
+
+/// Scoped to `TicTacToeBoard`'s own cells — the action bar's "Resign"/
+/// "Offer draw" buttons (Phase 9) also render an `InkWell` internally,
+/// so an unscoped `find.byType(InkWell).at(n)` would hit those instead.
+Finder _boardCell(int index) => find
+    .descendant(of: find.byType(TicTacToeBoard), matching: find.byType(InkWell))
+    .at(index);
 
 void main() {
   group('TicTacToeScreen', () {
@@ -83,7 +107,7 @@ void main() {
           ),
         );
 
-        await tester.tap(find.byType(InkWell).at(0));
+        await tester.tap(_boardCell(0));
         await tester.pump();
 
         expect(movedCell, 0);
@@ -150,7 +174,7 @@ void main() {
         ),
       );
 
-      await tester.tap(find.byType(InkWell).at(8));
+      await tester.tap(_boardCell(8));
       await tester.pump();
 
       expect(movedCell, isNull);
@@ -355,5 +379,159 @@ void main() {
         );
       },
     );
+
+    group('resignation and draw offers (Phase 9)', () {
+      testWidgets(
+        'shows Resign/Offer draw while active, hides them once finished',
+        (tester) async {
+          await tester.pumpWidget(_wrap(_match()));
+          expect(find.text('Resign'), findsOneWidget);
+          expect(find.text('Offer draw'), findsOneWidget);
+
+          await tester.pumpWidget(
+            _wrap(_match(status: 'COMPLETED', winnerUserId: 'user-1')),
+          );
+          expect(find.text('Resign'), findsNothing);
+          expect(find.text('Offer draw'), findsNothing);
+        },
+      );
+
+      testWidgets('hides each action when the game does not support it', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _wrap(_match(supportsResignation: false, supportsDraws: false)),
+        );
+        expect(find.text('Resign'), findsNothing);
+        expect(find.text('Offer draw'), findsNothing);
+      });
+
+      testWidgets('resigning requires confirmation before calling onResign', (
+        tester,
+      ) async {
+        var resignCalled = false;
+        await tester.pumpWidget(
+          _wrap(
+            _match(),
+            onResign: () async {
+              resignCalled = true;
+            },
+          ),
+        );
+
+        await tester.tap(find.text('Resign'));
+        await tester.pumpAndSettle();
+        expect(find.text('Resign this match?'), findsOneWidget);
+        expect(resignCalled, isFalse);
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Resign'));
+        await tester.pumpAndSettle();
+        expect(resignCalled, isTrue);
+      });
+
+      testWidgets('cancelling the resign confirmation does not call onResign', (
+        tester,
+      ) async {
+        var resignCalled = false;
+        await tester.pumpWidget(
+          _wrap(
+            _match(),
+            onResign: () async {
+              resignCalled = true;
+            },
+          ),
+        );
+
+        await tester.tap(find.text('Resign'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+
+        expect(resignCalled, isFalse);
+      });
+
+      testWidgets(
+        'tapping Offer draw calls onOfferDraw directly, no confirmation',
+        (tester) async {
+          var offerCalled = false;
+          await tester.pumpWidget(
+            _wrap(
+              _match(),
+              onOfferDraw: () async {
+                offerCalled = true;
+              },
+            ),
+          );
+
+          await tester.tap(find.text('Offer draw'));
+          await tester.pump();
+          expect(offerCalled, isTrue);
+        },
+      );
+
+      testWidgets(
+        "shows the opponent's offer with Accept/Decline, and Accept calls onAcceptDraw",
+        (tester) async {
+          var acceptCalled = false;
+          await tester.pumpWidget(
+            _wrap(
+              _match(pendingDrawOfferByUserId: 'user-2'),
+              onAcceptDraw: () async {
+                acceptCalled = true;
+              },
+            ),
+          );
+
+          expect(find.text('Your opponent offered a draw'), findsOneWidget);
+          expect(find.text('Accept'), findsOneWidget);
+          expect(find.text('Decline'), findsOneWidget);
+          // The action bar is replaced, not merely hidden, while an offer
+          // is pending — there is nothing to "offer" again mid-offer.
+          expect(find.text('Offer draw'), findsNothing);
+
+          await tester.tap(find.text('Accept'));
+          await tester.pump();
+          expect(acceptCalled, isTrue);
+        },
+      );
+
+      testWidgets(
+        "shows the viewer's own pending offer with a Cancel action calling onRejectDraw",
+        (tester) async {
+          var rejectCalled = false;
+          await tester.pumpWidget(
+            _wrap(
+              _match(pendingDrawOfferByUserId: 'user-1'),
+              onRejectDraw: () async {
+                rejectCalled = true;
+              },
+            ),
+          );
+
+          expect(
+            find.text('Draw offer sent — waiting for your opponent'),
+            findsOneWidget,
+          );
+          expect(find.text('Cancel'), findsOneWidget);
+
+          await tester.tap(find.text('Cancel'));
+          await tester.pump();
+          expect(rejectCalled, isTrue);
+        },
+      );
+
+      testWidgets('shows a live countdown next to the turn text', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _wrap(
+            _match(
+              turnDeadlineAt: DateTime.now().add(const Duration(seconds: 42)),
+            ),
+          ),
+        );
+        expect(find.textContaining('s left)'), findsOneWidget);
+      });
+    });
   });
 }

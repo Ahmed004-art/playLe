@@ -295,6 +295,69 @@ describe('Matchmaking (e2e, real Redis)', () => {
     },
   );
 
+  describe('interrupted matchmaking recovery (Phase 9 — ADR-024)', () => {
+    it(
+      'safely re-queues a still-free popped player when the other popped ' +
+        'player turned out to already hold a conflicting match formed via ' +
+        'a different path (a direct challenge) while queued',
+      async () => {
+        const a = await registerUser('mmstalea');
+        const b = await registerUser('mmstaleb');
+        const challenger = await registerUser('mmstalechallenger');
+        const rescuer = await registerUser('mmstalerescuer');
+
+        // a joins the free-play queue and stays alone — genuinely QUEUED
+        // in Redis.
+        const aJoin = await join(a.accessToken).expect(200);
+        expect(aJoin.body.status).toBe('QUEUED');
+
+        // While still queued, a separately forms a real match via a
+        // direct challenge — Redis has no idea this happened; this is
+        // exactly the "Redis and Postgres are different consistency
+        // boundaries" scenario ADR-024 documents.
+        const challenge = await request(app.getHttpServer())
+          .post('/api/v1/challenges')
+          .set('Authorization', `Bearer ${challenger.accessToken}`)
+          .send({ gameId: 'tic_tac_toe', opponentUserId: a.userId })
+          .expect(201);
+        await request(app.getHttpServer())
+          .post(`/api/v1/challenges/${challenge.body.id}/accept`)
+          .set('Authorization', `Bearer ${a.accessToken}`)
+          .expect(200);
+
+        // b now joins — the Lua script still sees a's stale queue entry
+        // and pops [a, b] together. createMatchGuarded's Postgres-side
+        // check (not Redis) catches a's real conflict and rolls back.
+        const bJoin = await join(b.accessToken).expect(200);
+        expect(bJoin.body.status).toBe('QUEUED');
+
+        // b — genuinely still free — was safely recovered and re-queued,
+        // not silently dropped: a third player joining now matches b.
+        const rescuerJoin = await join(rescuer.accessToken).expect(200);
+        expect(rescuerJoin.body.status).toBe('MATCHED');
+
+        const match = await prisma.match.findUnique({
+          where: { id: rescuerJoin.body.matchId },
+          include: { players: true },
+        });
+        expect(match?.players.map((p) => p.userId).sort()).toEqual(
+          [b.userId, rescuer.userId].sort(),
+        );
+
+        // a was correctly excluded from the requeue (a genuinely already
+        // has a match) — a has exactly one match, not left duplicated or
+        // stuck mid-formation.
+        const aMatches = await prisma.matchPlayer.count({
+          where: {
+            userId: a.userId,
+            match: { status: { in: ['WAITING', 'READY', 'ACTIVE'] } },
+          },
+        });
+        expect(aMatches).toBe(1);
+      },
+    );
+  });
+
   describe('staked matchmaking — equal-stake enforcement by construction', () => {
     it('never pairs joins requesting different stake amounts', async () => {
       const admin = await registerUser('stakeadmin');

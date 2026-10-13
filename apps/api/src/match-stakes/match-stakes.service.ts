@@ -176,7 +176,7 @@ export class MatchStakesService {
 
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
-      select: { status: true },
+      select: { status: true, gameId: true },
     });
     if (!match || match.status !== 'WAITING') {
       throw new UnprocessableEntityException(
@@ -241,9 +241,24 @@ export class MatchStakesService {
         // Another concurrent confirm already finished this transition.
         return null;
       }
+      // Starts the turn clock the instant the match actually becomes
+      // playable (Phase 9 — ADR-024), not at `WAITING` creation time,
+      // since no one can move until every stake is held.
+      const game = await tx.game.findUnique({
+        where: { id: match.gameId },
+        select: { turnTimeoutSeconds: true },
+      });
+      const turnDeadlineAt = game?.turnTimeoutSeconds
+        ? new Date(now.getTime() + game.turnTimeoutSeconds * 1000)
+        : null;
       return tx.match.update({
         where: { id: matchId },
-        data: { status: 'ACTIVE', readyAt: now, startedAt: now },
+        data: {
+          status: 'ACTIVE',
+          readyAt: now,
+          startedAt: now,
+          turnDeadlineAt,
+        },
       });
     });
 

@@ -79,8 +79,8 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 8 — Server-Enforced Responsible Gaming &
-Financial Safety.**
+**Current phase: Phase 9 — Match Lifecycle Integrity, Matchmaking
+Correctness & Game Result Semantics.**
 See `docs/development/WORKFLOW.md` for the phase pipeline,
 [ADR-019](docs/decisions/ADR-019-production-payments.md) for the real
 Monime payment/payout/webhook/reconciliation architecture,
@@ -90,38 +90,44 @@ cookies, CSRF, password reset, verification, and MFA,
 for the centralized real-money eligibility and responsible-gaming
 foundation, [ADR-022](docs/decisions/ADR-022-checkers-game-module.md)
 for the Checkers rules engine and the shared mobile game design system,
-and [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md)
-for the real, server-enforced rolling-window spending/loss-limit
-semantics implemented this phase. See
+[ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md)
+for the Phase 8 rolling-window spending/loss-limit semantics, and
+[ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md) for this
+phase's duplicate-match prevention, server-authoritative turn timers,
+resign/draw-offer commands, and terminal-outcome semantics. See
 `docs/development/OUTSTANDING_WORK.md` for the durable, cross-phase
 register of everything still open (Monime webhook signature
-verification, business eligibility, no turn timer, and more — nothing
-here is closed just because a later phase shipped).
+verification, business eligibility, the Phase 8 deposit-limit
+concurrency limitation, and more — nothing here is closed just because
+a later phase shipped).
 
 Phase 1 (foundation), Phase 2 (identity/authentication), Phase 3
 (wallet/ledger/financial foundation), Phase 4 (game platform/
 matchmaking/real-time), Phase 5 (match stakes, settlement, disputes,
 reconciliation), Phase 6 (production Monime integration, admin/mobile
-account security, eligibility/responsible-gaming foundations), and
-Phase 7 (repository audit, shared mobile game design system, Checkers)
-are complete. Phase 8's backend work — real rolling-window
-`STAKE_LIMIT`/`DEPOSIT_LIMIT`/`LOSS_LIMIT` enforcement inside
-`EligibilityService`, enforced from inside `MatchStakesService.confirmStake`'s
-existing wallet-locked transaction and from `DepositsService.create`; a
-fixed, non-user-configurable rolling-window length
-(`RESPONSIBLE_GAMING_WINDOW_HOURS`); a previously-unchecked opponent-side
-eligibility gap in `ChallengesService.accept` fixed; a new
-`RESPONSIBLE_GAMING_LIMIT_REACHED` notification; and new
-`GET /auth/responsible-gaming/usage` / `GET /admin/responsible-gaming/:userId/usage`
-read endpoints — is implemented and tested (see ADR-023 and the Phase 8
-report for exact test counts, verification results, and the CI run
-URL). The mobile responsible-gaming screen now shows real rolling-window
-usage against each configured limit, and a new read-only admin
-Responsible Gaming page (`/responsible-gaming`) exposes the same
-restriction history and usage by user ID. This phase did not implement
-another game, change the 10% settlement-fee calculation, alter the
-immutable-ledger model, add any self-exclusion-lift path, or enable
-real-money gaming/production payments.
+account security, eligibility/responsible-gaming foundations), Phase 7
+(repository audit, shared mobile game design system, Checkers), and
+Phase 8 (server-enforced rolling-window responsible-gaming limits) are
+complete. Phase 9 closed five previously-tracked outstanding-work items
+(13-17): a real, server-authoritative turn/move timer
+(`Game.turnTimeoutSeconds`/`Match.turnDeadlineAt`, enforced by
+`MatchTimeoutService.processTurnTimeout` under the same row lock
+`MatchesService.submitCommand` already uses, so a move racing a timeout
+can never both win); matchmaking's `WAITING`-blind duplicate-match check
+fixed via a new `MatchesService.createMatchGuarded` (sorted Postgres
+advisory transaction locks closing the race between matchmaking and
+challenge-accept sharing a user, with explicit stale-queue recovery
+when Redis and Postgres disagree); resign and draw-offer commands
+(`MatchCommand.type` now accepts `RESIGN`/`DRAW_OFFER`/`DRAW_ACCEPT`/
+`DRAW_REJECT` alongside `MOVE`, all through the same locked transaction
+as a move); and richer terminal-outcome semantics via three new
+`MatchTerminationReason` values (`RESIGNATION`/`TURN_TIMEOUT`/
+`DRAW_AGREED`) rather than any change to the binary `GameResult`
+interface or `SettlementService`. See ADR-024 and the Phase 9 report
+for exact test counts, verification results, and the CI run URL. This
+phase did not implement another game, change the 10% settlement-fee
+calculation, alter the immutable-ledger model, or enable real-money
+gaming/production payments.
 
 ## Repository Structure
 

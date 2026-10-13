@@ -292,14 +292,11 @@ describe('Responsible-gaming rolling-window limits (e2e)', () => {
 
       await setStakeLimit(x.accessToken, '1500');
 
-      // Create and accept *both* staked challenges (against two
-      // different opponents, so the "duplicate pending challenge"
-      // check doesn't interfere) before confirming either — at
-      // creation time neither has actually held anything yet, so the
-      // early (advisory) check in `validateStakeRequest` doesn't see a
-      // rolling total above the limit for either. This isolates the
-      // thing actually being tested here: the *authoritative*,
-      // lock-based check inside `confirmStake` itself.
+      // First stake: 1000 — within the 1500 rolling limit. Played to a
+      // finish (Phase 9 — a user can hold at most one WAITING/ACTIVE
+      // match at a time; see ADR-024), which frees x to enter a second
+      // one below. The rolling STAKE_HOLD sum is unaffected by the match
+      // completing — it reads ledger history, not current match status.
       const challenge1 = await request(app.getHttpServer())
         .post('/api/v1/challenges')
         .set('Authorization', `Bearer ${x.accessToken}`)
@@ -309,7 +306,23 @@ describe('Responsible-gaming rolling-window limits (e2e)', () => {
           stake: { amountMinor: '1000', currency: 'SLE' },
         })
         .expect(201);
-      const challenge2 = await request(app.getHttpServer())
+      const accepted1 = await request(app.getHttpServer())
+        .post(`/api/v1/challenges/${challenge1.body.id}/accept`)
+        .set('Authorization', `Bearer ${o1.accessToken}`)
+        .expect(200);
+      await confirmStake(x.accessToken, accepted1.body.matchId).expect(200);
+      await confirmStake(o1.accessToken, accepted1.body.matchId).expect(200);
+      await playToWin(accepted1.body.matchId, x, o1);
+
+      // Second stake: another 1000 would bring the rolling total to
+      // 2000, over the 1500 limit. The first match's STAKE_HOLD entry
+      // is already in ledger history by this point (settled, not just
+      // held), so even the *advisory* check at challenge-creation time
+      // (`validateStakeRequest`, which runs the same rolling-sum logic
+      // as the authoritative check) correctly rejects it immediately —
+      // there's no need to get as far as accept/confirm to prove the
+      // rolling limit is enforced.
+      await request(app.getHttpServer())
         .post('/api/v1/challenges')
         .set('Authorization', `Bearer ${x.accessToken}`)
         .send({
@@ -317,86 +330,77 @@ describe('Responsible-gaming rolling-window limits (e2e)', () => {
           opponentUserId: o2.userId,
           stake: { amountMinor: '1000', currency: 'SLE' },
         })
-        .expect(201);
-      const accepted1 = await request(app.getHttpServer())
-        .post(`/api/v1/challenges/${challenge1.body.id}/accept`)
-        .set('Authorization', `Bearer ${o1.accessToken}`)
-        .expect(200);
-      const accepted2 = await request(app.getHttpServer())
-        .post(`/api/v1/challenges/${challenge2.body.id}/accept`)
-        .set('Authorization', `Bearer ${o2.accessToken}`)
-        .expect(200);
+        .expect(403);
 
-      // First stake: 1000 — within the 1500 rolling limit.
-      await confirmStake(x.accessToken, accepted1.body.matchId).expect(200);
-      await confirmStake(o1.accessToken, accepted1.body.matchId).expect(200);
-
-      // Second stake: another 1000 would bring the rolling total to
-      // 2000, over the 1500 limit — rejected at confirm time.
-      await confirmStake(x.accessToken, accepted2.body.matchId).expect(403);
-
-      // The rejected confirm must not have held any money.
+      // Nothing new was held — the first match already settled and
+      // released its own hold.
       const wallet = await prisma.wallet.findUniqueOrThrow({
         where: { userId: x.userId },
       });
-      expect(wallet.heldBalanceMinor).toBe(1000n); // only the first match's hold
+      expect(wallet.heldBalanceMinor).toBe(0n);
     });
 
-    it('two concurrent confirmStake calls for the same user cannot collectively bypass the limit', async () => {
-      const x = await registerUser('rsl3x');
-      const o1 = await registerUser('rsl3o1');
-      const o2 = await registerUser('rsl3o2');
-      const admin = await registerUser('rsl3a');
-      await makeAdmin(admin.userId);
-      await creditViaAdmin(admin.accessToken, x.userId, '100000');
-      await creditViaAdmin(admin.accessToken, o1.userId, '100000');
-      await creditViaAdmin(admin.accessToken, o2.userId, '100000');
+    it(
+      'two staked challenges accepted concurrently by the same user cannot ' +
+        'both form a match — the advisory-lock guard (Phase 9, ADR-024) ' +
+        'closes this before the rolling-stake-limit check even runs twice',
+      async () => {
+        const x = await registerUser('rsl3x');
+        const o1 = await registerUser('rsl3o1');
+        const o2 = await registerUser('rsl3o2');
+        const admin = await registerUser('rsl3a');
+        await makeAdmin(admin.userId);
+        await creditViaAdmin(admin.accessToken, x.userId, '100000');
+        await creditViaAdmin(admin.accessToken, o1.userId, '100000');
+        await creditViaAdmin(admin.accessToken, o2.userId, '100000');
 
-      // Limit 1500; two separate 1000 stakes would total 2000 if both
-      // were allowed — only one may succeed, regardless of the order
-      // the two concurrent requests are actually processed in.
-      await setStakeLimit(x.accessToken, '1500');
+        await setStakeLimit(x.accessToken, '1500');
 
-      async function setUpWaitingMatch(opponent: {
-        accessToken: string;
-        userId: string;
-      }): Promise<string> {
-        const challenge = await request(app.getHttpServer())
-          .post('/api/v1/challenges')
-          .set('Authorization', `Bearer ${x.accessToken}`)
-          .send({
-            gameId: 'tic_tac_toe',
-            opponentUserId: opponent.userId,
-            stake: { amountMinor: '1000', currency: 'SLE' },
-          })
-          .expect(201);
-        const accepted = await request(app.getHttpServer())
-          .post(`/api/v1/challenges/${challenge.body.id}/accept`)
-          .set('Authorization', `Bearer ${opponent.accessToken}`)
-          .expect(200);
-        // Hold the opponent's side now so only x's confirm is contested.
-        await confirmStake(opponent.accessToken, accepted.body.matchId).expect(
+        async function createChallengeFor(opponent: {
+          userId: string;
+        }): Promise<string> {
+          const challenge = await request(app.getHttpServer())
+            .post('/api/v1/challenges')
+            .set('Authorization', `Bearer ${x.accessToken}`)
+            .send({
+              gameId: 'tic_tac_toe',
+              opponentUserId: opponent.userId,
+              stake: { amountMinor: '1000', currency: 'SLE' },
+            })
+            .expect(201);
+          return challenge.body.id as string;
+        }
+
+        const challengeIdA = await createChallengeFor(o1);
+        const challengeIdB = await createChallengeFor(o2);
+
+        const [resA, resB] = await Promise.all([
+          request(app.getHttpServer())
+            .post(`/api/v1/challenges/${challengeIdA}/accept`)
+            .set('Authorization', `Bearer ${o1.accessToken}`),
+          request(app.getHttpServer())
+            .post(`/api/v1/challenges/${challengeIdB}/accept`)
+            .set('Authorization', `Bearer ${o2.accessToken}`),
+        ]);
+
+        // Exactly one accept formed a real match for x; the other was
+        // rejected before ever reaching a financial operation — there is
+        // only ever one stake for the rolling-limit check to see, by
+        // construction, not by a race it has to win.
+        const statuses = [resA.status, resB.status].sort();
+        expect(statuses).toEqual([200, 409]);
+
+        const winner = resA.status === 200 ? resA : resB;
+        await confirmStake(x.accessToken, winner.body.matchId as string).expect(
           200,
         );
-        return accepted.body.matchId as string;
-      }
 
-      const matchIdA = await setUpWaitingMatch(o1);
-      const matchIdB = await setUpWaitingMatch(o2);
-
-      const [resA, resB] = await Promise.all([
-        confirmStake(x.accessToken, matchIdA),
-        confirmStake(x.accessToken, matchIdB),
-      ]);
-
-      const statuses = [resA.status, resB.status].sort();
-      expect(statuses).toEqual([200, 403]);
-
-      const wallet = await prisma.wallet.findUniqueOrThrow({
-        where: { userId: x.userId },
-      });
-      expect(wallet.heldBalanceMinor).toBe(1000n); // exactly one hold went through
-    });
+        const wallet = await prisma.wallet.findUniqueOrThrow({
+          where: { userId: x.userId },
+        });
+        expect(wallet.heldBalanceMinor).toBe(1000n); // exactly one hold
+      },
+    );
   });
 
   describe('rolling loss limit', () => {
@@ -653,8 +657,17 @@ describe('Responsible-gaming rolling-window limits (e2e)', () => {
 
   describe('rolling-window boundary', () => {
     it('ignores a stake-hold ledger entry older than the configured window', async () => {
-      const { matchId, x } = await createActiveStakedMatch('win1', '1000');
-      void matchId;
+      const {
+        matchId,
+        x,
+        o: firstOpponent,
+      } = await createActiveStakedMatch('win1', '1000');
+      // Finish the first match (Phase 9 — a user can hold at most one
+      // WAITING/ACTIVE match at a time; see ADR-024) so x is free to
+      // enter a second one below. The original STAKE_HOLD ledger entry
+      // this test cares about persists in ledger history regardless of
+      // the match completing — the immutable ledger is never rewritten.
+      await playToWin(matchId, x, firstOpponent);
 
       // Push the already-recorded STAKE_HOLD entry outside the rolling
       // window by backdating it directly (mirrors the existing

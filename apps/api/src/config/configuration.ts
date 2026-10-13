@@ -72,6 +72,13 @@ export interface AppConfiguration {
     challengeExpiryMs: number;
     abandonGraceMs: number;
     timeoutSweepIntervalMs: number;
+    /**
+     * How long a draw offer (Phase 9 — ADR-024) stays open before it's
+     * treated as expired. A platform-level UX concern, not a game rule
+     * — unlike the turn clock, this is one global config value, not a
+     * per-game catalog column.
+     */
+    drawOfferTimeoutMs: number;
   };
   stakes: {
     /**
@@ -191,6 +198,10 @@ export default (): AppConfiguration => ({
     abandonGraceMs: parseInt(process.env.MATCH_ABANDON_GRACE_MS ?? '30000', 10),
     timeoutSweepIntervalMs: parseInt(
       process.env.MATCH_TIMEOUT_SWEEP_INTERVAL_MS ?? '10000',
+      10,
+    ),
+    drawOfferTimeoutMs: parseInt(
+      process.env.MATCH_DRAW_OFFER_TIMEOUT_MS ?? '60000',
       10,
     ),
   },

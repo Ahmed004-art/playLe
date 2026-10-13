@@ -1,14 +1,17 @@
 # Game Engine Architecture
 
 **Implemented as of Phase 4; proven against a second, materially
-different game as of Phase 7.** This document originally described the
-intended architecture before any game logic existed (Phase 1); the
-conceptual model below held up and is now the real, running
-implementation, refined into a concrete contract — see
+different game as of Phase 7; lifecycle integrity (turn timers, resign/
+draw-offer, duplicate-match prevention, terminal-outcome semantics)
+added as of Phase 9.** This document originally described the intended
+architecture before any game logic existed (Phase 1); the conceptual
+model below held up and is now the real, running implementation,
+refined into a concrete contract — see
 [ADR-015](../decisions/ADR-015-game-module-architecture.md) for the exact
-interface and [ADR-014](../decisions/ADR-014-realtime-command-transport.md)
-for how a player's move actually reaches the server. Tic-Tac-Toe (Phase
-4) and Checkers (Phase 7, see
+interface, [ADR-014](../decisions/ADR-014-realtime-command-transport.md)
+for how a player's move actually reaches the server, and
+[ADR-024](../decisions/ADR-024-match-lifecycle-integrity.md) for the
+Phase 9 lifecycle work. Tic-Tac-Toe (Phase 4) and Checkers (Phase 7, see
 [ADR-022](../decisions/ADR-022-checkers-game-module.md)) are both
 implemented end-to-end through the exact same contract, with zero
 changes to `GameRegistry`, `MatchesService`, matchmaking, challenges, or
@@ -75,16 +78,25 @@ interface GameModule<TState = unknown, TMove = unknown> {
   readonly version: number;
   readonly minPlayers: number;
   readonly maxPlayers: number;
+  readonly supportsResignation: boolean; // Phase 9 — ADR-024
+  readonly supportsDraws: boolean;       // Phase 9 — ADR-024
   createInitialState(playerUserIds: string[]): TState;
   currentTurnUserId(state: TState): string | null;
   validateMove(state: TState, userId: string, move: unknown): MoveValidationResult;
   applyMove(state: TState, userId: string, move: TMove): TState;
   isFinished(state: TState): boolean;
-  getResult(state: TState): GameResult | null; // winner(s)/draw, for future prize-pool settlement
+  getResult(state: TState): GameResult | null; // winner(s)/draw, for prize-pool settlement
   serializeState(state: TState): Prisma.JsonValue;
   deserializeState(json: Prisma.JsonValue): TState;
 }
 ```
+
+`GameResult` itself stays intentionally binary
+(`{ winnerUserId, isDraw }`) — Phase 9 needed to represent resignation/
+timeout/agreed-draw at the platform level, and did so by extending the
+*existing* `Match.terminationReason` column instead (see ADR-024): the
+board-level result and the platform-level "how did it end" are a
+deliberate separation of concerns, not an oversight.
 
 A `GameRegistry` (DI multi-provider token `GAME_MODULES`) collects every
 bound module into a `Map<gameId, GameModule>`. `MatchesService` is the

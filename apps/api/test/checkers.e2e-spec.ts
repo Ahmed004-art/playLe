@@ -445,6 +445,82 @@ describe('Checkers (e2e)', () => {
       expect(finalMatch.body.state.currentTurn).toBe(o.userId);
     });
 
+    it('a forced multi-jump refreshes the turn clock on each jump, rather than expiring mid-chain (Phase 9 — ADR-024)', async () => {
+      const { matchId, x, o } = await createActiveMatch('ckmultijumptimer');
+      const board = emptyBoard();
+      board[2][1] = { owner: x.userId, king: false };
+      board[3][2] = { owner: o.userId, king: false };
+      board[5][4] = { owner: o.userId, king: false };
+      // A third, uninvolved o piece — otherwise capturing both of the
+      // pieces above would immediately win the game by no-remaining-
+      // pieces, leaving nothing left to test o's own post-chain timeout.
+      board[7][6] = { owner: o.userId, king: false };
+      await setState(matchId, {
+        board,
+        playerOrder: [x.userId, o.userId],
+        currentTurn: x.userId,
+        mustContinueFrom: null,
+        movesSinceProgress: 0,
+        winnerUserId: null,
+        isDraw: false,
+      });
+
+      // Simulate the clock having already run out *before* x's first
+      // jump of the chain — a move is still honored if it commits before
+      // the sweep catches up (the sweep, not the move itself, is the
+      // sole arbiter of expiry).
+      await prisma.match.update({
+        where: { id: matchId },
+        data: { turnDeadlineAt: new Date(Date.now() - 1000) },
+      });
+
+      const firstJump = await move(
+        x.accessToken,
+        matchId,
+        { row: 2, col: 1 },
+        { row: 4, col: 3 },
+      ).expect(200);
+      expect(firstJump.body.resultStatus).toBe('ACCEPTED');
+
+      // The accepted jump refreshed the deadline — it's no longer stale,
+      // even though x (not the opponent) still holds the turn mid-chain.
+      const midMatch = await getMatch(x.accessToken, matchId).expect(200);
+      expect(new Date(midMatch.body.turnDeadlineAt).getTime()).toBeGreaterThan(
+        Date.now(),
+      );
+
+      // So the sweep correctly finds nothing to expire mid-continuation.
+      await matchTimeoutService.processTurnTimeout(matchId);
+      const stillActive = await getMatch(x.accessToken, matchId).expect(200);
+      expect(stillActive.body.status).toBe('ACTIVE');
+      expect(stillActive.body.state.mustContinueFrom).toEqual({
+        row: 4,
+        col: 3,
+      });
+
+      const secondJump = await move(
+        x.accessToken,
+        matchId,
+        { row: 4, col: 3 },
+        { row: 6, col: 5 },
+      ).expect(200);
+      expect(secondJump.body.resultStatus).toBe('ACCEPTED');
+
+      // The chain ended and the turn passed to o — their own deadline is
+      // still a real, bounded window, not an indefinite grace period
+      // just because a multi-jump happened before them.
+      await prisma.match.update({
+        where: { id: matchId },
+        data: { turnDeadlineAt: new Date(Date.now() - 1000) },
+      });
+      await matchTimeoutService.processTurnTimeout(matchId);
+
+      const final = await getMatch(x.accessToken, matchId).expect(200);
+      expect(final.body.status).toBe('COMPLETED');
+      expect(final.body.winnerUserId).toBe(x.userId);
+      expect(final.body.terminationReason).toBe('TURN_TIMEOUT');
+    });
+
     it('promotes a man that reaches the far row', async () => {
       const { matchId, x } = await createActiveMatch('ckpromote');
       const board = emptyBoard();

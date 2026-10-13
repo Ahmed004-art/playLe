@@ -38,6 +38,8 @@ export class CheckersModule implements GameModule<CheckersState, CheckersMove> {
   readonly version = 1;
   readonly minPlayers = 2;
   readonly maxPlayers = 2;
+  readonly supportsResignation = true;
+  readonly supportsDraws = true;
 
   createInitialState(playerUserIds: string[]): CheckersState {
     if (playerUserIds.length !== 2) {

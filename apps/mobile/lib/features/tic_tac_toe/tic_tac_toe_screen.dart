@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/match/match_models.dart';
 import '../../core/match/widgets/financial_result_banner.dart';
+import '../../core/match/widgets/match_action_bar.dart';
 import '../../core/match/widgets/match_result_banner.dart';
 import '../../core/match/widgets/match_stake_status_bar.dart';
 import '../../core/match/widgets/match_status_bar.dart';
@@ -28,6 +29,10 @@ class TicTacToeScreen extends StatefulWidget {
     required this.lastRejection,
     required this.onMove,
     required this.onExit,
+    required this.onResign,
+    required this.onOfferDraw,
+    required this.onAcceptDraw,
+    required this.onRejectDraw,
     this.financial = const MatchFinancialInfo.empty(),
     this.onDispute,
   });
@@ -37,6 +42,13 @@ class TicTacToeScreen extends StatefulWidget {
   final String? lastRejection;
   final Future<void> Function(int cell) onMove;
   final VoidCallback onExit;
+
+  /// Resign/draw-offer actions (Phase 9 — ADR-024) — shown/hidden per
+  /// `match.supportsResignation`/`supportsDraws`, never assumed.
+  final Future<void> Function() onResign;
+  final Future<void> Function() onOfferDraw;
+  final Future<void> Function() onAcceptDraw;
+  final Future<void> Function() onRejectDraw;
 
   /// This match's stake/settlement, if any. Defaults to the "nothing
   /// financial here" shape, so every pre-Phase-5 call site (and every
@@ -77,6 +89,21 @@ class _TicTacToeScreenState extends State<TicTacToeScreen> {
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    setState(() => _submitting = true);
+    try {
+      await action();
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _handleResign() async {
+    final confirmed = await showResignConfirmationDialog(context);
+    if (!confirmed || !mounted) return;
+    await _run(widget.onResign);
   }
 
   @override
@@ -134,10 +161,29 @@ class _TicTacToeScreenState extends State<TicTacToeScreen> {
                 opponentConnected: opponent.connected,
                 isMyTurn: isMyTurn,
                 finished: match.isFinished,
+                turnDeadlineAt: match.turnDeadlineAt,
               ),
               if (widget.financial.isFinanciallyBacked) ...[
                 const SizedBox(height: AppSpacing.sm),
                 MatchStakeStatusBar(stake: widget.financial.stake!),
+              ],
+              if (!match.isFinished) ...[
+                if (match.pendingDrawOfferByUserId != null)
+                  DrawOfferBanner(
+                    isMine:
+                        match.pendingDrawOfferByUserId == widget.currentUserId,
+                    busy: _submitting,
+                    onAccept: () => _run(widget.onAcceptDraw),
+                    onReject: () => _run(widget.onRejectDraw),
+                  )
+                else
+                  MatchActionBar(
+                    supportsResignation: match.supportsResignation,
+                    supportsDraws: match.supportsDraws,
+                    busy: _submitting,
+                    onResign: _handleResign,
+                    onOfferDraw: () => _run(widget.onOfferDraw),
+                  ),
               ],
               const SizedBox(height: AppSpacing.xl),
               Expanded(

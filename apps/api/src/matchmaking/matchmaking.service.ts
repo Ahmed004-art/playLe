@@ -68,11 +68,24 @@ export class MatchmakingService {
     const userId = user.id;
     const game = await this.gamesService.findEnabledById(gameId);
 
+    // Includes WAITING/READY, not just ACTIVE (Phase 9 — ADR-024, fixes
+    // outstanding-work item 14): a staked match still waiting on stake
+    // confirmation is exactly as conflicting as an active one — a user
+    // mid-confirmation on one match must not be able to queue into a
+    // second. The authoritative, race-safe version of this same check
+    // runs again inside `createMatchGuarded` right before a match is
+    // actually formed; this earlier check is advisory (fast, friendly
+    // rejection), not the correctness mechanism.
     const alreadyInMatch = await this.prisma.matchPlayer.findFirst({
-      where: { userId, match: { status: 'ACTIVE' } },
+      where: {
+        userId,
+        match: { status: { in: ['WAITING', 'READY', 'ACTIVE'] } },
+      },
     });
     if (alreadyInMatch) {
-      throw new ConflictException('You are already in an active match');
+      throw new ConflictException(
+        'You are already in an active or pending match',
+      );
     }
 
     const stake = stakeRequest
@@ -106,12 +119,44 @@ export class MatchmakingService {
 
     await redis.hdel(QUEUED_USERS_KEY, ...popped);
 
-    const match = await this.matchesService.createMatch(
-      game,
-      popped,
-      undefined,
-      stake,
-    );
+    let match;
+    try {
+      match = await this.prisma.$transaction((tx) =>
+        this.matchesService.createMatchGuarded(game, popped, tx, stake),
+      );
+    } catch (error) {
+      if (!(error instanceof ConflictException)) throw error;
+      // Redis and Postgres are different consistency boundaries (ADR-024)
+      // — the Lua pop above already removed `popped` from the queue, but
+      // one of them turned out to already hold a WAITING/READY/ACTIVE
+      // match by the time `createMatchGuarded`'s Postgres-side check ran
+      // (formed via a different path in between). Rather than silently
+      // dropping the others, safely re-queue whoever is genuinely still
+      // free so an unrelated player's matchmaking attempt isn't lost to
+      // someone else's race.
+      const stillFree: string[] = [];
+      for (const candidateUserId of popped) {
+        const conflict = await this.prisma.matchPlayer.findFirst({
+          where: {
+            userId: candidateUserId,
+            match: { status: { in: ['WAITING', 'READY', 'ACTIVE'] } },
+          },
+        });
+        if (!conflict) stillFree.push(candidateUserId);
+      }
+      if (stillFree.length > 0) {
+        await redis.lpush(queueKey, ...[...stillFree].reverse());
+        for (const freeUserId of stillFree) {
+          await redis.hsetnx(QUEUED_USERS_KEY, freeUserId, queueKey);
+        }
+      }
+      if (!stillFree.includes(userId)) {
+        throw new ConflictException(
+          'You are already in an active or pending match',
+        );
+      }
+      return { status: 'QUEUED' };
+    }
 
     for (const matchedUserId of popped) {
       await this.presenceService.set(matchedUserId, 'IN_MATCH').catch(() => {});

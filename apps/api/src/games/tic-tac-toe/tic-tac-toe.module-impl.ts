@@ -28,6 +28,8 @@ export class TicTacToeModule implements GameModule<
   readonly version = 1;
   readonly minPlayers = 2;
   readonly maxPlayers = 2;
+  readonly supportsResignation = true;
+  readonly supportsDraws = true;
 
   createInitialState(playerUserIds: string[]): TicTacToeState {
     if (playerUserIds.length !== 2) {
