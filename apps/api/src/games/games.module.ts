@@ -5,6 +5,8 @@ import { GameRegistry } from './game-registry.service.js';
 import { GAME_MODULES } from './contracts/game-module.interface.js';
 import { TicTacToeModule } from './tic-tac-toe/tic-tac-toe.module-impl.js';
 import { CheckersModule } from './checkers/checkers.module-impl.js';
+import { DiceModule } from './dice/dice.module-impl.js';
+import { CryptoDiceRng, DICE_RNG } from './dice/dice-rng.js';
 import { AuthModule } from '../auth/auth.module.js';
 
 /**
@@ -19,13 +21,16 @@ import { AuthModule } from '../auth/auth.module.js';
     GamesService,
     TicTacToeModule,
     CheckersModule,
+    { provide: DICE_RNG, useClass: CryptoDiceRng },
+    DiceModule,
     {
       provide: GAME_MODULES,
-      inject: [TicTacToeModule, CheckersModule],
-      useFactory: (ticTacToe: TicTacToeModule, checkers: CheckersModule) => [
-        ticTacToe,
-        checkers,
-      ],
+      inject: [TicTacToeModule, CheckersModule, DiceModule],
+      useFactory: (
+        ticTacToe: TicTacToeModule,
+        checkers: CheckersModule,
+        dice: DiceModule,
+      ) => [ticTacToe, checkers, dice],
     },
     GameRegistry,
   ],

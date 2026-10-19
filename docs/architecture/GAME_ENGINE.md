@@ -66,7 +66,7 @@ Clients
 
 ## Why a Common Rules Interface
 
-Every game (Tic-Tac-Toe and Checkers today; Dice, Penalty, Ice Hockey, a
+Every game (Tic-Tac-Toe, Checkers and Dice today; Penalty, Ice Hockey, a
 G-Switch-style game, Ludo, Find the Marble, and future games later)
 implements the same contract — the real, implemented
 `GameModule<TState, TMove>` interface
@@ -149,7 +149,13 @@ state. A free-play match (no stake) settles to nothing, by construction
 
 1. **Tic-Tac-Toe** — implemented (Phase 4), the reference game proving the
    `GameModule` contract end-to-end.
-2. Dice
+2. **Dice** — implemented (Phase 10), seeded disabled; see
+   [ADR-025](../decisions/ADR-025-dice-game-module.md). The first game
+   whose moves depend on randomness: it draws rolls from an injectable,
+   server-side CSPRNG inside `applyMove` (never client-supplied, never
+   stored ahead of time). That is a conventional secure RNG, not a
+   commit-reveal protocol — outcomes are not independently verifiable
+   by players, so Dice is not "provably fair".
 3. **Checkers** — implemented (Phase 7); see
    [ADR-022](../decisions/ADR-022-checkers-game-module.md).
 4. Penalty
@@ -158,8 +164,8 @@ state. A free-play match (no stake) settles to nothing, by construction
 7. Ludo
 8. Find the Marble
 
-2, 4-8 remain planned for later phases, built on the same `GameModule`
-contract Tic-Tac-Toe and Checkers already prove out.
+4-8 remain planned for later phases, built on the same `GameModule`
+contract Tic-Tac-Toe, Checkers and Dice already prove out.
 
 ## External Games (Future, Separate Concern)
 

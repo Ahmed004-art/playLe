@@ -79,8 +79,16 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 9 — Match Lifecycle Integrity, Matchmaking
-Correctness & Game Result Semantics.**
+**Current phase: Phase 10 — Dice.** Phase 10 builds **Dice only**: the
+platform's third game, a new `GameModule` with no platform change (see
+[ADR-025](docs/decisions/ADR-025-dice-game-module.md)). Dice is seeded
+**disabled**, and implementing it is not authorization to launch it —
+least of all for real money, since it is a pure game of chance whose
+legal and payment-provider position is an open owner decision (see
+`docs/development/OUTSTANDING_WORK.md` item 20). Dice outcomes are
+server-generated and are **not** "provably fair" (no commit-reveal). The
+previous phase was Phase 9 — Match Lifecycle Integrity, Matchmaking
+Correctness & Game Result Semantics.
 See `docs/development/WORKFLOW.md` for the phase pipeline,
 [ADR-019](docs/decisions/ADR-019-production-payments.md) for the real
 Monime payment/payout/webhook/reconciliation architecture,
@@ -92,8 +100,8 @@ foundation, [ADR-022](docs/decisions/ADR-022-checkers-game-module.md)
 for the Checkers rules engine and the shared mobile game design system,
 [ADR-023](docs/decisions/ADR-023-rolling-window-responsible-gaming.md)
 for the Phase 8 rolling-window spending/loss-limit semantics, and
-[ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md) for this
-phase's duplicate-match prevention, server-authoritative turn timers,
+[ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md) for
+Phase 9's duplicate-match prevention, server-authoritative turn timers,
 resign/draw-offer commands, and terminal-outcome semantics. See
 `docs/development/OUTSTANDING_WORK.md` for the durable, cross-phase
 register of everything still open (Monime webhook signature
@@ -248,23 +256,23 @@ flutter test
 flutter build apk --debug
 ```
 
-## What NOT to Build Yet (Phase 7)
+## What NOT to Build Yet (Phase 10)
 
 Everything already listed as not-yet-built through Phase 6 remains
 not-yet-built — see `docs/development/OUTSTANDING_WORK.md` for the full,
 durable register (live Monime webhook verification, business-model
 eligibility, real email/SMS delivery, rolling-window spend/loss-limit
 enforcement, any self-exclusion-lift process, a general admin operations
-system beyond the narrow per-phase slices). Phase 7 itself explicitly
-does not include: Dice, Penalty, Ice Hockey, Ludo, Stickman-style
-gameplay, or Find the Marble (Checkers is this phase's only new game —
-see the Phase 7 master prompt §10); any new social-network system;
-any new payment provider or speculative Monime change; enabling
-production real-money gaming; and any unapproved change to established
-financial or responsible-gaming rules. A future game beyond Checkers is
-a new `GameModule` implementation (see ADR-015/ADR-022) — no platform
-change should be needed for one, and introducing one prematurely is
-explicitly out of scope here. See `README.md` roadmap for the full list.
+system beyond the narrow per-phase slices). Phase 10 builds Dice only (see ADR-025) and explicitly does not include:
+Penalty, Ice Hockey, Ludo, Stickman/G-Switch-style gameplay, or Find the
+Marble; any new social-network system; any new payment provider or
+speculative Monime change; enabling production real-money gaming (or
+enabling Dice itself — it ships disabled); a provably-fair/commit-reveal
+protocol; and any unapproved change to established financial or
+responsible-gaming rules. A future game beyond Dice is a new `GameModule`
+implementation (see ADR-015/ADR-022/ADR-025) — no platform change should
+be needed for one, and introducing one prematurely is explicitly out of
+scope here. See `README.md` roadmap for the full list.
 
 ## Stop Conditions
 
