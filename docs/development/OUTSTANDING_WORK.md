@@ -390,6 +390,46 @@ Checkers and Tic-Tac-Toe screens share these widgets but were covered by the
 widget matrix only, not rendered). The test font is ~2× wider than a real
 one, so this is a stricter bar than a device, but it is not a device check.
 
+### 26. Intermittent Backend e2e failure (stake-commit timeout) — possible partial-hold recovery gap
+**Status**: Open — **not reproduced; root cause not established.** **Evidence**:
+PR #2, run [39258189645](https://github.com/Ahmed004-art/playLe/actions/runs/39258189645)
+on `d510f26` (a documentation-only commit on top of `7a991a5`, whose run
+39256886098 passed with identical code): the Backend job failed in
+`apps/api/test/match-stakes.e2e-spec.ts:347` — `expected 99250n to be
+100000n`. In "stake-commit timeout — cancels the match and refunds whichever
+player already held", player x's available balance was still 750 short after
+`matchTimeoutService.sweep()`, although line 345 had already seen the match
+`CANCELLED`. Admin and Mobile passed. No code or test was changed in response.
+**Two explanations consistent with the code (from reading it, not from logs)**:
+- **H1 — test race (pre-existing).** The e2e files run in parallel against one
+  Postgres and each app instance runs its own timeout sweep every
+  `MATCH_TIMEOUT_SWEEP_INTERVAL_MS` (2000 ms in CI). If another instance's
+  sweep performs the `WAITING → CANCELLED` transition first, this test's own
+  `sweep()` sees `count === 0`, skips settlement and returns, so the
+  assertion can run before the other instance's `settle()` commits.
+- **H2 — latent recovery gap (would be a real defect).** The instance that
+  cancelled the match hit a transient failure in `settle()` (logged as
+  `Settlement failed for cancelled match …` and swallowed by `.catch`). For a
+  cancelled match where only one player had held, the stake is `PENDING`
+  (`ACTIVE` requires every player held — `MatchStakesService.confirmStake`),
+  but `SettlementService.settle` only moves a failed stake `SETTLING → FAILED`
+  and `MatchTimeoutService.recoverStuckSettlements` only retries stakes in
+  `ACTIVE`/`SETTLING`/`FAILED`. A failure here would therefore leave the held
+  funds stranded with no automatic retry. (Whether on-demand reconciliation
+  would flag it was not checked.)
+**Distinguishing check (needs a GitHub login — job logs are not public)**:
+open the Backend job log of run 39258189645 and search for
+`Settlement failed for cancelled match`. Present → H2 is likely; absent → H1.
+**Deliberately not done**: no change to settlement, recovery, or the test —
+settlement/ledger/recovery are out of scope without explicit authorization,
+and making the test poll for the refund could mask H2. **Recommendation**:
+(1) check the log; (2) if H2, authorize a separate, scoped fix (e.g. have
+recovery also retry `PENDING` stakes with held players on terminal matches)
+with a test that fails today; (3) if H1, make the test wait for settlement
+deterministically (or stop each app instance's background sweep in e2e).
+**Severity**: Medium if H2 (money held until manual intervention); Low if H1.
+**Owner**: project owner to authorize any fix.
+
 ---
 
 This file is updated whenever a phase's audit or implementation work
