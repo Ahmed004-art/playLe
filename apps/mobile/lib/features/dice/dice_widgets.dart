@@ -1,4 +1,4 @@
-﻿import 'dart:math' as math;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -219,6 +219,9 @@ class DiceRollRow extends StatelessWidget {
     this.active = false,
     this.emphasis = DiceFaceEmphasis.neutral,
     this.dieSize = 60,
+    this.wins,
+    this.pipColor = AppColors.onSurfaceMuted,
+    this.compact = false,
   });
 
   final String label;
@@ -229,10 +232,22 @@ class DiceRollRow extends StatelessWidget {
   final DiceFaceEmphasis emphasis;
   final double dieSize;
 
+  /// This player's round wins, shown as pips beside the label. Null hides
+  /// them (the row then only shows the dice and total).
+  final int? wins;
+  final Color pipColor;
+
+  /// Tighter padding and spacing, for very short screens.
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     final current = roll;
+    final score = wins;
     final textTheme = Theme.of(context).textTheme;
+    final labelColor = active
+        ? AppColors.onBackground
+        : AppColors.onSurfaceMuted;
     final totalColor = switch (emphasis) {
       DiceFaceEmphasis.winner => AppColors.secondary,
       DiceFaceEmphasis.loser => AppColors.onSurfaceMuted,
@@ -241,7 +256,7 @@ class DiceRollRow extends StatelessWidget {
 
     return AnimatedContainer(
       duration: AppMotion.normal,
-      padding: const EdgeInsets.all(AppSpacing.md),
+      padding: EdgeInsets.all(compact ? AppSpacing.sm : AppSpacing.md),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadii.lg),
@@ -258,13 +273,19 @@ class DiceRollRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  label,
-                  style: textTheme.labelLarge?.copyWith(
-                    color: AppColors.onSurfaceMuted,
-                  ),
+                Row(
+                  children: [
+                    Text(
+                      label,
+                      style: textTheme.labelLarge?.copyWith(color: labelColor),
+                    ),
+                    if (score != null) ...[
+                      const SizedBox(width: AppSpacing.md),
+                      RoundPips(wins: score, color: pipColor),
+                    ],
+                  ],
                 ),
-                const SizedBox(height: AppSpacing.sm),
+                SizedBox(height: compact ? AppSpacing.xs : AppSpacing.sm),
                 Row(
                   children: [
                     TumblingDie(

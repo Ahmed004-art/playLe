@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/match/match_models.dart';
+import 'package:playle_mobile/core/match/widgets/financial_result_banner.dart';
 import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
 import 'package:playle_mobile/features/dice/dice_screen.dart';
 import 'package:playle_mobile/features/dice/dice_widgets.dart';
@@ -128,6 +129,14 @@ DiceFaceEmphasis _emphasisOf(WidgetTester tester, String key) {
     matching: find.byType(DiceFace),
   );
   return tester.widget<DiceFace>(face).emphasis;
+}
+
+int _pipWins(WidgetTester tester, Key rowKey) {
+  final pips = find.descendant(
+    of: find.byKey(rowKey),
+    matching: find.byType(RoundPips),
+  );
+  return tester.widget<RoundPips>(pips).wins;
 }
 
 bool _rollEnabled(WidgetTester tester) {
@@ -279,8 +288,8 @@ void main() {
       _usePhoneSize(tester);
       await tester.pumpWidget(_wrap(_match(roundWins: const [1, 0])));
 
-      final pips = tester.widgetList<RoundPips>(find.byType(RoundPips));
-      expect(pips.map((p) => p.wins).toList(), [1, 0]);
+      expect(_pipWins(tester, DiceKeys.mineRow), 1);
+      expect(_pipWins(tester, DiceKeys.theirsRow), 0);
     });
 
     testWidgets('shows a win banner when the player wins', (tester) async {
@@ -324,6 +333,32 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('Tie 3 of 3'), findsNothing);
+      expect(find.textContaining('Tied at'), findsNothing);
+    });
+
+    testWidgets('hides the round caption once finished', (tester) async {
+      _usePhoneSize(tester);
+      final won = _attempt(1, 'user-1', [
+        _roll('user-1', 6, 5),
+        _roll('user-2', 2, 1),
+      ]);
+      await tester.pumpWidget(
+        _wrap(
+          _match(
+            status: 'COMPLETED',
+            winnerUserId: 'user-2',
+            terminationReason: 'RESIGNATION',
+            round: 2,
+            roundWins: const [1, 0],
+            attempts: [won],
+          ),
+        ),
+      );
+
+      expect(find.byKey(const ValueKey('stage-caption')), findsNothing);
+      expect(find.text('You won round 1!'), findsNothing);
+      expect(find.text('You resigned.'), findsOneWidget);
+      expect(find.text('You lost'), findsOneWidget);
     });
 
     testWidgets('explains a resignation outcome', (tester) async {
@@ -549,6 +584,49 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.text('Roll dice'), findsOneWidget);
+    });
+
+    testWidgets('keeps both roll rows visible when short', (tester) async {
+      _usePhoneSize(tester, size: const Size(320, 640));
+      final tie = _attempt(1, null, [
+        _roll('user-1', 3, 4),
+        _roll('user-2', 2, 5),
+      ]);
+      await tester.pumpWidget(
+        _wrap(_match(consecutiveTies: 1, attempts: [tie])),
+      );
+
+      // Neither row may extend under the fixed roll button.
+      final button = tester.getRect(find.byKey(DiceKeys.rollButton));
+      final mine = tester.getRect(find.byKey(DiceKeys.mineRow));
+      final theirs = tester.getRect(find.byKey(DiceKeys.theirsRow));
+      expect(theirs.bottom, lessThanOrEqualTo(button.top));
+      expect(mine.bottom, lessThanOrEqualTo(button.top));
+    });
+
+    testWidgets('keeps final dice above the result banner', (tester) async {
+      _usePhoneSize(tester, size: const Size(320, 640));
+      final won = _attempt(1, 'user-1', [
+        _roll('user-1', 6, 5),
+        _roll('user-2', 2, 1),
+      ]);
+      final settlement = buildTestSettlement(outcome: 'WIN');
+      await tester.pumpWidget(
+        _wrap(
+          _match(
+            status: 'COMPLETED',
+            winnerUserId: 'user-1',
+            roundWins: const [2, 0],
+            round: 2,
+            attempts: [won],
+          ),
+          financial: MatchFinancialInfo(stake: null, settlement: settlement),
+        ),
+      );
+
+      final banner = tester.getRect(find.byType(FinancialResultBanner));
+      final mine = tester.getRect(find.byKey(DiceKeys.mineRow));
+      expect(mine.bottom, lessThanOrEqualTo(banner.top));
     });
   });
 

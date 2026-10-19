@@ -9,8 +9,6 @@ import '../../core/match/widgets/match_stake_status_bar.dart';
 import '../../core/match/widgets/match_status_bar.dart';
 import '../../core/match_stakes/match_stake_models.dart';
 import '../../core/theme/app_colors.dart';
-import '../../core/theme/app_motion.dart';
-import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
 import 'dice_models.dart';
 import 'dice_widgets.dart';
@@ -118,7 +116,12 @@ class _DiceScreenState extends State<DiceScreen> {
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.xl),
+          // Slightly tighter vertically than the sides: every pixel of height
+          // matters on short phones (see the roll rows below).
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.xl,
+            vertical: AppSpacing.lg,
+          ),
           child: Column(
             children: [
               MatchStatusBar(
@@ -149,90 +152,102 @@ class _DiceScreenState extends State<DiceScreen> {
                 ),
               const SizedBox(height: AppSpacing.lg),
               Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      Row(
+                // The roll rows are the one thing a player must always see,
+                // so on a short screen the dice shrink a little before the
+                // content ever has to scroll.
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // Two tiers of squeeze: tight (smaller dice), then very
+                    // tight (smaller still, tighter rows, no rule hint).
+                    final tight = constraints.maxHeight < 340;
+                    final veryTight = constraints.maxHeight < 280;
+                    final dieSize = veryTight ? 44.0 : (tight ? 48.0 : 60.0);
+                    return SingleChildScrollView(
+                      child: Column(
                         children: [
-                          Expanded(
-                            child: _ScoreCard(
-                              key: const ValueKey('score-mine'),
-                              label: 'You',
-                              wins: state.winsFor(me),
-                              color: AppColors.pieceP1,
-                              active: isMyTurn,
-                            ),
+                          Wrap(
+                            alignment: WrapAlignment.center,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: AppSpacing.md,
+                            children: [
+                              Text(
+                                'Round ${state.round}',
+                                key: const ValueKey('round-label'),
+                                style: textTheme.titleMedium,
+                              ),
+                              if (!veryTight)
+                                Text(
+                                  'First to win 2 rounds',
+                                  key: const ValueKey('rules-hint'),
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: AppColors.onSurfaceMuted,
+                                  ),
+                                ),
+                            ],
                           ),
-                          const SizedBox(width: AppSpacing.md),
-                          Expanded(
-                            child: _ScoreCard(
-                              key: const ValueKey('score-theirs'),
-                              label: 'Opponent',
-                              wins: state.winsFor(opponent.userId),
-                              color: AppColors.pieceP2,
-                              active: !finished && !isMyTurn,
+                          if (!finished && state.consecutiveTies > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                top: AppSpacing.xs,
+                              ),
+                              child: Text(
+                                'Tie ${state.consecutiveTies} of 3. '
+                                'Three in a row ends the match in a draw.',
+                                key: const ValueKey('tie-note'),
+                                textAlign: TextAlign.center,
+                                style: textTheme.bodySmall?.copyWith(
+                                  color: AppColors.kingAccent,
+                                ),
+                              ),
                             ),
+                          const SizedBox(height: AppSpacing.md),
+                          DiceRollRow(
+                            key: DiceKeys.theirsRow,
+                            label: 'Opponent',
+                            roll: stage.theirs,
+                            keyPrefix: 'theirs',
+                            animate: animate,
+                            active: !finished && !isMyTurn,
+                            emphasis: stage.theirsEmphasis,
+                            dieSize: dieSize,
+                            compact: veryTight,
+                            wins: state.winsFor(opponent.userId),
+                            pipColor: AppColors.pieceP2,
                           ),
+                          const SizedBox(height: AppSpacing.md),
+                          DiceRollRow(
+                            key: DiceKeys.mineRow,
+                            label: 'You',
+                            roll: stage.mine,
+                            keyPrefix: 'mine',
+                            animate: animate,
+                            active: isMyTurn,
+                            emphasis: stage.mineEmphasis,
+                            dieSize: dieSize,
+                            compact: veryTight,
+                            wins: state.winsFor(me),
+                            pipColor: AppColors.pieceP1,
+                          ),
+                          // Hidden once the match is over: the final result
+                          // banner below says it, and a leftover round
+                          // caption (e.g. "You won round 1!" after a
+                          // resignation) would contradict it.
+                          if (!finished && stage.caption != null)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                top: AppSpacing.md,
+                              ),
+                              child: Text(
+                                stage.caption!,
+                                key: const ValueKey('stage-caption'),
+                                textAlign: TextAlign.center,
+                                style: textTheme.bodyMedium,
+                              ),
+                            ),
                         ],
                       ),
-                      const SizedBox(height: AppSpacing.lg),
-                      Text(
-                        'Round ${state.round}',
-                        key: const ValueKey('round-label'),
-                        style: textTheme.titleMedium,
-                      ),
-                      Text(
-                        'First to win 2 rounds',
-                        key: const ValueKey('rules-hint'),
-                        style: textTheme.bodySmall?.copyWith(
-                          color: AppColors.onSurfaceMuted,
-                        ),
-                      ),
-                      if (!finished && state.consecutiveTies > 0)
-                        Padding(
-                          padding: const EdgeInsets.only(top: AppSpacing.xs),
-                          child: Text(
-                            'Tie ${state.consecutiveTies} of 3. '
-                            'Three in a row ends the match in a draw.',
-                            key: const ValueKey('tie-note'),
-                            textAlign: TextAlign.center,
-                            style: textTheme.bodySmall?.copyWith(
-                              color: AppColors.kingAccent,
-                            ),
-                          ),
-                        ),
-                      const SizedBox(height: AppSpacing.md),
-                      DiceRollRow(
-                        key: DiceKeys.theirsRow,
-                        label: 'Opponent',
-                        roll: stage.theirs,
-                        keyPrefix: 'theirs',
-                        animate: animate,
-                        active: !finished && !isMyTurn,
-                        emphasis: stage.theirsEmphasis,
-                      ),
-                      const SizedBox(height: AppSpacing.md),
-                      DiceRollRow(
-                        key: DiceKeys.mineRow,
-                        label: 'You',
-                        roll: stage.mine,
-                        keyPrefix: 'mine',
-                        animate: animate,
-                        active: isMyTurn,
-                        emphasis: stage.mineEmphasis,
-                      ),
-                      if (stage.caption != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: AppSpacing.lg),
-                          child: Text(
-                            stage.caption!,
-                            key: const ValueKey('stage-caption'),
-                            textAlign: TextAlign.center,
-                            style: textTheme.bodyMedium,
-                          ),
-                        ),
-                    ],
-                  ),
+                    );
+                  },
                 ),
               ),
               const SizedBox(height: AppSpacing.md),
@@ -407,55 +422,6 @@ String? _outcomeNote(MatchInfo match, String me) {
   }
   if (match.resultIsDraw) return 'Three ties in a row. The match is a draw.';
   return null;
-}
-
-class _ScoreCard extends StatelessWidget {
-  const _ScoreCard({
-    super.key,
-    required this.label,
-    required this.wins,
-    required this.color,
-    required this.active,
-  });
-
-  final String label;
-  final int wins;
-  final Color color;
-  final bool active;
-
-  @override
-  Widget build(BuildContext context) {
-    final labelColor = active
-        ? AppColors.onBackground
-        : AppColors.onSurfaceMuted;
-    return AnimatedContainer(
-      duration: AppMotion.normal,
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.lg,
-        vertical: AppSpacing.md,
-      ),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadii.md),
-        border: Border.all(
-          color: active ? color : Colors.transparent,
-          width: 1.5,
-        ),
-      ),
-      child: Column(
-        children: [
-          Text(
-            label,
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge?.copyWith(color: labelColor),
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          RoundPips(wins: wins, color: color),
-        ],
-      ),
-    );
-  }
 }
 
 class _RollButton extends StatelessWidget {
