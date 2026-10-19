@@ -439,9 +439,9 @@ class _ScoreCard extends StatelessWidget {
         children: [
           Text(
             label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: labelColor,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: labelColor),
           ),
           const SizedBox(height: AppSpacing.sm),
           RoundPips(wins: wins, color: color),

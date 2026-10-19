@@ -553,7 +553,9 @@ void main() {
     testWidgets('draws the right pips for each face', (tester) async {
       for (var value = 1; value <= 6; value++) {
         await tester.pumpWidget(
-          MaterialApp(home: Scaffold(body: DiceFace(value: value))),
+          MaterialApp(
+            home: Scaffold(body: DiceFace(value: value)),
+          ),
         );
         expect(find.byKey(const ValueKey('dice-pip')), findsNWidgets(value));
       }
