@@ -384,8 +384,10 @@ px × 1.0/1.5/2.0× text scale covering the shared widgets and the Tic-Tac-Toe,
 Checkers and Dice screens — 47 of its 60 cases failed before the fix and all
 pass after; the two Dice tests moved to the wide viewport now run at phone
 width again; a geometry test (verified to fail without its fix) guards the
-status bar spanning the full width; a Chrome preview re-render confirmed no
-visual regression at normal sizes. The test font is ~2× wider than a real
+status bar spanning the full width; a Chrome preview re-render of the
+**Dice screen only** confirmed no visual regression at normal sizes (the
+Checkers and Tic-Tac-Toe screens share these widgets but were covered by the
+widget matrix only, not rendered). The test font is ~2× wider than a real
 one, so this is a stricter bar than a device, but it is not a device check.
 
 ---

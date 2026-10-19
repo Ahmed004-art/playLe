@@ -58,8 +58,8 @@ game may hit; each would need its own ADR:
 |---|---|---|
 | **Implemented** | Yes | Shared-widget wrap fixes, the audit/regression tests, the three phase reports, doc corrections. |
 | **Locally tested** | Yes (mobile) | `dart format --set-exit-if-changed .` clean over 126 files; `flutter analyze` — no issues; `flutter test` — 245 passed (183 existing + 62 new: the 60-case matrix and 2 geometry tests), run with the pinned Flutter 3.44.4 / Dart 3.12.2. No backend or admin code changed. |
-| **CI verified** | See the PR's checks | Filled in from the pull request's CI run on its final head — not asserted in this file. |
-| **Visually inspected** | Chrome preview only | Real `DiceScreen`/`AppTheme` rendered headlessly at 320×640 and 390×844, Arial in place of Roboto, fixture data. Inspected after the final change: opponent-turn with countdown, disconnected, and staked states at both widths — full-width bar, no clipping. |
+| **CI verified** | Yes, on `7a991a5` | PR #2, run [39256886098](https://github.com/Ahmed004-art/playLe/actions/runs/39256886098) on head `7a991a5bc51b06a54056bab46b041a95e97c9049`: Backend (api) success (migrations, lint, typecheck, format, unit + Postgres/Redis e2e, build); Admin success (lint, typecheck, format, tests, build); Mobile (Flutter) success (format, analyze, tests, Android debug build). Every step green, no failure annotations. Any later commit on the PR branch changes only documentation; its own CI result is on the PR's checks, not asserted here. |
+| **Visually inspected** | Chrome preview only | Real `DiceScreen`/`AppTheme` rendered headlessly at 320×640 and 390×844, Arial in place of Roboto, fixture data. Inspected after the final change (all six images viewed): opponent-turn with countdown, disconnected, and staked states at both widths — full-width bar, no clipping. **Only the Dice screen was rendered**: the Checkers and Tic-Tac-Toe screens, which share the changed widgets, are covered by the widget-test matrix only and were not visually inspected. |
 | **Verified on a device** | **No** | No Android device or emulator. |
 
 ## Outstanding / blocked
