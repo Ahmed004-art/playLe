@@ -6,7 +6,18 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 10 — DICE**
+> **CURRENT PHASE: PHASE 11 — VERIFICATION, SECURITY AND ENGINEERING
+> HARDENING**
+>
+> Phase 11 builds no new game and changes no financial, eligibility or
+> real-money behavior. It fixes verified narrow-screen/large-text defects
+> in the shared match widgets (with tests), records a disposition for the
+> eight `npm audit` findings (none fixable safely in scope — see
+> [`PHASE_11_REPORT.md`](docs/development/PHASE_11_REPORT.md)), and adds
+> the missing Phase 8/9/10 reports. Nothing here has been verified on an
+> Android device.
+>
+> *Previous phase — Phase 10 (Dice; PR #1, merge commit `d051115`):*
 >
 > Phase 10 adds Dice, the platform's third game, as a new `GameModule`
 > with no platform change (see
@@ -278,7 +289,9 @@ this repository.
   `MatchTerminationReason` column, deliberately without touching the
   binary `GameResult` interface or `SettlementService`. See
   [ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md).
-- **Phase 10 — Dice** (current). The platform's third game, a new
+- **Phase 10 — Dice** ✅ complete (PR #1, merge commit
+  `d051115271ed795e6588fdd0de9498097406e536`; CI-verified, Chrome-preview
+  inspected, **not** device-verified). The platform's third game, a new
   `GameModule` requiring no change to matchmaking, challenges, the
   command pipeline, realtime, stake confirmation, or settlement: two
   players, two dice per roll, best of three rounds, alternating
@@ -289,6 +302,15 @@ this repository.
   **disabled** — launching it, and any real-money use, is a separate
   owner decision. See
   [ADR-025](docs/decisions/ADR-025-dice-game-module.md).
+- **Phase 11 — Verification, Security and Engineering Hardening**
+  (current). No new game. Shared match widgets (`MatchStatusBar`,
+  `MatchStakeStatusBar`, `DrawOfferBanner`, `FinancialResultBanner`) and
+  the Dice roll rows no longer overflow on narrow screens or at large text
+  scales, covered by a 320/390 px × 1.0/1.5/2.0× test matrix; the eight
+  `npm audit` findings are dispositioned (not fixed — no patched `braces`
+  exists, and the `deepmerge-ts` fix needs the Prisma 7 major); and the
+  Phase 8, 9, 10 and 11 reports are written from Git/CI evidence. See
+  [`PHASE_11_REPORT.md`](docs/development/PHASE_11_REPORT.md).
 - The next phase is not yet defined/scheduled. Each phase is specified
   explicitly before implementation begins — see `CLAUDE.md`, "Phase
   Discipline".

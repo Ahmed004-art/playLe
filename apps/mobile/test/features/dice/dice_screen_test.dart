@@ -488,17 +488,14 @@ void main() {
     });
 
     testWidgets('shows when the opponent disconnects', (tester) async {
-      // Default (wide) viewport, like the Checkers equivalent: the shared
-      // MatchStatusBar overflows in the test font at phone width. That is
-      // tracked in OUTSTANDING_WORK item 25, not a Dice-specific problem.
+      _usePhoneSize(tester);
       await tester.pumpWidget(_wrap(_match(opponentConnected: false)));
 
       expect(find.text('Opponent disconnected'), findsOneWidget);
     });
 
     testWidgets('shows stake bar during a staked match', (tester) async {
-      // Default (wide) viewport: the shared MatchStakeStatusBar overflows
-      // in the test font at phone width (OUTSTANDING_WORK item 25).
+      _usePhoneSize(tester);
       final stake = buildTestStake(
         stakeAmountMinor: '1000',
         poolAmountMinor: '2000',

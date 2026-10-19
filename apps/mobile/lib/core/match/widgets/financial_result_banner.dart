@@ -80,16 +80,18 @@ class FinancialResultBanner extends StatelessWidget {
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const SizedBox(height: AppSpacing.lg),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        // Wraps instead of overflowing when both buttons don't fit.
+        Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: AppSpacing.md,
+          runSpacing: AppSpacing.sm,
           children: [
-            if (onDispute != null) ...[
+            if (onDispute != null)
               OutlinedButton(
                 onPressed: () => _fileDispute(context),
                 child: const Text('Dispute'),
               ),
-              const SizedBox(width: AppSpacing.md),
-            ],
             FilledButton(
               onPressed: onExit,
               child: const Text('Back to account'),

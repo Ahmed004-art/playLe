@@ -298,6 +298,14 @@ waiting/rejected/timeout/resignation/win/loss/draw states; adjust
 `apps/mobile/lib/features/dice/` if needed. **Severity**: Medium (product
 quality is a first-class acceptance criterion). **Owner**: project owner
 or whoever has a device.
+**Phase 11 update (still OPEN)**: Phase 10 was merged (PR #1, merge commit
+`d051115`) and CI-verified. Phase 10/11 added evidence from a **Chrome
+preview** (the real `DiceScreen`/`AppTheme` rendered headlessly at 320×640
+and 390×844 from fixture states, Arial standing in for Roboto) and widget
+tests — neither is an Android device check, so the remaining steps above
+are unchanged. Not yet seen at all: the roll/tumble animation in motion,
+reduced-motion behavior on a device, and large system font sizes on a
+device.
 
 ## Repository hygiene (found during Phase 10 environment recovery)
 
@@ -312,6 +320,27 @@ downgrade (`eslint-config-next@14.2.35`) and a major upgrade
 (`prisma@7.10.1`), so none was applied. **Severity**: Low-Medium (build/
 CLI tooling processing no user input; exploitability untested). **Owner**:
 a separate, controlled dependency-remediation task with CI.
+**Phase 11 disposition (still OPEN, decision recommended — nothing was
+changed)**: the audit was reproduced exactly (8 high, from two advisories).
+- **GHSA-vfj7-8cjw-p6xm, `braces` ≤ 3.0.3 (5 findings: `braces`,
+  `micromatch`, `fast-glob`, `@next/eslint-plugin-next`,
+  `eslint-config-next`)**: the advisory lists **no patched version** and
+  3.0.3 is the latest published, so no update or override can fix it.
+  Exposure: glob patterns come from the ESLint plugin's static config while
+  linting the repo's own files; nothing reaches it from a request. DoS-class
+  (crash). **Recommendation**: accept; re-run `npm audit` on each dependency
+  update and revisit when a patched release appears.
+- **GHSA-ggr8-5vv4-36mx, `deepmerge-ts` < 8.0.0 (3 findings: `deepmerge-ts`,
+  `@prisma/config`, `prisma`)**: patched in 8.0.0, but `@prisma/config`
+  6.19.3 pins 7.1.5 exactly; only Prisma 7.x uses 8.x — a major upgrade not
+  taken merely to clear an audit. A scoped `overrides` entry was tried in a
+  scratch copy (scoped, global, and with `npm update`): npm 10.9.8 kept 7.1.5
+  every time, and running npm on this lockfile rewrites 37 unrelated lines of
+  metadata flags. Exposure: the repo has no `prisma.config`, so Prisma's
+  config loader only merges its own defaults. **Recommendation**: accept
+  until a dedicated Prisma 7 upgrade phase (with migration/e2e verification).
+- Reasoning above is exposure analysis, not "it's only a dev dependency".
+  Full detail: `PHASE_11_REPORT.md`, Stage 3.
 
 ### 24. No Phase 8 or Phase 9 report exists in `docs/development/`
 **Status**: Open. **Evidence**: `CLAUDE.md` and `README.md` refer to "the
@@ -322,6 +351,13 @@ checklists. For Phase 9, a green CI run on commit
 GitHub API (run 38437718801: Admin, Backend and Mobile all succeeded).
 **Severity**: Low (documentation gap). **Owner**: whoever next maintains
 the phase documentation.
+**Phase 11 update — CLOSED**: `PHASE_8_REPORT.md`, `PHASE_9_REPORT.md` and
+`PHASE_10_REPORT.md` now exist (plus `PHASE_11_REPORT.md`), written only from
+Git history and GitHub Actions data, each separating implemented / locally
+tested / CI verified / visually inspected / device verified / outstanding.
+Finding recorded there: Phase 8's first commit `1becc31` failed the Admin
+job and was CI-verified green only on `08eafbc`. Where the repo's older
+prose claimed local test passes, the reports say "claimed, not reproduced".
 
 ### 25. Shared match chrome may overflow on narrow screens — unverified on a device
 **Status**: Open, pre-existing (not introduced by Phase 10). **Evidence**:
@@ -339,6 +375,18 @@ icon-only) and runs only those two tests at the default viewport.
 **Severity**: Low-Medium (all games share these widgets). **Owner**: a
 future UI-polish task: make both rows wrap or flex, then run every game
 screen test at a phone-width viewport.
+**Phase 11 update — fixed at the widget level; real-device check still OPEN
+(see #22)**: `MatchStatusBar`, `MatchStakeStatusBar`, `DrawOfferBanner`,
+`FinancialResultBanner` and the Dice roll rows now wrap or flex instead of
+overflowing. Evidence: a new test matrix
+(`apps/mobile/test/core/match/match_chrome_layout_test.dart`) at 320 and 390
+px × 1.0/1.5/2.0× text scale covering the shared widgets and the Tic-Tac-Toe,
+Checkers and Dice screens — 47 of its 60 cases failed before the fix and all
+pass after; the two Dice tests moved to the wide viewport now run at phone
+width again; a geometry test (verified to fail without its fix) guards the
+status bar spanning the full width; a Chrome preview re-render confirmed no
+visual regression at normal sizes. The test font is ~2× wider than a real
+one, so this is a stricter bar than a device, but it is not a device check.
 
 ---
 

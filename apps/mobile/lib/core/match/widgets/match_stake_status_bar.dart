@@ -36,12 +36,16 @@ class MatchStakeStatusBar extends StatelessWidget {
             color: AppColors.secondary,
           ),
           const SizedBox(width: AppSpacing.sm),
-          Text(
-            'Entry ${formatMinorAmount(stake.stakeAmountMinor, currency: stake.currency)} · '
-            'Pool ${formatMinorAmount(stake.poolAmountMinor, currency: stake.currency)}',
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+          // `Expanded` so a large amount or a big text scale wraps onto a
+          // second line instead of overflowing the strip.
+          Expanded(
+            child: Text(
+              'Entry ${formatMinorAmount(stake.stakeAmountMinor, currency: stake.currency)} · '
+              'Pool ${formatMinorAmount(stake.poolAmountMinor, currency: stake.currency)}',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: AppColors.onSurfaceMuted),
+            ),
           ),
         ],
       ),
