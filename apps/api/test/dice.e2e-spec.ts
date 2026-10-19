@@ -146,6 +146,10 @@ describe('Dice (e2e)', () => {
     await prisma.withdrawal.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.deposit.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.wallet.deleteMany({ where: { userId: { in: userIds } } });
+    // Self-exclusion tests create these; the FK to User is not cascading.
+    await prisma.responsibleGamingRestriction.deleteMany({
+      where: { userId: { in: userIds } },
+    });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await app.close();
   });
@@ -154,11 +158,16 @@ describe('Dice (e2e)', () => {
     rng.clear();
   });
 
+  /**
+   * Every registration gets a fresh email (a per-call sequence number), so
+   * helpers and `it.each` cases can reuse a label without colliding.
+   */
+  let userSeq = 0;
   async function registerUser(label: string): Promise<TestUser> {
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
       .send({
-        email: email(label),
+        email: email(`${label}${userSeq++}`),
         username: username(label),
         password: 'Passw0rd1',
         dateOfBirth: '2000-01-01',
