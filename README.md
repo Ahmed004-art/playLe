@@ -6,8 +6,21 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 9 — MATCH LIFECYCLE INTEGRITY, MATCHMAKING
-> CORRECTNESS & GAME RESULT SEMANTICS**
+> **CURRENT PHASE: PHASE 10 — DICE**
+>
+> Phase 10 adds Dice, the platform's third game, as a new `GameModule`
+> with no platform change (see
+> [ADR-025](docs/decisions/ADR-025-dice-game-module.md)): two players,
+> two dice per roll, best of three rounds, with tied rounds replayed and
+> three consecutive ties ending the match as a draw. Rolls are generated
+> server-side by a cryptographically secure RNG; they are **not**
+> "provably fair" (there is no commit-reveal protocol). Dice is seeded
+> **disabled**: implementing the game is not authorization to launch it,
+> and real-money use of a pure game of chance needs owner legal and
+> payment-provider confirmation first (see `OUTSTANDING_WORK.md`).
+>
+> *Previous phase — Phase 9 (match lifecycle integrity, matchmaking
+> correctness & game result semantics):*
 >
 > Phases 1-8 (foundation, identity/authentication, wallet/ledger/
 > financial foundation, game platform/matchmaking/real-time, match
@@ -45,11 +58,12 @@ receives the remaining 90%.
   withdrawals require admin approval initially.
 - **Platforms**: Android first; iOS-ready architecture from day one.
 - **Match sizes**: 2, 3, and 4 players initially; architected for more.
-- **Games**: Tic-Tac-Toe is implemented as the reference game (Phase 4).
-  Dice, Checkers, Penalty, Ice Hockey, a G-Switch-style game, Ludo, Find
-  the Marble, and support for organizing competitions around external
-  games remain planned for later phases, built on the same generic
-  game-module contract (see
+- **Games**: Tic-Tac-Toe is implemented as the reference game (Phase 4),
+  Checkers followed in Phase 7, and Dice in Phase 10 (seeded disabled).
+  Penalty, Ice Hockey, a G-Switch-style game, Ludo, Find the Marble, and
+  support for organizing competitions around external games remain
+  planned for later phases, built on the same generic game-module
+  contract (see
   [ADR-015](docs/decisions/ADR-015-game-module-architecture.md)).
 
 ## Architecture
@@ -246,7 +260,7 @@ this repository.
   Mobile and admin gained read-only visibility into current rolling
   usage against configured limits.
 - **Phase 9 — Match Lifecycle Integrity, Matchmaking Correctness &
-  Game Result Semantics** (current). Closed five previously-tracked
+  Game Result Semantics** ✅ complete. Closed five previously-tracked
   outstanding-work items. A real, server-authoritative turn/move timer
   (`Game.turnTimeoutSeconds`/`Match.turnDeadlineAt`) enforced under the
   same row lock a move submission already uses, so a move racing a
@@ -264,6 +278,17 @@ this repository.
   `MatchTerminationReason` column, deliberately without touching the
   binary `GameResult` interface or `SettlementService`. See
   [ADR-024](docs/decisions/ADR-024-match-lifecycle-integrity.md).
+- **Phase 10 — Dice** (current). The platform's third game, a new
+  `GameModule` requiring no change to matchmaking, challenges, the
+  command pipeline, realtime, stake confirmation, or settlement: two
+  players, two dice per roll, best of three rounds, alternating
+  starters, tied rounds replayed, and a draw after three consecutive
+  ties. Rolls come from an injectable, cryptographically secure
+  server-side RNG; the outcomes are not independently verifiable (no
+  commit-reveal), so Dice is never described as "provably fair". Seeded
+  **disabled** — launching it, and any real-money use, is a separate
+  owner decision. See
+  [ADR-025](docs/decisions/ADR-025-dice-game-module.md).
 - The next phase is not yet defined/scheduled. Each phase is specified
   explicitly before implementation begins — see `CLAUDE.md`, "Phase
   Discipline".

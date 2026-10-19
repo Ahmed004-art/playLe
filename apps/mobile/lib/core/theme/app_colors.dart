@@ -27,4 +27,11 @@ abstract final class AppColors {
   static const Color pieceP1 = primary;
   static const Color pieceP2 = secondary;
   static const Color kingAccent = Color(0xFFFFC857);
+
+  // Dice tokens (Phase 10) — an ivory die face with deep-violet pips, so
+  // dice read as physical objects against the dark surface while staying
+  // inside the existing violet/teal palette (no new brand colors).
+  static const Color diceFaceLight = Color(0xFFFAF8FF);
+  static const Color diceFaceShade = Color(0xFFD9D3F2);
+  static const Color dicePip = Color(0xFF1B1530);
 }

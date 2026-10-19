@@ -18,6 +18,10 @@ abstract final class AppMotion {
   /// A multi-step sequence (e.g. a capture then a king-promotion glow).
   static const Duration slow = Duration(milliseconds: 320);
 
+  /// A die tumbling before it settles on the server-decided face
+  /// (Phase 10). Purely cosmetic — see `TumblingDie`.
+  static const Duration tumble = Duration(milliseconds: 620);
+
   static const Curve entrance = Curves.easeOutBack;
   static const Curve standard = Curves.easeOutCubic;
 }

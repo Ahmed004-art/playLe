@@ -10,6 +10,7 @@ import '../../core/wallet/wallet_controller.dart';
 import '../../core/widgets/error_retry_view.dart';
 import '../../core/widgets/loading_view.dart';
 import '../checkers/checkers_screen.dart';
+import '../dice/dice_screen.dart';
 import '../tic_tac_toe/tic_tac_toe_screen.dart';
 import 'stake_confirm_screen.dart';
 
@@ -43,6 +44,12 @@ class _MatchScreenState extends State<MatchScreen> {
   void initState() {
     super.initState();
     widget.matchController.loadMatch(widget.matchId);
+  }
+
+  /// Dice has a single command: ask the server to roll. The payload
+  /// carries no dice values - the server alone generates them (ADR-025).
+  Future<void> _rollDice() {
+    return widget.matchController.submitMove(const {'action': 'roll'});
   }
 
   @override
@@ -123,6 +130,21 @@ class _MatchScreenState extends State<MatchScreen> {
                       onOfferDraw: widget.matchController.offerDraw,
                       onAcceptDraw: widget.matchController.acceptDraw,
                       onRejectDraw: widget.matchController.rejectDraw,
+                      onDispute: (reason) async {
+                        await widget.disputesController.create(
+                          match.id,
+                          reason,
+                        );
+                      },
+                    ),
+                    'dice' => DiceScreen(
+                      match: match,
+                      currentUserId: currentUserId,
+                      lastRejection: rejection,
+                      financial: financial,
+                      onRoll: _rollDice,
+                      onExit: () => context.go('/account'),
+                      onResign: widget.matchController.resign,
                       onDispute: (reason) async {
                         await widget.disputesController.create(
                           match.id,

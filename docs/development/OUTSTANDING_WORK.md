@@ -259,6 +259,87 @@ re-deriving why that would reopen the "shrink your own window to evade a
 limit" bypass ADR-023 closes. **Severity**: N/A (correct, verified
 state). **Owner**: N/A.
 
+## Game platform / launch readiness (from Phase 10)
+
+### 20. Dice real-money launch is not authorized — owner/legal decision
+**Status**: Blocked (external/legal). **Evidence**: ADR-025
+"Implementing versus launching"; the Dice seed migration
+(`20261019120000_seed_dice_game`) inserts the catalog row with
+`enabled = false`. Dice is a pure game of chance, unlike Tic-Tac-Toe and
+Checkers. Whether real-money games of chance are lawful for PlayLe's
+intended operation, and whether the payment provider's merchant terms
+permit them, are unconfirmed — Phase 10 neither answers nor assumes
+either (see also #3). **Dependency**: owner obtains legal and
+payment-provider confirmation; separately decides when to enable the
+`dice` catalog row (a deliberate catalog change — no tooling was added
+for it in Phase 10). **Severity**: High before any enabling, especially
+for real money; no impact while the game stays disabled. **Owner**:
+project owner, pre-launch.
+
+### 21. Dice outcomes are not independently verifiable — accepted limitation
+**Status**: Accepted, documented. **Evidence**: ADR-025 "Fairness
+limitations". Rolls come from a server-side CSPRNG
+(`crypto.randomInt`); there is no commit-reveal or other verifiable-
+randomness protocol, so players must trust PlayLe. Dice must never be
+described as "provably fair" in the UI or in marketing. A commit-reveal
+scheme would be a separate design (own ADR) and phase. **Severity**:
+Medium for trust/regulatory perception; Low for correctness. **Owner**: a
+future phase, only if verifiability becomes a requirement.
+
+### 22. Dice mobile UI has not been visually verified on a real device
+**Status**: Open. **Evidence**: Phase 10 had no Flutter/Android tooling or
+device available; widget tests verify behavior (turn states, server-
+authoritative dice and results, reduced motion, small-screen layout) but
+not visual quality. **Remaining steps**: run the debug build on an
+Android device or emulator at a few screen sizes and with reduced motion
+on; check die-face legibility and pip correctness, the roll interaction
+and tumble animation, contrast, touch-target size, and the
+waiting/rejected/timeout/resignation/win/loss/draw states; adjust
+`apps/mobile/lib/features/dice/` if needed. **Severity**: Medium (product
+quality is a first-class acceptance criterion). **Owner**: project owner
+or whoever has a device.
+
+## Repository hygiene (found during Phase 10 environment recovery)
+
+### 23. `npm audit` reports 8 high-severity findings — remediation not yet done
+**Status**: Open; deliberately not remediated in Phase 10. **Evidence**:
+two chains, both through devDependencies: `eslint-config-next` →
+`@next/eslint-plugin-next` → `fast-glob` → `micromatch` → `braces`
+(stack-exhaustion DoS, GHSA-vfj7-8cjw-p6xm) in the admin app, and
+`prisma` CLI → `@prisma/config` → `deepmerge-ts` (stack exhaustion,
+GHSA-ggr8-5vv4-36mx) in the API. `npm audit`'s suggested "fixes" are a
+downgrade (`eslint-config-next@14.2.35`) and a major upgrade
+(`prisma@7.10.1`), so none was applied. **Severity**: Low-Medium (build/
+CLI tooling processing no user input; exploitability untested). **Owner**:
+a separate, controlled dependency-remediation task with CI.
+
+### 24. No Phase 8 or Phase 9 report exists in `docs/development/`
+**Status**: Open. **Evidence**: `CLAUDE.md` and `README.md` refer to "the
+Phase 9 report" for exact test counts, verification results and the CI
+run URL, but `docs/development/` only holds the Phase 6 and Phase 7
+checklists. For Phase 9, a green CI run on commit
+`085dfd3973582d2185405abf06c39f283ec9d926` was verified directly via the
+GitHub API (run 38437718801: Admin, Backend and Mobile all succeeded).
+**Severity**: Low (documentation gap). **Owner**: whoever next maintains
+the phase documentation.
+
+### 25. Shared match chrome may overflow on narrow screens — unverified on a device
+**Status**: Open, pre-existing (not introduced by Phase 10). **Evidence**:
+running the Dice widget tests at a 390 px phone viewport with Flutter's
+test font (roughly twice as wide as a real font) produced `RenderFlex`
+overflows in two *shared* widgets: `MatchStatusBar` (the "Opponent
+disconnected" row, `core/match/widgets/match_status_bar.dart`) and
+`MatchStakeStatusBar` (the entry/pool row). Checkers' tests avoid it only
+because they run at the default 800 px width. Both widgets are fixed-size
+rows with no flexible children, so they are the likeliest place for a real
+overflow on a narrow phone, a large system font size, or a long countdown
+string. Real-device impact is **not verified**; the test font exaggerates
+it. Phase 10 worked around its own part (the Dice status-bar `leading` is
+icon-only) and runs only those two tests at the default viewport.
+**Severity**: Low-Medium (all games share these widgets). **Owner**: a
+future UI-polish task: make both rows wrap or flex, then run every game
+screen test at a phone-width viewport.
+
 ---
 
 This file is updated whenever a phase's audit or implementation work
