@@ -289,9 +289,13 @@ Full architecture and reasoning:
   reports; it has no write path. Verified by e2e test: a normal settled
   match produces zero anomalies.
 - **Crash recovery is idempotent by construction.** The periodic sweep's
-  `recoverStuckSettlements()` re-calls `settle()` for any terminal match
-  whose stake isn't yet `SETTLED`/`REFUNDED` — safe to call arbitrarily
+  `recoverStuckSettlements()` re-calls `settle()` for a terminal match whose
+  stake is `ACTIVE`/`SETTLING`/`FAILED`, and (since OUTSTANDING_WORK item
+  26) for a `PENDING` stake on a `CANCELLED` match with no settlement — the
+  partially-held case the original sweep missed. Safe to call arbitrarily
   many times because `settle()` itself is idempotent (see above).
+  Reconciliation can *report* a stranded stake (`MISSING_SETTLEMENT`) but
+  never repairs it; only the recovery sweep does.
 - **Financial invariants enforced twice, again**: `settlement-math.ts`'s
   `isBalanced` check runs both as an exhaustive unit-test suite (pure,
   no I/O) and as a runtime assertion inside `SettlementService` right

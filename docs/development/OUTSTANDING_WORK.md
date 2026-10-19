@@ -340,6 +340,76 @@ icon-only) and runs only those two tests at the default viewport.
 future UI-polish task: make both rows wrap or flex, then run every game
 screen test at a phone-width viewport.
 
+### 26. One-sided `PENDING` stake on a cancelled match was never retried by crash recovery
+**Status**: Fix implemented on branch `fix/pending-stake-recovery`;
+**not yet merged and not yet CI-verified — stays OPEN until reviewed, merged
+and CI is green.** (This entry was first drafted on the unmerged Phase 11
+branch as an investigation of an intermittent CI failure; this is its
+resolved form and supersedes that text.)
+**The gap (confirmed by reading the code and by a unit test that failed
+before the fix and passes after)**: a match can be cancelled while only
+*some* players had held (stake-commit timeout). `MatchStakesService.
+confirmStake` makes a stake `ACTIVE` only when every player has held, so such
+a stake stays `PENDING`. `SettlementService.settle` marks a failed attempt
+`SETTLING → FAILED` (and `SETTLING` is only ever set from `ACTIVE`), and
+`MatchTimeoutService.recoverStuckSettlements` only selected `ACTIVE`/
+`SETTLING`/`FAILED` stakes. `expireWaitingMatches` flips the match to
+`CANCELLED` and calls `settle()` as two separate, non-atomic steps, and
+swallows a `settle()` failure after logging it. So a crash or transient
+failure between those two steps left the holders' funds stranded: still held,
+stake `PENDING`, match `CANCELLED`, no automatic retry, and no manual settle
+path (`settle()` is only called from the match-command path and the timeout
+service). `ADR-018`'s diagram shows a `PENDING → FAILED → retried` edge that
+the code never implemented.
+**Reconciliation, corrected**: `ReconciliationService.runOnce()` *would*
+report such a stake as `MISSING_SETTLEMENT` (any terminal match whose stake
+has no settlement, regardless of stake status). But it is admin-triggered,
+never scheduled, and read-only by design — **detection alone does not repair
+it**. (`ORPHANED_HOLD` does not catch it: that check omits `PENDING`.)
+**Fix** (`apps/api/src/matches/match-timeout.service.ts`,
+`recoverStuckSettlements` only): additionally select a stake whose status is
+`PENDING`, whose match is `CANCELLED`, and that has no settlement. Safe
+because `settle()` is idempotent (it returns an existing settlement, and the
+unique `Settlement.matchStakeId` resolves races); for a `CANCELLED` match it
+refunds only players whose `heldAt` is set, and `heldAt` is written in the
+same transaction as the `STAKE_HOLD` ledger entry, so a refund can never
+exceed a real hold. A `PENDING` stake on a `COMPLETED`/`ABANDONED` match
+(where `settle()` would treat every player as having staked) or on a live
+match is deliberately **not** selected. No change to settlement math, the
+ledger, wallets, eligibility, the schema or any flag.
+**Tests**: `src/matches/match-timeout.recovery.spec.ts` (unit; runs locally):
+7 cases pinning which stakes are retried and, as importantly, which are never
+touched — 3 failed before the fix, all 7 pass after. An end-to-end test in
+`test/match-stakes.e2e-spec.ts` (needs Postgres/Redis — **CI only**, not
+run locally) creates a staked match, lets exactly one player hold, performs
+the `WAITING → CANCELLED` transition without its `settle()` (the crash
+window), runs the existing sweep, and asserts the refund exactly once, stake
+`REFUNDED`, ledger/balance consistency, idempotence and a clean
+reconciliation; a second e2e case asserts a one-sided stake on a still-
+`WAITING` match is left untouched. Neither e2e case has been executed yet;
+that the e2e test fails without the fix is established only by the unit
+spec and by reading the code, not by running it.
+**The original CI failure (still not established)**: run
+[39258189645](https://github.com/Ahmed004-art/playLe/actions/runs/39258189645)
+on `d510f26` failed once at `match-stakes.e2e-spec.ts:347` (`expected 99250n
+to be 100000n`) while the identical code passed elsewhere. Its logs were not
+accessible, so whether it was this gap or a pre-existing test race (parallel
+e2e files each run their own 2 s sweep; a sweep that loses the `WAITING →
+CANCELLED` race returns without waiting for the winner's `settle()`) is
+**unknown**. By analysis only (not executed): the fix likely also closes
+that race for this test, because `sweep()` ends with the recovery step, which
+selects a not-yet-refunded `PENDING`/`CANCELLED` stake and calls `settle()`
+— which either settles or waits on the unique settlement key until the other
+instance's settlement commits — so the refund is committed before `sweep()`
+returns. A transient `settle()` failure inside that very call would still
+fail the assertion (but the next sweep would now retry it). Other e2e tests
+that call `processTurnTimeout` or `sweep()` and then assert immediately
+(including the Phase 10 Dice e2e) share the same race class and are not
+changed here.
+**Severity**: Medium before any real-money launch (money held with no
+automatic recovery; real-money gaming is off by default). **Owner**:
+reviewer/owner to merge `fix/pending-stake-recovery` after CI.
+
 ---
 
 This file is updated whenever a phase's audit or implementation work
