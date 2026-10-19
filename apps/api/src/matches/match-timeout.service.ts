@@ -123,12 +123,40 @@ export class MatchTimeoutService implements OnModuleInit, OnModuleDestroy {
    * `SettlementService.settle` is idempotent, so retrying a
    * genuinely-already-settled stake is always safe — this only ever
    * finishes work that was left incomplete, never redoes it.
+   *
+   * Two kinds of stake are picked up:
+   * - an `ACTIVE`/`SETTLING`/`FAILED` stake on any terminal match; and
+   * - a `PENDING` stake on a `CANCELLED` match that has no settlement yet.
+   *   A match is cancelled by the stake-commit timeout while only *some*
+   *   players had held, and such a stake never reached `ACTIVE`, so it
+   *   stays `PENDING` — `settle()`'s own failure marking (`SETTLING →
+   *   FAILED`) never applies to it. Without this branch, a crash or
+   *   transient failure between `expireWaitingMatches` flipping the match
+   *   to `CANCELLED` and its `settle()` call completing stranded the
+   *   holders' funds with no automatic retry (OUTSTANDING_WORK item 26).
+   *
+   * The `PENDING` branch is deliberately limited to `CANCELLED` matches:
+   * `settle()` refunds only the players whose `heldAt` is set there, so it
+   * can never pay out an unheld stake. A `PENDING` stake on a
+   * `COMPLETED`/`ABANDONED` match is not selected — `settle()` would treat
+   * every player as having staked — and neither is one on a live
+   * (`WAITING`/`READY`/`ACTIVE`) match. `settlement: null` stops an
+   * already-settled stake from being re-selected every tick.
    */
   private async recoverStuckSettlements(): Promise<void> {
     const stuck = await this.prisma.matchStake.findMany({
       where: {
-        status: { in: ['ACTIVE', 'SETTLING', 'FAILED'] },
-        match: { status: { in: ['COMPLETED', 'ABANDONED', 'CANCELLED'] } },
+        OR: [
+          {
+            status: { in: ['ACTIVE', 'SETTLING', 'FAILED'] },
+            match: { status: { in: ['COMPLETED', 'ABANDONED', 'CANCELLED'] } },
+          },
+          {
+            status: 'PENDING',
+            match: { status: 'CANCELLED' },
+            settlement: null,
+          },
+        ],
       },
       select: { matchId: true },
     });

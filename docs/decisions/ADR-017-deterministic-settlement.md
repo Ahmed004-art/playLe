@@ -75,6 +75,18 @@ settlement finishing) and calls `settle()` again. Idempotent by
 construction, so retrying an already-settled stake is always a safe
 no-op.
 
+Correction (OUTSTANDING_WORK item 26): the original sweep did **not** cover
+a stake that was only *partially* held when its match was cancelled by the
+stake-commit timeout — such a stake never reaches `ACTIVE`, stays `PENDING`,
+and a crash/failure between the cancellation and its refund stranded the
+holders' funds. The sweep now also retries a `PENDING` stake on a `CANCELLED`
+match that has no settlement yet. It is limited to `CANCELLED` matches on
+purpose: `settle()` refunds only players whose `heldAt` is set there, so it
+cannot pay an unheld stake, whereas a `PENDING` stake on a `COMPLETED`/
+`ABANDONED` match would be treated as fully staked. The sentence above that
+recovery covers "any" unsettled terminal-match stake overstated the original
+behavior.
+
 ### Reconciliation is read-only, on demand
 `ReconciliationService.runOnce()` (exposed at `GET
 /admin/reconciliation/run`) checks for orphaned holds, missing

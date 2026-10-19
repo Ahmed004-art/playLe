@@ -27,6 +27,14 @@ PENDING ──(every player's stake confirmed)──> ACTIVE ──(match reache
                                                  SETTLED/REFUNDED above)
 ```
 
+**Implementation note (OUTSTANDING_WORK item 26).** The `PENDING → FAILED`
+edge above is the design intent, not what the code does: `settle()` only
+marks `SETTLING → FAILED`, and `SETTLING` is only set from `ACTIVE`, so a
+failed refund of a *partially held* `PENDING` stake on a cancelled match was
+never marked `FAILED`. Rather than change that status machine, the recovery
+sweep now selects a `PENDING` stake on a `CANCELLED` match that has no
+settlement and retries `settle()` directly (see ADR-017, "Crash recovery").
+
 `HELD` is declared in the enum (matching the Phase 5 spec's explicit
 state list) but is **not a distinct reachable state in this phase**:
 the moment every player's `MatchStakePlayer.heldAt` is set,

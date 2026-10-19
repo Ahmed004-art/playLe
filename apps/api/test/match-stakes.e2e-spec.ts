@@ -355,6 +355,147 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
     });
   });
 
+  describe('recovery of a one-sided stake on a cancelled match', () => {
+    // OUTSTANDING_WORK item 26. A match can be cancelled while only SOME
+    // players had held (stake-commit timeout). That stake never reached
+    // ACTIVE — it is still PENDING — so the crash-recovery sweep used to
+    // ignore it: if the process died (or settle() failed) between the
+    // CANCELLED transition and the refund, the holder's funds were stranded.
+    //
+    // Deliberately free of timing: no sleeps, no reliance on a background
+    // sweep. The "crash window" is created directly by performing the
+    // WAITING -> CANCELLED transition `expireWaitingMatches` makes WITHOUT
+    // the settle() call that follows it, then the existing sweep runs. The
+    // sweep's recovery step itself settles — or, if a concurrent sweep is
+    // already settling, waits for that committed settlement — so the end
+    // state is the same whichever instance gets there first.
+
+    /** Keeps the match from expiring on its own while the test sets up. */
+    async function keepWaiting(matchId: string): Promise<void> {
+      await prisma.match.update({
+        where: { id: matchId },
+        data: { expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+      });
+    }
+
+    it('refunds the lone holder exactly once, ending REFUNDED', async () => {
+      const { matchId, x, o, admin } = await createStakedMatch(
+        'pendrec',
+        '750',
+      );
+      await keepWaiting(matchId);
+      const beforeX = await availableBalance(x.userId);
+      const beforeO = await availableBalance(o.userId);
+
+      // Exactly one player holds. ACTIVE needs every player held, so the
+      // stake is still PENDING. (Checked while the match is WAITING and
+      // nothing else could have touched it.)
+      await confirmStake(x.accessToken, matchId).expect(200);
+      const held = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+        include: { players: true },
+      });
+      expect(held.status).toBe('PENDING');
+      expect(held.players.filter((p) => p.heldAt !== null)).toHaveLength(1);
+      expect(await availableBalance(x.userId)).toBe(beforeX - 750n);
+      expect(await heldBalance(x.userId)).toBe(750n);
+
+      // The crash window: cancelled, refund not yet settled.
+      const flipped = await prisma.match.updateMany({
+        where: { id: matchId, status: 'WAITING' },
+        data: { status: 'CANCELLED', terminationReason: 'WAITING_TIMEOUT' },
+      });
+      expect(flipped.count).toBe(1);
+
+      await matchTimeoutService.sweep();
+
+      // Funds back, exactly.
+      expect(await availableBalance(x.userId)).toBe(beforeX);
+      expect(await heldBalance(x.userId)).toBe(0n);
+      expect(await availableBalance(o.userId)).toBe(beforeO);
+      expect(await heldBalance(o.userId)).toBe(0n);
+
+      const stake = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+        include: { settlement: { include: { entries: true } } },
+      });
+      expect(stake.status).toBe('REFUNDED');
+      expect(stake.settlement?.outcome).toBe('CANCELLED');
+      expect(stake.settlement?.status).toBe('COMPLETED');
+      expect(stake.settlement?.platformFeeAmountMinor).toBe(0n);
+      expect(stake.settlement?.entries).toHaveLength(1);
+      expect(stake.settlement?.entries[0]).toMatchObject({
+        userId: x.userId,
+        role: 'REFUND_RECIPIENT',
+        availableDeltaMinor: 750n,
+        heldDeltaMinor: -750n,
+      });
+
+      // Ledger: one hold and one refund for this stake, both x's, netting to
+      // zero — and nothing at all for the player who never held.
+      const ledger = await prisma.ledgerEntry.findMany({
+        where: { relatedMatchStakeId: stake.id },
+      });
+      expect(ledger.map((e) => e.type).sort()).toEqual([
+        'STAKE_HOLD',
+        'STAKE_REFUND',
+      ]);
+      expect(ledger.every((e) => e.userId === x.userId)).toBe(true);
+      expect(ledger.reduce((sum, e) => sum + e.availableDeltaMinor, 0n)).toBe(
+        0n,
+      );
+      expect(ledger.reduce((sum, e) => sum + e.heldDeltaMinor, 0n)).toBe(0n);
+
+      // Exactly once: more recovery passes and a direct settle() change
+      // nothing.
+      await matchTimeoutService.sweep();
+      await settlementService.settle(matchId);
+      expect(await availableBalance(x.userId)).toBe(beforeX);
+      expect(await heldBalance(x.userId)).toBe(0n);
+      expect(
+        await prisma.settlement.count({ where: { matchStakeId: stake.id } }),
+      ).toBe(1);
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedMatchStakeId: stake.id, type: 'STAKE_REFUND' },
+        }),
+      ).toBe(1);
+
+      // Reconciliation sees a consistent picture for this match.
+      const report = await request(app.getHttpServer())
+        .get('/api/v1/admin/reconciliation/run')
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .expect(200);
+      const relevant = report.body.anomalies.filter(
+        (a: { matchId?: string; matchStakeId?: string }) =>
+          a.matchId === matchId || a.matchStakeId === stake.id,
+      );
+      expect(relevant).toHaveLength(0);
+    });
+
+    it('leaves a one-sided stake on a still-WAITING match untouched', async () => {
+      // Safety: recovery must only ever pick up a PENDING stake whose match
+      // is CANCELLED. A live waiting room must not be settled or refunded.
+      const { matchId, x } = await createStakedMatch('pendwait', '750');
+      await keepWaiting(matchId);
+      await confirmStake(x.accessToken, matchId).expect(200);
+
+      await matchTimeoutService.sweep();
+
+      const match = await prisma.match.findUniqueOrThrow({
+        where: { id: matchId },
+      });
+      expect(match.status).toBe('WAITING');
+      const stake = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+        include: { settlement: true },
+      });
+      expect(stake.status).toBe('PENDING');
+      expect(stake.settlement).toBeNull();
+      expect(await heldBalance(x.userId)).toBe(750n);
+    });
+  });
+
   describe('disconnect forfeit settles like a win', () => {
     it('awards the connected player a forfeit win and settles it', async () => {
       const { matchId, x, o } = await createStakedMatch('forfeit', '600');
