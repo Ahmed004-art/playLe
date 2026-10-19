@@ -323,6 +323,23 @@ GitHub API (run 38437718801: Admin, Backend and Mobile all succeeded).
 **Severity**: Low (documentation gap). **Owner**: whoever next maintains
 the phase documentation.
 
+### 25. Shared match chrome may overflow on narrow screens — unverified on a device
+**Status**: Open, pre-existing (not introduced by Phase 10). **Evidence**:
+running the Dice widget tests at a 390 px phone viewport with Flutter's
+test font (roughly twice as wide as a real font) produced `RenderFlex`
+overflows in two *shared* widgets: `MatchStatusBar` (the "Opponent
+disconnected" row, `core/match/widgets/match_status_bar.dart`) and
+`MatchStakeStatusBar` (the entry/pool row). Checkers' tests avoid it only
+because they run at the default 800 px width. Both widgets are fixed-size
+rows with no flexible children, so they are the likeliest place for a real
+overflow on a narrow phone, a large system font size, or a long countdown
+string. Real-device impact is **not verified**; the test font exaggerates
+it. Phase 10 worked around its own part (the Dice status-bar `leading` is
+icon-only) and runs only those two tests at the default viewport.
+**Severity**: Low-Medium (all games share these widgets). **Owner**: a
+future UI-polish task: make both rows wrap or flex, then run every game
+screen test at a phone-width viewport.
+
 ---
 
 This file is updated whenever a phase's audit or implementation work

@@ -122,13 +122,13 @@ class _DiceScreenState extends State<DiceScreen> {
           child: Column(
             children: [
               MatchStatusBar(
-                leading: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.casino_outlined, size: 18),
-                    SizedBox(width: AppSpacing.sm),
-                    Text('First to 2 rounds'),
-                  ],
+                // Icon only: the shared status bar also has to fit the turn
+                // text and the countdown, so anything wider overflows on
+                // narrow phones. The rule hint lives under the round label.
+                leading: const Icon(
+                  Icons.casino_outlined,
+                  size: 18,
+                  semanticLabel: 'Dice',
                 ),
                 opponentConnected: opponent.connected,
                 isMyTurn: isMyTurn,
@@ -180,6 +180,13 @@ class _DiceScreenState extends State<DiceScreen> {
                         'Round ${state.round}',
                         key: const ValueKey('round-label'),
                         style: textTheme.titleMedium,
+                      ),
+                      Text(
+                        'First to win 2 rounds',
+                        key: const ValueKey('rules-hint'),
+                        style: textTheme.bodySmall?.copyWith(
+                          color: AppColors.onSurfaceMuted,
+                        ),
                       ),
                       if (!finished && state.consecutiveTies > 0)
                         Padding(
