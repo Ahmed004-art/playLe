@@ -396,8 +396,27 @@ one, so this is a stricter bar than a device, but it is not a device check.
 (run [39267449267](https://github.com/Ahmed004-art/playLe/actions/runs/39267449267))
 passed all three jobs, including the Backend "Unit + e2e tests" step. **The
 entry stays OPEN for a residual**: the cause of the original intermittent CI
-failure that led to this finding (below) was never established, and the same
-race class exists in other e2e tests.
+failure that led to this finding (below) was never established.
+**E2E isolation (PR #4, merged)**: to remove the race class described under
+H1 below, PR #4 (test-only; merge commit
+`58830b229eafec86e80ad40168e654b60f544c8f`, head `6af1cf2`) made
+`apps/api/vitest.config.e2e.ts` run e2e files one at a time
+(`fileParallelism: false`) and set `MATCH_TIMEOUT_SWEEP_INTERVAL_MS` and
+`NOTIFICATION_DISPATCH_SWEEP_INTERVAL_MS` to one hour via `test.env` (this
+overrides the 2000 ms CI exports), so no background sweep can act on another
+test's rows. No e2e test relied on a timer — each drives its transitions with
+an explicit `sweep()`/`processTurnTimeout()`/`dispatcher.sweep()` — so no
+existing test or assertion was changed. Added: `test/e2e-isolation.e2e-spec.ts`
+(guards the override; no database) and `src/matches/match-timeout.timer.spec.ts`
+(fake-timer unit spec that the service still schedules `sweep()`, survives a
+rejecting sweep and stops on destroy). CI: PR run
+[39470583275](https://github.com/Ahmed004-art/playLe/actions/runs/39470583275)
+and the post-merge run on `main`
+[39472049599](https://github.com/Ahmed004-art/playLe/actions/runs/39472049599)
+passed Backend (including the Postgres/Redis e2e step), Admin and Mobile. **This
+is not proof of cause or of a fix**: each is one green run of an intermittent
+failure, the job logs are still not accessible, and the e2e suite no longer
+exercises the real interval timer (only the unit spec does).
 **How it was found**: while investigating an intermittent Backend e2e failure
 on PR #2. That investigation was first recorded as its own entry on PR #2's
 branch (open, cause unknown); it is merged into this one so the register has a
@@ -486,14 +505,15 @@ instance's settlement commits — so the refund is committed before `sweep()`
 returns. A transient `settle()` failure inside that very call would still
 fail the assertion (but the next sweep would now retry it). Other e2e tests
 that call `processTurnTimeout` or `sweep()` and then assert immediately
-(including the Phase 10 Dice e2e) share the same race class and were not
-changed.
+(including the Phase 10 Dice e2e) shared the same race class; PR #4 (above)
+addresses it for all of them through isolation rather than per-test edits.
 **Severity**: the gap — was Medium before any real-money launch (money held
 with no automatic recovery; real-money gaming is off by default), now fixed.
-The residual (unexplained failure; timing-dependent e2e tests) — Low-Medium.
-**Owner**: project owner may (a) fetch the log of run 39258189645 and run the
-search above, and (b) authorize a separate change making the timing-dependent
-e2e tests deterministic.
+The residual (failure still unexplained; isolation applied but unproven by
+repetition) — Low.
+**Owner**: project owner may fetch the log of run 39258189645 and run the
+search above (the isolation change is done; this is what would settle H1 vs
+H2). If the same failure ever recurs after PR #4, that points away from H1.
 
 ---
 
