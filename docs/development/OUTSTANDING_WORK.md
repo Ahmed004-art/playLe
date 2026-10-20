@@ -497,23 +497,64 @@ investigating it, and is real and fixed regardless. To settle H1 vs H2 (needs a
 GitHub login — job logs are not public): open the Backend job log of run
 39258189645 and search for `Settlement failed for`; present → H2 likely,
 absent → H1 likely.
-By analysis only (not executed): the fix likely also closes the H1 window for
-this test, because `sweep()` ends with the recovery step, which selects a
-not-yet-refunded `PENDING`/`CANCELLED` stake and calls `settle()` — which
-either settles or waits on the unique settlement key until the other
-instance's settlement commits — so the refund is committed before `sweep()`
-returns. A transient `settle()` failure inside that very call would still
-fail the assertion (but the next sweep would now retry it). Other e2e tests
+PR #3's recovery step closes both windows for this test on `main`: `sweep()`
+ends with the recovery step, which selects a not-yet-refunded
+`PENDING`/`CANCELLED` stake and calls `settle()` itself. This is now executed,
+not only reasoned: PR #6 (below) added deterministic e2e cases that force
+each one — a second sweep finding the match already cancelled while the first
+is still inside `settle()` (H1; it reproduces the exact state the original
+failure saw, `CANCELLED` with the holder 750 short), and a `settle()` that
+fails once (H2) — and both passed on `main`'s code. Two `settle()` failures in
+a row would still leave the stake for the *next* sweep. Other e2e tests
 that call `processTurnTimeout` or `sweep()` and then assert immediately
 (including the Phase 10 Dice e2e) shared the same race class; PR #4 (above)
 addresses it for all of them through isolation rather than per-test edits.
-**Severity**: the gap — was Medium before any real-money launch (money held
-with no automatic recovery; real-money gaming is off by default), now fixed.
-The residual (failure still unexplained; isolation applied but unproven by
-repetition) — Low.
+**A second defect in the same scenario (found while tracing it; FIXED and
+merged — PR #6)**: `MatchStakesService.confirmStake` checked `match.status ===
+'WAITING'` *before*, and outside, its hold transaction. A confirm in flight
+while the stake-commit timeout cancelled the match therefore committed its
+`STAKE_HOLD` *after* `settle()` had refunded only the players already held and
+marked the stake `REFUNDED` — that player's stake stayed in held balance with
+no automatic retry (the stake is `REFUNDED` and has a settlement) and **no
+reconciliation anomaly** (`ORPHANED_HOLD` skips `REFUNDED` stakes; the wallet
+still matches its ledger). Separately, activation's `WAITING → ACTIVE` match
+update was unconditional, so a match cancelled after the last hold could be
+revived as `ACTIVE`. **This is not the cause of the original failure** — in
+that test the second player never confirms. Fix (`match-stakes.service.ts`):
+the hold transaction now takes `SELECT status FROM matches … FOR UPDATE` after
+the wallet lock and requires `WAITING` (otherwise 422 and the hold rolls
+back); the timeout's `WAITING → CANCELLED` update needs the same row, so it
+either committed first or waits for the hold, and the refund that follows
+sees it. Activation now updates the match conditionally on `WAITING`, before
+the stake. Lock order is wallet → match; no transaction takes a match lock
+then a wallet lock. No change to settlement, ledger, fees, schema, eligibility
+or flags. **Tests**: `src/match-stakes/match-stakes.service.spec.ts` (unit, 4
+cases — all 4 failed before the fix, pass after) and three gated e2e cases in
+`test/match-stakes.e2e-spec.ts` ("stake-commit timeout racing other work").
+**CI evidence**: on the test-only commit `501abd1`, run
+[39478518591](https://github.com/Ahmed004-art/playLe/actions/runs/39478518591)
+failed with exactly one annotated failure — the late-confirm case,
+`match-stakes.e2e-spec.ts:686`, `expected 200 to be 422` (the late hold was
+accepted) — while the H1/H2 cases passed. With the fix (`cf8d002`), PR run
+[39500086077](https://github.com/Ahmed004-art/playLe/actions/runs/39500086077)
+and the post-merge run on `main` (merge commit
+`f818e6924f38fa1b0bd632778c18ef8e2b8ab226`, run
+[39502831808](https://github.com/Ahmed004-art/playLe/actions/runs/39502831808))
+passed Backend (incl. Postgres/Redis e2e), Admin and Mobile. Each is one run;
+per-test lines are not visible without a GitHub login. **Not done**: no
+database has been audited for holds already stranded this way, and nothing
+repairs one — the fix only prevents new ones. Real-money gaming is off by
+default, so production exposure is expected to be nil, but that is not
+verified against any real database.
+**Severity**: the PR #3 gap and the PR #6 defect — each Medium before any
+real-money launch (money held with no automatic recovery), both now fixed.
+The residual (original failure still unexplained; no audit of existing
+stranded holds) — Low.
 **Owner**: project owner may fetch the log of run 39258189645 and run the
-search above (the isolation change is done; this is what would settle H1 vs
-H2). If the same failure ever recurs after PR #4, that points away from H1.
+search above — the only thing that would settle H1 vs H2. Before any
+real-money launch, run a one-off query for holds on terminal stakes (held
+`MatchStakePlayer` rows whose stake is `REFUNDED`/`SETTLED` with no matching
+`SettlementEntry`) against the target database.
 
 ---
 
