@@ -298,6 +298,14 @@ waiting/rejected/timeout/resignation/win/loss/draw states; adjust
 `apps/mobile/lib/features/dice/` if needed. **Severity**: Medium (product
 quality is a first-class acceptance criterion). **Owner**: project owner
 or whoever has a device.
+**Phase 11 update (still OPEN)**: Phase 10 was merged (PR #1, merge commit
+`d051115`) and CI-verified. Phase 10/11 added evidence from a **Chrome
+preview** (the real `DiceScreen`/`AppTheme` rendered headlessly at 320×640
+and 390×844 from fixture states, Arial standing in for Roboto) and widget
+tests — neither is an Android device check, so the remaining steps above
+are unchanged. Not yet seen at all: the roll/tumble animation in motion,
+reduced-motion behavior on a device, and large system font sizes on a
+device.
 
 ## Repository hygiene (found during Phase 10 environment recovery)
 
@@ -312,6 +320,27 @@ downgrade (`eslint-config-next@14.2.35`) and a major upgrade
 (`prisma@7.10.1`), so none was applied. **Severity**: Low-Medium (build/
 CLI tooling processing no user input; exploitability untested). **Owner**:
 a separate, controlled dependency-remediation task with CI.
+**Phase 11 disposition (still OPEN, decision recommended — nothing was
+changed)**: the audit was reproduced exactly (8 high, from two advisories).
+- **GHSA-vfj7-8cjw-p6xm, `braces` ≤ 3.0.3 (5 findings: `braces`,
+  `micromatch`, `fast-glob`, `@next/eslint-plugin-next`,
+  `eslint-config-next`)**: the advisory lists **no patched version** and
+  3.0.3 is the latest published, so no update or override can fix it.
+  Exposure: glob patterns come from the ESLint plugin's static config while
+  linting the repo's own files; nothing reaches it from a request. DoS-class
+  (crash). **Recommendation**: accept; re-run `npm audit` on each dependency
+  update and revisit when a patched release appears.
+- **GHSA-ggr8-5vv4-36mx, `deepmerge-ts` < 8.0.0 (3 findings: `deepmerge-ts`,
+  `@prisma/config`, `prisma`)**: patched in 8.0.0, but `@prisma/config`
+  6.19.3 pins 7.1.5 exactly; only Prisma 7.x uses 8.x — a major upgrade not
+  taken merely to clear an audit. A scoped `overrides` entry was tried in a
+  scratch copy (scoped, global, and with `npm update`): npm 10.9.8 kept 7.1.5
+  every time, and running npm on this lockfile rewrites 37 unrelated lines of
+  metadata flags. Exposure: the repo has no `prisma.config`, so Prisma's
+  config loader only merges its own defaults. **Recommendation**: accept
+  until a dedicated Prisma 7 upgrade phase (with migration/e2e verification).
+- Reasoning above is exposure analysis, not "it's only a dev dependency".
+  Full detail: `PHASE_11_REPORT.md`, Stage 3.
 
 ### 24. No Phase 8 or Phase 9 report exists in `docs/development/`
 **Status**: Open. **Evidence**: `CLAUDE.md` and `README.md` refer to "the
@@ -322,6 +351,13 @@ checklists. For Phase 9, a green CI run on commit
 GitHub API (run 38437718801: Admin, Backend and Mobile all succeeded).
 **Severity**: Low (documentation gap). **Owner**: whoever next maintains
 the phase documentation.
+**Phase 11 update — CLOSED**: `PHASE_8_REPORT.md`, `PHASE_9_REPORT.md` and
+`PHASE_10_REPORT.md` now exist (plus `PHASE_11_REPORT.md`), written only from
+Git history and GitHub Actions data, each separating implemented / locally
+tested / CI verified / visually inspected / device verified / outstanding.
+Finding recorded there: Phase 8's first commit `1becc31` failed the Admin
+job and was CI-verified green only on `08eafbc`. Where the repo's older
+prose claimed local test passes, the reports say "claimed, not reproduced".
 
 ### 25. Shared match chrome may overflow on narrow screens — unverified on a device
 **Status**: Open, pre-existing (not introduced by Phase 10). **Evidence**:
@@ -339,13 +375,34 @@ icon-only) and runs only those two tests at the default viewport.
 **Severity**: Low-Medium (all games share these widgets). **Owner**: a
 future UI-polish task: make both rows wrap or flex, then run every game
 screen test at a phone-width viewport.
+**Phase 11 update — fixed at the widget level; real-device check still OPEN
+(see #22)**: `MatchStatusBar`, `MatchStakeStatusBar`, `DrawOfferBanner`,
+`FinancialResultBanner` and the Dice roll rows now wrap or flex instead of
+overflowing. Evidence: a new test matrix
+(`apps/mobile/test/core/match/match_chrome_layout_test.dart`) at 320 and 390
+px × 1.0/1.5/2.0× text scale covering the shared widgets and the Tic-Tac-Toe,
+Checkers and Dice screens — 47 of its 60 cases failed before the fix and all
+pass after; the two Dice tests moved to the wide viewport now run at phone
+width again; a geometry test (verified to fail without its fix) guards the
+status bar spanning the full width; a Chrome preview re-render of the
+**Dice screen only** confirmed no visual regression at normal sizes (the
+Checkers and Tic-Tac-Toe screens share these widgets but were covered by the
+widget matrix only, not rendered). The test font is ~2× wider than a real
+one, so this is a stricter bar than a device, but it is not a device check.
 
 ### 26. One-sided `PENDING` stake on a cancelled match was never retried by crash recovery
-**Status**: Fix implemented on branch `fix/pending-stake-recovery`;
-**not yet merged and not yet CI-verified — stays OPEN until reviewed, merged
-and CI is green.** (This entry was first drafted on the unmerged Phase 11
-branch as an investigation of an intermittent CI failure; this is its
-resolved form and supersedes that text.)
+**Status**: The recovery gap is **FIXED and merged** — PR #3, merge commit
+`7f71c75b974cc64065c3b8f7fad69f6662333ab8` on `main`; CI on that merge commit
+(run [39267449267](https://github.com/Ahmed004-art/playLe/actions/runs/39267449267))
+passed all three jobs, including the Backend "Unit + e2e tests" step. **The
+entry stays OPEN for a residual**: the cause of the original intermittent CI
+failure that led to this finding (below) was never established, and the same
+race class exists in other e2e tests.
+**How it was found**: while investigating an intermittent Backend e2e failure
+on PR #2. That investigation was first recorded as its own entry on PR #2's
+branch (open, cause unknown); it is merged into this one so the register has a
+single item 26 — the failure's details are preserved under "The original CI
+failure" below.
 **The gap (confirmed by reading the code and by a unit test that failed
 before the fix and passes after)**: a match can be cancelled while only
 *some* players had held (stake-commit timeout). `MatchStakesService.
@@ -386,29 +443,57 @@ the `WAITING → CANCELLED` transition without its `settle()` (the crash
 window), runs the existing sweep, and asserts the refund exactly once, stake
 `REFUNDED`, ledger/balance consistency, idempotence and a clean
 reconciliation; a second e2e case asserts a one-sided stake on a still-
-`WAITING` match is left untouched. Neither e2e case has been executed yet;
-that the e2e test fails without the fix is established only by the unit
-spec and by reading the code, not by running it.
-**The original CI failure (still not established)**: run
+`WAITING` match is left untouched. Both e2e cases have since run in CI — on
+PR #3's head (run [39263902816](https://github.com/Ahmed004-art/playLe/actions/runs/39263902816))
+and on `main` (run 39267449267) — and the Backend "Unit + e2e tests" step
+passed both times. Per-test lines are not visible (job logs need a GitHub
+login), so their individual passes are inferred from the step passing and from
+the absence of `.only`/`.skip` markers. That the e2e test *fails without the
+fix* has never been shown by running it — only by the unit spec and by
+reading the code.
+**The original CI failure (cause still NOT established)**: on PR #2, run
 [39258189645](https://github.com/Ahmed004-art/playLe/actions/runs/39258189645)
-on `d510f26` failed once at `match-stakes.e2e-spec.ts:347` (`expected 99250n
-to be 100000n`) while the identical code passed elsewhere. Its logs were not
-accessible, so whether it was this gap or a pre-existing test race (parallel
-e2e files each run their own 2 s sweep; a sweep that loses the `WAITING →
-CANCELLED` race returns without waiting for the winner's `settle()`) is
-**unknown**. By analysis only (not executed): the fix likely also closes
-that race for this test, because `sweep()` ends with the recovery step, which
-selects a not-yet-refunded `PENDING`/`CANCELLED` stake and calls `settle()`
-— which either settles or waits on the unique settlement key until the other
+on `d510f26` — a documentation-only commit on top of `7a991a5`, whose run
+[39256886098](https://github.com/Ahmed004-art/playLe/actions/runs/39256886098)
+passed with identical code — the Backend job failed in
+`apps/api/test/match-stakes.e2e-spec.ts:347` with `expected 99250n to be
+100000n`. In "stake-commit timeout — cancels the match and refunds whichever
+player already held", player x's available balance was still 750 short after
+`matchTimeoutService.sweep()`, although line 345 had already seen the match
+`CANCELLED`. Admin and Mobile passed, and the next run (39259457003, on
+`d659caf`) passed. Its logs were never accessible. Two explanations fit the
+code (from reading it, not from logs):
+- **H1 — test race (pre-existing).** The e2e files run in parallel against one
+  Postgres and each app instance runs its own timeout sweep every
+  `MATCH_TIMEOUT_SWEEP_INTERVAL_MS` (2000 ms in CI). If another instance's
+  sweep performs the `WAITING → CANCELLED` transition first, this test's own
+  `sweep()` sees `count === 0`, skips settlement and returns, so the
+  assertion can run before the other instance's `settle()` commits.
+- **H2 — the recovery gap above.** The instance that cancelled the match hit a
+  transient failure in `settle()` (logged as `Settlement failed for cancelled
+  match …` and swallowed by `.catch`), stranding the one-sided `PENDING` stake.
+**Nothing establishes that the failure was caused by the recovery gap** — it
+may equally have been H1, or something else. The gap was found *while*
+investigating it, and is real and fixed regardless. To settle H1 vs H2 (needs a
+GitHub login — job logs are not public): open the Backend job log of run
+39258189645 and search for `Settlement failed for`; present → H2 likely,
+absent → H1 likely.
+By analysis only (not executed): the fix likely also closes the H1 window for
+this test, because `sweep()` ends with the recovery step, which selects a
+not-yet-refunded `PENDING`/`CANCELLED` stake and calls `settle()` — which
+either settles or waits on the unique settlement key until the other
 instance's settlement commits — so the refund is committed before `sweep()`
 returns. A transient `settle()` failure inside that very call would still
 fail the assertion (but the next sweep would now retry it). Other e2e tests
 that call `processTurnTimeout` or `sweep()` and then assert immediately
-(including the Phase 10 Dice e2e) share the same race class and are not
-changed here.
-**Severity**: Medium before any real-money launch (money held with no
-automatic recovery; real-money gaming is off by default). **Owner**:
-reviewer/owner to merge `fix/pending-stake-recovery` after CI.
+(including the Phase 10 Dice e2e) share the same race class and were not
+changed.
+**Severity**: the gap — was Medium before any real-money launch (money held
+with no automatic recovery; real-money gaming is off by default), now fixed.
+The residual (unexplained failure; timing-dependent e2e tests) — Low-Medium.
+**Owner**: project owner may (a) fetch the log of run 39258189645 and run the
+search above, and (b) authorize a separate change making the timing-dependent
+e2e tests deterministic.
 
 ---
 

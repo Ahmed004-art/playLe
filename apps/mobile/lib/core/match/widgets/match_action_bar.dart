@@ -106,29 +106,39 @@ class DrawOfferBanner extends StatelessWidget {
         color: AppColors.secondary.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Row(
+      // Wraps (text, then buttons underneath) rather than squeezing the
+      // buttons off the edge on a narrow screen or large text scale.
+      child: Wrap(
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: AppSpacing.md,
+        runSpacing: AppSpacing.xs,
         children: [
-          Expanded(
-            child: Text(
-              isMine
-                  ? 'Draw offer sent — waiting for your opponent'
-                  : 'Your opponent offered a draw',
-            ),
+          Text(
+            isMine
+                ? 'Draw offer sent — waiting for your opponent'
+                : 'Your opponent offered a draw',
           ),
-          if (!isMine) ...[
-            TextButton(
-              onPressed: busy ? null : onReject,
-              child: const Text('Decline'),
-            ),
-            FilledButton(
-              onPressed: busy ? null : onAccept,
-              child: const Text('Accept'),
-            ),
-          ] else
-            TextButton(
-              onPressed: busy ? null : onReject,
-              child: const Text('Cancel'),
-            ),
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: AppSpacing.xs,
+            children: [
+              if (!isMine) ...[
+                TextButton(
+                  onPressed: busy ? null : onReject,
+                  child: const Text('Decline'),
+                ),
+                FilledButton(
+                  onPressed: busy ? null : onAccept,
+                  child: const Text('Accept'),
+                ),
+              ] else
+                TextButton(
+                  onPressed: busy ? null : onReject,
+                  child: const Text('Cancel'),
+                ),
+            ],
+          ),
         ],
       ),
     );

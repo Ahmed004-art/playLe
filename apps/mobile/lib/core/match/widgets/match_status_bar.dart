@@ -75,6 +75,9 @@ class _MatchStatusBarState extends State<MatchStatusBar> {
   Widget build(BuildContext context) {
     final remaining = _remainingSeconds();
     return Container(
+      // Full width, as the old `Row` was: a bare `Wrap` shrink-wraps to its
+      // content, which would leave a narrow centered pill.
+      width: double.infinity,
       padding: const EdgeInsets.symmetric(
         horizontal: AppSpacing.lg,
         vertical: AppSpacing.md,
@@ -83,44 +86,67 @@ class _MatchStatusBarState extends State<MatchStatusBar> {
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadii.md),
       ),
-      child: Row(
+      // A `Wrap`, not a `Row`: leading and status share one line while they
+      // fit, and the status drops to a second line instead of overflowing
+      // on a narrow screen, a long countdown, or a large text scale
+      // (OUTSTANDING_WORK item 25). Same look as before whenever it fits.
+      child: Wrap(
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: AppSpacing.sm,
+        runSpacing: AppSpacing.xs,
         children: [
-          widget.leading,
-          const Spacer(),
-          if (!widget.opponentConnected && !widget.finished) ...[
-            const Icon(Icons.wifi_off, size: 16, color: AppColors.error),
-            const SizedBox(width: AppSpacing.sm),
-            const Text(
-              'Opponent disconnected',
-              style: TextStyle(color: AppColors.error),
-            ),
-          ] else if (!widget.finished) ...[
-            Text(
-              widget.isMyTurn ? 'Your turn' : "Opponent's turn",
-              style: TextStyle(
-                color: widget.isMyTurn
-                    ? AppColors.secondary
-                    : AppColors.onSurfaceMuted,
-                fontWeight: widget.isMyTurn
-                    ? FontWeight.w600
-                    : FontWeight.normal,
-              ),
-            ),
-            if (remaining != null) ...[
-              const SizedBox(width: AppSpacing.sm),
-              Text(
-                '(${_format(remaining)})',
-                style: TextStyle(
-                  color: remaining <= 10
-                      ? AppColors.error
-                      : AppColors.onSurfaceMuted,
-                  fontWeight: remaining <= 10
-                      ? FontWeight.w600
-                      : FontWeight.normal,
+          // Scales the game-specific `leading` down only if it alone is
+          // wider than the whole bar (a huge text scale); otherwise it keeps
+          // its natural size. Callers' leading rows can't wrap themselves.
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: widget.leading,
+          ),
+          if (!widget.opponentConnected && !widget.finished)
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: AppSpacing.sm,
+              children: const [
+                Icon(Icons.wifi_off, size: 16, color: AppColors.error),
+                Text(
+                  'Opponent disconnected',
+                  style: TextStyle(color: AppColors.error),
                 ),
-              ),
-            ],
-          ],
+              ],
+            )
+          else if (!widget.finished)
+            Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: AppSpacing.sm,
+              children: [
+                Text(
+                  widget.isMyTurn ? 'Your turn' : "Opponent's turn",
+                  style: TextStyle(
+                    color: widget.isMyTurn
+                        ? AppColors.secondary
+                        : AppColors.onSurfaceMuted,
+                    fontWeight: widget.isMyTurn
+                        ? FontWeight.w600
+                        : FontWeight.normal,
+                  ),
+                ),
+                if (remaining != null)
+                  Text(
+                    '(${_format(remaining)})',
+                    style: TextStyle(
+                      color: remaining <= 10
+                          ? AppColors.error
+                          : AppColors.onSurfaceMuted,
+                      fontWeight: remaining <= 10
+                          ? FontWeight.w600
+                          : FontWeight.normal,
+                    ),
+                  ),
+              ],
+            ),
         ],
       ),
     );

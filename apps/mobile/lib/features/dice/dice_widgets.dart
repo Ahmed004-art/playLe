@@ -273,20 +273,24 @@ class DiceRollRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                // `Wrap`s, not `Row`s: the label/pips and the two dice drop
+                // to a second line on a very narrow row or large text scale
+                // instead of overflowing (OUTSTANDING_WORK item 25).
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: AppSpacing.md,
                   children: [
                     Text(
                       label,
                       style: textTheme.labelLarge?.copyWith(color: labelColor),
                     ),
-                    if (score != null) ...[
-                      const SizedBox(width: AppSpacing.md),
-                      RoundPips(wins: score, color: pipColor),
-                    ],
+                    if (score != null) RoundPips(wins: score, color: pipColor),
                   ],
                 ),
                 SizedBox(height: compact ? AppSpacing.xs : AppSpacing.sm),
-                Row(
+                Wrap(
+                  spacing: AppSpacing.md,
+                  runSpacing: AppSpacing.sm,
                   children: [
                     TumblingDie(
                       key: ValueKey('$keyPrefix-die-0'),
@@ -295,7 +299,6 @@ class DiceRollRow extends StatelessWidget {
                       emphasis: emphasis,
                       animate: animate,
                     ),
-                    const SizedBox(width: AppSpacing.md),
                     TumblingDie(
                       key: ValueKey('$keyPrefix-die-1'),
                       value: current?.dice[1],
