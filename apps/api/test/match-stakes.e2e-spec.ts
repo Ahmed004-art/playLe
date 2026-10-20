@@ -10,13 +10,16 @@ import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { MatchTimeoutService } from '../src/matches/match-timeout.service.js';
 import { SettlementService } from '../src/settlement/settlement.service.js';
+import { WalletService } from '../src/wallet/wallet.service.js';
 import { SYSTEM_ACCOUNT_USER_ID } from '../src/system-account/system-account.constants.js';
+import { vi } from 'vitest';
 
 describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let matchTimeoutService: MatchTimeoutService;
   let settlementService: SettlementService;
+  let walletService: WalletService;
   const runId = randomUUID().slice(0, 8);
 
   const email = (label: string) => `${label}-${runId}@example.com`;
@@ -46,6 +49,7 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
     prisma = moduleFixture.get(PrismaService);
     matchTimeoutService = moduleFixture.get(MatchTimeoutService);
     settlementService = moduleFixture.get(SettlementService);
+    walletService = moduleFixture.get(WalletService);
   }, 30000);
 
   afterAll(async () => {
@@ -493,6 +497,218 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
       expect(stake.status).toBe('PENDING');
       expect(stake.settlement).toBeNull();
       expect(await heldBalance(x.userId)).toBe(750n);
+    });
+  });
+
+  describe('stake-commit timeout racing other work (item 26)', () => {
+    // OUTSTANDING_WORK item 26. The original intermittent failure of the
+    // stake-commit timeout test above saw the match CANCELLED with the lone
+    // holder's refund not yet applied (expected 100000n, received 99250n).
+    // Two explanations fit and the run's logs were never readable: another
+    // sweep cancelled the match first and was still settling it (race), or
+    // the refund's settle() failed once (transient failure). Both are forced
+    // here deterministically - with gates, not sleeps - and with them a
+    // third interleaving found while tracing the path: a stake confirmed
+    // while the timeout is cancelling the match.
+
+    function deferred(): { promise: Promise<void>; resolve: () => void } {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => (resolve = r));
+      return { promise, resolve };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** One player holds, then the stake-commit window is made to elapse. */
+    async function holdOneSideAndExpire(label: string) {
+      const created = await createStakedMatch(label, '750');
+      const beforeX = await availableBalance(created.x.userId);
+      await confirmStake(created.x.accessToken, created.matchId).expect(200);
+      expect(await heldBalance(created.x.userId)).toBe(750n);
+      await prisma.match.update({
+        where: { id: created.matchId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      return { ...created, beforeX };
+    }
+
+    async function expectRefundedExactlyOnce(
+      matchId: string,
+      holder: { userId: string },
+      before: bigint,
+    ): Promise<void> {
+      expect(await availableBalance(holder.userId)).toBe(before);
+      expect(await heldBalance(holder.userId)).toBe(0n);
+      const stake = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+        include: { settlement: { include: { entries: true } } },
+      });
+      expect(stake.status).toBe('REFUNDED');
+      expect(stake.settlement?.outcome).toBe('CANCELLED');
+      expect(stake.settlement?.entries).toHaveLength(1);
+      expect(stake.settlement?.entries[0]).toMatchObject({
+        userId: holder.userId,
+        role: 'REFUND_RECIPIENT',
+        availableDeltaMinor: 750n,
+        heldDeltaMinor: -750n,
+      });
+      expect(
+        await prisma.settlement.count({ where: { matchStakeId: stake.id } }),
+      ).toBe(1);
+      const ledger = await prisma.ledgerEntry.findMany({
+        where: { relatedMatchStakeId: stake.id },
+      });
+      expect(ledger.map((e) => e.type).sort()).toEqual([
+        'STAKE_HOLD',
+        'STAKE_REFUND',
+      ]);
+      expect(ledger.every((e) => e.userId === holder.userId)).toBe(true);
+    }
+
+    it('a sweep that finds the match already cancelled still finishes the refund', async () => {
+      const { matchId, x, beforeX } = await holdOneSideAndExpire('ovrlap');
+      const realSettle = settlementService.settle.bind(settlementService);
+      const reached = deferred();
+      const gate = deferred();
+      let paused = false;
+      vi.spyOn(settlementService, 'settle').mockImplementation(async (id) => {
+        if (id === matchId && !paused) {
+          paused = true;
+          reached.resolve();
+          await gate.promise;
+        }
+        return realSettle(id);
+      });
+
+      // The first sweep cancels the match and is held inside its settle().
+      const first = matchTimeoutService.sweep();
+      try {
+        await reached.promise;
+        // Exactly the state the original failure observed.
+        const cancelled = await prisma.match.findUniqueOrThrow({
+          where: { id: matchId },
+        });
+        expect(cancelled.status).toBe('CANCELLED');
+        expect(await availableBalance(x.userId)).toBe(beforeX - 750n);
+
+        // A second sweep (another instance, or the test's own) finds nothing
+        // to expire; its recovery step must still refund before returning.
+        await matchTimeoutService.sweep();
+        await expectRefundedExactlyOnce(matchId, x, beforeX);
+      } finally {
+        gate.resolve();
+        await first;
+      }
+
+      // The first sweep's settle() then finds the settlement and pays nothing.
+      await expectRefundedExactlyOnce(matchId, x, beforeX);
+    });
+
+    it('a refund whose settle() fails once is retried by the same sweep', async () => {
+      const { matchId, x, beforeX } = await holdOneSideAndExpire('retry');
+      const realSettle = settlementService.settle.bind(settlementService);
+      let failed = false;
+      const settle = vi
+        .spyOn(settlementService, 'settle')
+        .mockImplementation(async (id) => {
+          if (id === matchId && !failed) {
+            failed = true;
+            throw new Error('injected transient settlement failure');
+          }
+          return realSettle(id);
+        });
+
+      await matchTimeoutService.sweep();
+
+      // Cancellation's settle() failed (logged and swallowed); the recovery
+      // step at the end of the same sweep retried it.
+      expect(settle.mock.calls.filter(([id]) => id === matchId)).toHaveLength(
+        2,
+      );
+      expect(failed).toBe(true);
+      await expectRefundedExactlyOnce(matchId, x, beforeX);
+
+      // More passes change nothing.
+      await matchTimeoutService.sweep();
+      await expectRefundedExactlyOnce(matchId, x, beforeX);
+    });
+
+    it('a stake confirmed while the match is being cancelled is rejected, never stranded', async () => {
+      const { matchId, x, o, admin } = await createStakedMatch(
+        'lateconf',
+        '750',
+      );
+      const beforeX = await availableBalance(x.userId);
+      const beforeO = await availableBalance(o.userId);
+      await confirmStake(x.accessToken, matchId).expect(200);
+
+      // Hold o's confirm at the first statement of its hold transaction:
+      // after its WAITING pre-check, before it holds anything or takes any
+      // lock. (Every other caller passes straight through.)
+      const realGetWalletId =
+        walletService.getWalletIdForUser.bind(walletService);
+      const reached = deferred();
+      const gate = deferred();
+      let paused = false;
+      vi.spyOn(walletService, 'getWalletIdForUser').mockImplementation(
+        async (client, userId) => {
+          if (userId === o.userId && client !== prisma && !paused) {
+            paused = true;
+            reached.resolve();
+            await gate.promise;
+          }
+          return realGetWalletId(client, userId);
+        },
+      );
+
+      const lateConfirm = confirmStake(o.accessToken, matchId).then(
+        (res) => res,
+      );
+      let status: number;
+      try {
+        await reached.promise;
+        // Meanwhile the stake-commit window elapses and the sweep cancels
+        // the match and refunds x - the only player who has held.
+        await prisma.match.update({
+          where: { id: matchId },
+          data: { expiresAt: new Date(Date.now() - 1000) },
+        });
+        await matchTimeoutService.sweep();
+        await expectRefundedExactlyOnce(matchId, x, beforeX);
+      } finally {
+        gate.resolve();
+        status = (await lateConfirm).status;
+      }
+
+      // o's hold must not land on the cancelled, already-refunded match.
+      expect(status).toBe(422);
+      expect(await availableBalance(o.userId)).toBe(beforeO);
+      expect(await heldBalance(o.userId)).toBe(0n);
+      const match = await prisma.match.findUniqueOrThrow({
+        where: { id: matchId },
+      });
+      expect(match.status).toBe('CANCELLED');
+      await expectRefundedExactlyOnce(matchId, x, beforeX);
+
+      const stake = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+        include: { players: true },
+      });
+      expect(
+        stake.players.find((p) => p.userId === o.userId)?.heldAt,
+      ).toBeNull();
+
+      const report = await request(app.getHttpServer())
+        .get('/api/v1/admin/reconciliation/run')
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .expect(200);
+      const relevant = report.body.anomalies.filter(
+        (a: { matchId?: string; matchStakeId?: string }) =>
+          a.matchId === matchId || a.matchStakeId === stake.id,
+      );
+      expect(relevant).toHaveLength(0);
     });
   });
 
