@@ -197,6 +197,24 @@ export class MatchStakesService {
       // see the first's already-applied `STAKE_HOLD` — see
       // EligibilityService.assertCanStake's doc comment and ADR-023.
       await this.ledgerService.lockWallet(tx, walletId);
+
+      // Re-check the match under its row lock. The WAITING check above ran
+      // outside this transaction, so the stake-commit timeout may have
+      // cancelled the match since — and refunded it without this player,
+      // leaving a hold made now stranded on a REFUNDED stake that nothing
+      // retries (OUTSTANDING_WORK item 26). `expireWaitingMatches`' WAITING
+      // -> CANCELLED update needs this same row: it either committed before
+      // this lock (rejected here) or waits for this hold to commit, so the
+      // refund that follows it sees this player's `heldAt`. No transaction
+      // locks a match row and then a wallet, so this order cannot deadlock.
+      const [locked] = await tx.$queryRaw<{ status: string }[]>`
+        SELECT status FROM matches WHERE id = ${matchId} FOR UPDATE`;
+      if (locked?.status !== 'WAITING') {
+        throw new UnprocessableEntityException(
+          'This match is no longer waiting for stakes to be confirmed',
+        );
+      }
+
       await this.eligibilityService.assertCanStake(
         user,
         stake.stakeAmountMinor,
@@ -233,14 +251,6 @@ export class MatchStakesService {
 
     const now = new Date();
     const activatedMatch = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.matchStake.updateMany({
-        where: { id: stake.id, status: 'PENDING' },
-        data: { status: 'ACTIVE', heldAt: now },
-      });
-      if (count === 0) {
-        // Another concurrent confirm already finished this transition.
-        return null;
-      }
       // Starts the turn clock the instant the match actually becomes
       // playable (Phase 9 — ADR-024), not at `WAITING` creation time,
       // since no one can move until every stake is held.
@@ -251,8 +261,14 @@ export class MatchStakesService {
       const turnDeadlineAt = game?.turnTimeoutSeconds
         ? new Date(now.getTime() + game.turnTimeoutSeconds * 1000)
         : null;
-      return tx.match.update({
-        where: { id: matchId },
+
+      // Conditioned on WAITING, and done before the stake: the timeout may
+      // have cancelled the match since the last hold committed, and
+      // activating it then would revive a cancelled match whose refund is
+      // already under way (OUTSTANDING_WORK item 26). Also how a concurrent
+      // confirm that already activated the match is detected.
+      const { count: activated } = await tx.match.updateMany({
+        where: { id: matchId, status: 'WAITING' },
         data: {
           status: 'ACTIVE',
           readyAt: now,
@@ -260,6 +276,23 @@ export class MatchStakesService {
           turnDeadlineAt,
         },
       });
+      if (activated === 0) {
+        return null;
+      }
+
+      const { count } = await tx.matchStake.updateMany({
+        where: { id: stake.id, status: 'PENDING' },
+        data: { status: 'ACTIVE', heldAt: now },
+      });
+      if (count === 0) {
+        // Unreachable while the match was WAITING: only this activation or
+        // a cancellation's refund moves the stake off PENDING. Roll back
+        // rather than leave an ACTIVE match without an ACTIVE stake.
+        throw new Error(
+          `Stake ${stake.id} was not PENDING while match ${matchId} was WAITING`,
+        );
+      }
+      return tx.match.findUniqueOrThrow({ where: { id: matchId } });
     });
 
     if (activatedMatch) {
