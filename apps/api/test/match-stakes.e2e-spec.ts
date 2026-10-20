@@ -11,6 +11,7 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { MatchTimeoutService } from '../src/matches/match-timeout.service.js';
 import { SettlementService } from '../src/settlement/settlement.service.js';
 import { WalletService } from '../src/wallet/wallet.service.js';
+import { LedgerService } from '../src/ledger/ledger.service.js';
 import { SYSTEM_ACCOUNT_USER_ID } from '../src/system-account/system-account.constants.js';
 import { vi } from 'vitest';
 
@@ -20,6 +21,7 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
   let matchTimeoutService: MatchTimeoutService;
   let settlementService: SettlementService;
   let walletService: WalletService;
+  let ledgerService: LedgerService;
   const runId = randomUUID().slice(0, 8);
 
   const email = (label: string) => `${label}-${runId}@example.com`;
@@ -50,6 +52,7 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
     matchTimeoutService = moduleFixture.get(MatchTimeoutService);
     settlementService = moduleFixture.get(SettlementService);
     walletService = moduleFixture.get(WalletService);
+    ledgerService = moduleFixture.get(LedgerService);
   }, 30000);
 
   afterAll(async () => {
@@ -605,6 +608,119 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
       // The first sweep's settle() then finds the settlement and pays nothing.
       await expectRefundedExactlyOnce(matchId, x, beforeX);
     });
+
+    /**
+     * Waits until some backend is blocked by `blockerPid`, polling
+     * `pg_blocking_pids` from the test's own connection. A bounded condition
+     * wait, not a sleep: it returns the moment Postgres reports the block.
+     */
+    async function waitForBackendBlockedBy(
+      blockerPid: number,
+      timeoutMs = 5000,
+    ): Promise<
+      { pid: number; wait_event_type: string | null; query: string }[]
+    > {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() <= deadline) {
+        const rows = await prisma.$queryRaw<
+          { pid: number; wait_event_type: string | null; query: string }[]
+        >`SELECT pid, wait_event_type, query FROM pg_stat_activity
+          WHERE ${blockerPid}::int = ANY(pg_blocking_pids(pid))`;
+        if (rows.length > 0) return rows;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(
+        `No backend became blocked by pid ${blockerPid} within ${timeoutMs}ms`,
+      );
+    }
+
+    it('a recovery sweep that races an in-flight refund waits for it, then pays nothing', async () => {
+      const { matchId, x, beforeX } = await holdOneSideAndExpire('inflt');
+      const { id: stakeId } = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+      });
+
+      // Hold the first refund *inside* its settlement transaction, after the
+      // real applyEntry has run: the settlement row (unique on matchStakeId),
+      // x's locked wallet update and the STAKE_REFUND entry are all written
+      // but uncommitted.
+      const realApplyEntry = ledgerService.applyEntry.bind(ledgerService);
+      const reached = deferred();
+      const gate = deferred();
+      let paused = false;
+      let firstPid: number | undefined;
+      const applyEntry = vi
+        .spyOn(ledgerService, 'applyEntry')
+        .mockImplementation(async (tx, walletId, params) => {
+          const result = await realApplyEntry(tx, walletId, params);
+          if (
+            params.type === 'STAKE_REFUND' &&
+            params.relatedMatchStakeId === stakeId &&
+            !paused
+          ) {
+            paused = true;
+            const [{ pid }] = await tx.$queryRaw<
+              { pid: number }[]
+            >`SELECT pg_backend_pid() AS pid`;
+            firstPid = pid;
+            reached.resolve();
+            await gate.promise;
+          }
+          return result;
+        });
+
+      const first = matchTimeoutService.sweep();
+      void first.catch(() => undefined);
+      let second: Promise<void> | undefined;
+      let secondDone = false;
+      try {
+        await reached.promise;
+        if (firstPid === undefined) throw new Error('first pid not captured');
+
+        // Cancelled, refund written but not committed: invisible here.
+        const cancelled = await prisma.match.findUniqueOrThrow({
+          where: { id: matchId },
+        });
+        expect(cancelled.status).toBe('CANCELLED');
+        expect(await availableBalance(x.userId)).toBe(beforeX - 750n);
+        expect(await heldBalance(x.userId)).toBe(750n);
+        expect(
+          await prisma.settlement.count({ where: { matchStakeId: stakeId } }),
+        ).toBe(0);
+
+        // The competing recovery sweep cannot see the uncommitted settlement,
+        // so it retries this stake and must block on the settlement insert.
+        second = matchTimeoutService.sweep().then(() => {
+          secondDone = true;
+        });
+        void second.catch(() => undefined);
+        const blocked = await waitForBackendBlockedBy(firstPid);
+        expect(blocked).toHaveLength(1);
+        expect(blocked[0].wait_event_type).toBe('Lock');
+        expect(blocked[0].query).toMatch(/INSERT INTO "public"\."settlements"/);
+        expect(secondDone).toBe(false);
+
+        // Release the first refund. The second sweep returns only after it
+        // has committed - so the refund is visible the moment it does.
+        gate.resolve();
+        await second;
+        await expectRefundedExactlyOnce(matchId, x, beforeX);
+      } finally {
+        gate.resolve();
+        await Promise.allSettled([first, second ?? Promise.resolve()]);
+      }
+
+      // The first sweep finished its own refund; nothing was paid twice and
+      // the second settle() never reached the ledger.
+      await expectRefundedExactlyOnce(matchId, x, beforeX);
+      expect(
+        applyEntry.mock.calls.filter(
+          ([, , params]) =>
+            params.type === 'STAKE_REFUND' &&
+            params.relatedMatchStakeId === stakeId,
+        ),
+      ).toHaveLength(1);
+    }, 20000);
 
     it('a refund whose settle() fails once is retried by the same sweep', async () => {
       const { matchId, x, beforeX } = await holdOneSideAndExpire('retry');
