@@ -665,9 +665,14 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
 
       it.each(rejected)(
         'rejects %s: deposit stays PENDING, no credit, no notification',
-        async (_name, reported) => {
+        async (name, reported) => {
+          // A distinct identity per case: email and username derive from the
+          // label, so reusing one across the table is a 409 on registration.
+          // Deterministic: the case's position in the table.
           const { accessToken, userId, depositId, providerReference } =
-            await openDeposit('depamt');
+            await openDeposit(
+              `depamt${rejected.findIndex(([caseName]) => caseName === name)}`,
+            );
 
           const { res, eventId } = await deliverCompleted(
             providerReference,
