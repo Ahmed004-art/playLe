@@ -106,6 +106,8 @@ export class FakePaymentProvider implements PaymentProviderPort {
       WebhookDepositPayload | WebhookPayoutPayload
     ) & {
       eventId: string;
+      amountMinor?: unknown;
+      currency?: unknown;
     };
 
     return {
@@ -116,6 +118,14 @@ export class FakePaymentProvider implements PaymentProviderPort {
         eventType: payload.eventType,
         providerReference: payload.providerReference,
         reason: payload.reason,
+        // Passed through only when the body carries them, exactly as given
+        // (including wrong types), so a test can model a provider that
+        // reports - or mis-reports - what was paid. Absent keys stay absent:
+        // a provider that reports nothing keeps its legacy behaviour.
+        ...('amountMinor' in payload
+          ? { amountMinor: payload.amountMinor }
+          : {}),
+        ...('currency' in payload ? { currency: payload.currency } : {}),
       },
     };
   }
@@ -131,6 +141,9 @@ export class FakePaymentProvider implements PaymentProviderPort {
     eventType: 'deposit.completed' | 'deposit.failed' | 'deposit.expired';
     providerReference: string;
     reason?: string;
+    /** What the provider reports as paid. Optional; sent verbatim (any type) to model mis-reporting. */
+    amountMinor?: unknown;
+    currency?: unknown;
   }): string {
     return JSON.stringify({ eventId: randomUUID(), ...params });
   }

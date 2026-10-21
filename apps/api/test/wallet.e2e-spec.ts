@@ -575,6 +575,267 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
       }, 20000);
     });
 
+    describe('a completion that reports an amount or currency', () => {
+      // The credit is always the deposit's own stored amount, so a verified
+      // `deposit.completed` event whose reported amount/currency disagree with
+      // that deposit must not credit it, claim it, or announce it. `amountMinor`
+      // is a canonical decimal-integer string of minor units; `currency` a
+      // 3-letter ISO code; both present or both absent. A provider that reports
+      // neither (every pre-existing test above) keeps its legacy behaviour.
+      async function openDeposit(label: string) {
+        const { accessToken, userId } = await registerUser(label);
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/deposits')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .set('Idempotency-Key', randomUUID())
+          .send({ amountMinor: '4000' })
+          .expect(201);
+        return {
+          accessToken,
+          userId,
+          depositId: created.body.id as string,
+          providerReference: created.body.providerReference as string,
+        };
+      }
+
+      async function deliverCompleted(
+        providerReference: string,
+        reported: { amountMinor?: unknown; currency?: unknown },
+        /** Pass the same id again to replay a delivery verbatim. */
+        eventId: string = randomUUID(),
+      ) {
+        const res = await request(app.getHttpServer())
+          .post('/api/v1/payments/webhooks/monime')
+          .set('x-fake-signature', fakeProvider.signatureHeader())
+          .set('Content-Type', 'application/json')
+          .send(
+            fakeProvider.buildWebhookBody({
+              eventId,
+              eventType: 'deposit.completed',
+              providerReference,
+              ...reported,
+            }),
+          );
+        return { res, eventId };
+      }
+
+      /** Nothing happened to the deposit, the wallet or the outbox. */
+      async function expectUntouched(
+        accessToken: string,
+        userId: string,
+        depositId: string,
+      ): Promise<void> {
+        const deposit = await prisma.deposit.findUniqueOrThrow({
+          where: { id: depositId },
+        });
+        expect(deposit.status).toBe('PENDING');
+        expect(deposit.completedAt).toBeNull();
+        expect(deposit.failedAt).toBeNull();
+        const wallet = await request(app.getHttpServer())
+          .get('/api/v1/wallet')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .expect(200);
+        expect(wallet.body.availableBalanceMinor).toBe('0');
+        expect(
+          await prisma.ledgerEntry.count({
+            where: { relatedDepositId: depositId },
+          }),
+        ).toBe(0);
+        expect(
+          await prisma.notificationOutbox.count({ where: { userId } }),
+        ).toBe(0);
+      }
+
+      const rejected: [
+        string,
+        { amountMinor?: unknown; currency?: unknown },
+      ][] = [
+        ['amount below the deposit', { amountMinor: '1', currency: 'SLE' }],
+        [
+          'amount above the deposit',
+          { amountMinor: '400000', currency: 'SLE' },
+        ],
+        ['currency mismatch', { amountMinor: '4000', currency: 'USD' }],
+        ['fractional amount', { amountMinor: '40.5', currency: 'SLE' }],
+        ['negative amount', { amountMinor: '-4000', currency: 'SLE' }],
+        ['amount as a JSON number', { amountMinor: 4000, currency: 'SLE' }],
+        ['amount without currency', { amountMinor: '4000' }],
+        ['currency without amount', { currency: 'SLE' }],
+      ];
+
+      it.each(rejected)(
+        'rejects %s: deposit stays PENDING, no credit, no notification',
+        async (_name, reported) => {
+          const { accessToken, userId, depositId, providerReference } =
+            await openDeposit('depamt');
+
+          const { res, eventId } = await deliverCompleted(
+            providerReference,
+            reported,
+          );
+
+          expect(res.status).toBe(200);
+          expect(res.body.status).toBe('rejected');
+          await expectUntouched(accessToken, userId, depositId);
+
+          // Kept for audit, never as processed.
+          const events = await prisma.providerEvent.findMany({
+            where: { providerEventId: eventId },
+          });
+          expect(events).toHaveLength(1);
+          expect(events[0].status).toBe('REJECTED');
+          expect(events[0].relatedDepositId).toBe(depositId);
+        },
+        20000,
+      );
+
+      it('completes the deposit exactly once when amount and currency match', async () => {
+        const { accessToken, userId, depositId, providerReference } =
+          await openDeposit('depamtok');
+
+        const first = await deliverCompleted(providerReference, {
+          amountMinor: '4000',
+          currency: 'SLE',
+        });
+        // A second, distinct event with the same matching values (provider
+        // retry under a new id) must not credit again.
+        const second = await deliverCompleted(providerReference, {
+          amountMinor: '4000',
+          currency: 'SLE',
+        });
+
+        expect(first.res.body.status).toBe('processed');
+        expect(second.res.status).toBe(200);
+        const deposit = await prisma.deposit.findUniqueOrThrow({
+          where: { id: depositId },
+        });
+        expect(deposit.status).toBe('COMPLETED');
+        const wallet = await request(app.getHttpServer())
+          .get('/api/v1/wallet')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .expect(200);
+        expect(wallet.body.availableBalanceMinor).toBe('4000');
+        expect(
+          await prisma.ledgerEntry.count({
+            where: { relatedDepositId: depositId, type: 'DEPOSIT' },
+          }),
+        ).toBe(1);
+        expect(
+          (await prisma.notificationOutbox.findMany({ where: { userId } })).map(
+            (n) => n.type,
+          ),
+        ).toEqual(['DEPOSIT_COMPLETED']);
+      }, 20000);
+
+      it('replaying a rejected event id is ignored: one event row, the deposit stays PENDING and untouched', async () => {
+        const { accessToken, userId, depositId, providerReference } =
+          await openDeposit('depamtreplay');
+        const eventId = randomUUID();
+        const reported = { amountMinor: '1', currency: 'SLE' };
+
+        const first = await deliverCompleted(
+          providerReference,
+          reported,
+          eventId,
+        );
+        const replay = await deliverCompleted(
+          providerReference,
+          reported,
+          eventId,
+        );
+
+        expect(first.res.body.status).toBe('rejected');
+        expect(replay.res.status).toBe(200);
+        expect(replay.res.body.status).toBe('ignored');
+        const events = await prisma.providerEvent.findMany({
+          where: { providerEventId: eventId },
+        });
+        expect(events).toHaveLength(1);
+        expect(events[0].status).toBe('REJECTED');
+        await expectUntouched(accessToken, userId, depositId);
+      }, 20000);
+
+      it('replaying a matching event id credits exactly once and never re-announces', async () => {
+        const { accessToken, userId, depositId, providerReference } =
+          await openDeposit('depamtreplok');
+        const eventId = randomUUID();
+        const reported = { amountMinor: '4000', currency: 'SLE' };
+
+        const first = await deliverCompleted(
+          providerReference,
+          reported,
+          eventId,
+        );
+        const replay = await deliverCompleted(
+          providerReference,
+          reported,
+          eventId,
+        );
+        const again = await deliverCompleted(
+          providerReference,
+          reported,
+          eventId,
+        );
+
+        expect(first.res.body.status).toBe('processed');
+        expect(replay.res.body.status).toBe('ignored');
+        expect(again.res.body.status).toBe('ignored');
+        expect(
+          await prisma.providerEvent.count({
+            where: { providerEventId: eventId },
+          }),
+        ).toBe(1);
+        const wallet = await request(app.getHttpServer())
+          .get('/api/v1/wallet')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .expect(200);
+        expect(wallet.body.availableBalanceMinor).toBe('4000');
+        expect(
+          await prisma.ledgerEntry.count({
+            where: { relatedDepositId: depositId, type: 'DEPOSIT' },
+          }),
+        ).toBe(1);
+        expect(
+          (await prisma.notificationOutbox.findMany({ where: { userId } })).map(
+            (n) => n.type,
+          ),
+        ).toEqual(['DEPOSIT_COMPLETED']);
+      }, 20000);
+
+      it('a rejected mismatching event does not consume the deposit: a later matching event completes it', async () => {
+        const { accessToken, userId, depositId, providerReference } =
+          await openDeposit('depamtlate');
+
+        const bad = await deliverCompleted(providerReference, {
+          amountMinor: '1',
+          currency: 'SLE',
+        });
+        expect(bad.res.body.status).toBe('rejected');
+        await expectUntouched(accessToken, userId, depositId);
+
+        const good = await deliverCompleted(providerReference, {
+          amountMinor: '4000',
+          currency: 'SLE',
+        });
+        expect(good.res.body.status).toBe('processed');
+
+        const deposit = await prisma.deposit.findUniqueOrThrow({
+          where: { id: depositId },
+        });
+        expect(deposit.status).toBe('COMPLETED');
+        const wallet = await request(app.getHttpServer())
+          .get('/api/v1/wallet')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .expect(200);
+        expect(wallet.body.availableBalanceMinor).toBe('4000');
+        expect(
+          await prisma.ledgerEntry.count({
+            where: { relatedDepositId: depositId, type: 'DEPOSIT' },
+          }),
+        ).toBe(1);
+      }, 20000);
+    });
+
     it('marks a deposit FAILED on a verified deposit.failed event, with no ledger effect', async () => {
       const { accessToken } = await registerUser('depfailed');
 
