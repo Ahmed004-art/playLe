@@ -298,23 +298,37 @@ export class DepositsService {
       return existing;
     }
 
-    const updated = await this.prisma.deposit.update({
-      where: { id: existing.id },
-      data: { status: 'FAILED', failedAt: new Date(), failureReason: reason },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      // Claim: PENDING -> FAILED only if the deposit is *still* PENDING. The
+      // read above ran outside this transaction, so a completion may have
+      // committed since; an unconditional update would overwrite it and
+      // leave a credited wallet behind a FAILED deposit. The conditional
+      // update takes the row lock, so against an open completion it waits and
+      // then matches no row.
+      const { count } = await tx.deposit.updateMany({
+        where: { id: existing.id, status: 'PENDING' },
+        data: { status: 'FAILED', failedAt: new Date(), failureReason: reason },
+      });
+      if (count === 0) {
+        // Lost to a concurrent transition: no overwrite, no failure notice.
+        return tx.deposit.findUniqueOrThrow({ where: { id: existing.id } });
+      }
 
-    await this.notificationOutbox.enqueueStandalone({
-      userId: existing.userId,
-      type: 'DEPOSIT_FAILED',
-      payload: {
-        depositId: existing.id,
-        amountMinor: existing.amountMinor.toString(),
-        currency: existing.currency,
-        reason,
-      },
-    });
+      // Same transaction as the status change - the notice exists if and
+      // only if the deposit really became FAILED (see ADR-019).
+      await this.notificationOutbox.enqueue(tx, {
+        userId: existing.userId,
+        type: 'DEPOSIT_FAILED',
+        payload: {
+          depositId: existing.id,
+          amountMinor: existing.amountMinor.toString(),
+          currency: existing.currency,
+          reason,
+        },
+      });
 
-    return updated;
+      return tx.deposit.findUniqueOrThrow({ where: { id: existing.id } });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   /**
@@ -333,10 +347,15 @@ export class DepositsService {
       return existing;
     }
 
-    return this.prisma.deposit.update({
-      where: { id: existing.id },
-      data: { status: 'EXPIRED', failedAt: new Date() },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      // Same conditional claim as `markFailed`: never overwrite a deposit a
+      // concurrent completion (or failure) has already moved off PENDING.
+      await tx.deposit.updateMany({
+        where: { id: existing.id, status: 'PENDING' },
+        data: { status: 'EXPIRED', failedAt: new Date() },
+      });
+      return tx.deposit.findUniqueOrThrow({ where: { id: existing.id } });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   getProvider(): PaymentProviderPort {

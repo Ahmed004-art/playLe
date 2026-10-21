@@ -10,13 +10,16 @@ import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
 import { WalletService } from '../src/wallet/wallet.service.js';
+import { LedgerService } from '../src/ledger/ledger.service.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
+import { waitForBackendBlockedBy } from './pg-locks.js';
 import { vi } from 'vitest';
 
 describe('Wallet / Deposits / Withdrawals (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let walletService: WalletService;
+  let ledgerService: LedgerService;
   let fakeProvider: FakePaymentProvider;
   const runId = randomUUID().slice(0, 8);
 
@@ -51,6 +54,7 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
 
     prisma = moduleFixture.get(PrismaService);
     walletService = moduleFixture.get(WalletService);
+    ledgerService = moduleFixture.get(LedgerService);
   });
 
   afterAll(async () => {
@@ -400,6 +404,176 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
         }),
       ).toBe(1);
     }, 20000);
+
+    describe('a completion racing a failure or expiry event', () => {
+      // `markFailed` / `markExpired` read PENDING outside any transaction and
+      // then write FAILED / EXPIRED with an update that has no status
+      // predicate. A completion that commits between their read and their
+      // write is therefore overwritten: wallet credited, deposit "failed".
+      //
+      // The interleaving is forced through the database, not timing: the
+      // completion is held open *after* its real ledger credit (row lock on
+      // the deposit held, wallet credit uncommitted); the competing event then
+      // reads PENDING (the completion is invisible to it) and its write blocks
+      // on that row lock. Postgres is asked, via pg_blocking_pids, to confirm
+      // the dependency before the completion is allowed to commit.
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      async function raceCompletionAgainst(
+        label: string,
+        losing: { eventType: 'deposit.failed' | 'deposit.expired' },
+      ) {
+        const { accessToken, userId } = await registerUser(label);
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/deposits')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .set('Idempotency-Key', randomUUID())
+          .send({ amountMinor: '4000' })
+          .expect(201);
+        const depositId = created.body.id as string;
+        const providerReference = created.body.providerReference as string;
+
+        const realApplyEntry = ledgerService.applyEntry.bind(ledgerService);
+        let reachedGate!: () => void;
+        const reached = new Promise<void>((resolve) => (reachedGate = resolve));
+        let openGate!: () => void;
+        const gate = new Promise<void>((resolve) => (openGate = resolve));
+        let completionPid: number | undefined;
+        let paused = false;
+        vi.spyOn(ledgerService, 'applyEntry').mockImplementation(
+          async (tx, walletId, params) => {
+            const result = await realApplyEntry(tx, walletId, params);
+            if (
+              params.type === 'DEPOSIT' &&
+              params.relatedDepositId === depositId &&
+              !paused
+            ) {
+              paused = true;
+              const [{ pid }] = await tx.$queryRaw<
+                { pid: number }[]
+              >`SELECT pg_backend_pid() AS pid`;
+              completionPid = pid;
+              reachedGate();
+              await gate;
+            }
+            return result;
+          },
+        );
+
+        const deliver = (
+          eventType: 'deposit.completed' | 'deposit.failed' | 'deposit.expired',
+        ) =>
+          request(app.getHttpServer())
+            .post('/api/v1/payments/webhooks/monime')
+            .set('x-fake-signature', fakeProvider.signatureHeader())
+            .set('Content-Type', 'application/json')
+            .send(
+              // A fresh eventId per call: distinct provider events.
+              fakeProvider.buildWebhookBody({
+                eventType,
+                providerReference,
+                reason:
+                  eventType === 'deposit.failed'
+                    ? 'provider reported a failed deposit'
+                    : undefined,
+              }),
+            )
+            .then((res) => res);
+
+        const completion = deliver('deposit.completed');
+        let competing: ReturnType<typeof deliver> | undefined;
+        let responses: { status: number }[];
+        try {
+          await reached;
+          if (completionPid === undefined) {
+            throw new Error('completion backend pid not captured');
+          }
+
+          competing = deliver(losing.eventType);
+          // The competing event has read PENDING and is now waiting on the
+          // deposit row the open completion holds.
+          const blocked = await waitForBackendBlockedBy(prisma, completionPid);
+          expect(blocked.every((b) => b.wait_event_type === 'Lock')).toBe(true);
+          expect(
+            blocked.some((b) => /UPDATE "public"\."deposits"/.test(b.query)),
+          ).toBe(true);
+
+          openGate();
+          responses = await Promise.all([completion, competing]);
+        } finally {
+          openGate();
+          await Promise.allSettled([completion, competing ?? completion]);
+        }
+
+        expect(responses.map((r) => r.status)).toEqual([200, 200]);
+        return { accessToken, userId, depositId };
+      }
+
+      async function expectCreditedAndCompleted(
+        accessToken: string,
+        depositId: string,
+      ): Promise<void> {
+        // Both distinct events were recorded and processed.
+        const events = await prisma.providerEvent.findMany({
+          where: { relatedDepositId: depositId },
+        });
+        expect(events).toHaveLength(2);
+        expect(new Set(events.map((e) => e.providerEventId)).size).toBe(2);
+        expect(events.every((e) => e.status === 'PROCESSED')).toBe(true);
+
+        // The completion's outcome survived.
+        const deposit = await prisma.deposit.findUniqueOrThrow({
+          where: { id: depositId },
+        });
+        expect(deposit.status).toBe('COMPLETED');
+        expect(deposit.failedAt).toBeNull();
+        expect(deposit.failureReason).toBeNull();
+        expect(deposit.completedAt).not.toBeNull();
+
+        const wallet = await request(app.getHttpServer())
+          .get('/api/v1/wallet')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .expect(200);
+        expect(wallet.body.availableBalanceMinor).toBe('4000');
+        expect(
+          await prisma.ledgerEntry.count({
+            where: { relatedDepositId: depositId, type: 'DEPOSIT' },
+          }),
+        ).toBe(1);
+      }
+
+      it('deposit.completed racing deposit.failed leaves the deposit COMPLETED and sends no failure notice', async () => {
+        const { accessToken, userId, depositId } = await raceCompletionAgainst(
+          'depracefail',
+          { eventType: 'deposit.failed' },
+        );
+
+        await expectCreditedAndCompleted(accessToken, depositId);
+
+        // The completion notification is intact and the losing failure
+        // transition queued nothing.
+        const outbox = await prisma.notificationOutbox.findMany({
+          where: { userId },
+        });
+        expect(outbox.map((n) => n.type)).toEqual(['DEPOSIT_COMPLETED']);
+      }, 20000);
+
+      it('deposit.completed racing deposit.expired leaves the deposit COMPLETED', async () => {
+        const { accessToken, userId, depositId } = await raceCompletionAgainst(
+          'depraceexp',
+          { eventType: 'deposit.expired' },
+        );
+
+        await expectCreditedAndCompleted(accessToken, depositId);
+
+        const outbox = await prisma.notificationOutbox.findMany({
+          where: { userId },
+        });
+        expect(outbox.map((n) => n.type)).toEqual(['DEPOSIT_COMPLETED']);
+      }, 20000);
+    });
 
     it('marks a deposit FAILED on a verified deposit.failed event, with no ledger effect', async () => {
       const { accessToken } = await registerUser('depfailed');
