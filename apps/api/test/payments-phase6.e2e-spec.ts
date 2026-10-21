@@ -538,6 +538,126 @@ describe('Phase 6 payments (e2e)', () => {
       expect(resolved.body.status).toBe('RESOLVED');
     });
 
+    it('surfaces a rejected completion as an AMOUNT_MISMATCH anomaly until a valid event completes the deposit', async () => {
+      const { accessToken, userId, adminToken } = await setupFundedUser(
+        'amtrecon',
+        '1000',
+      );
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const depositId = created.body.id as string;
+      const providerReference = created.body.providerReference as string;
+
+      const deliver = (
+        reported: { amountMinor: string; currency: string },
+        // Pass the same id to replay a delivery verbatim. Only included when
+        // set: an explicit `eventId: undefined` would override the helper's
+        // random one.
+        eventId?: string,
+      ) =>
+        request(app.getHttpServer())
+          .post('/api/v1/payments/webhooks/monime')
+          .set('x-fake-signature', fakeProvider.signatureHeader())
+          .set('Content-Type', 'application/json')
+          .send(
+            fakeProvider.buildWebhookBody({
+              ...(eventId ? { eventId } : {}),
+              eventType: 'deposit.completed',
+              providerReference,
+              ...reported,
+            }),
+          );
+      const mismatches = async () => {
+        const report = await request(app.getHttpServer())
+          .get('/api/v1/admin/payment-reconciliation/run')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+        return (
+          report.body.anomalies as Array<{
+            type: string;
+            relatedDepositId?: string;
+          }>
+        ).filter(
+          (a) =>
+            a.type === 'AMOUNT_MISMATCH' && a.relatedDepositId === depositId,
+        );
+      };
+
+      // A completion for the wrong amount is rejected, nothing is credited,
+      // and the deposit stays PENDING - not FAILED, not refunded.
+      const badEventId = randomUUID();
+      const bad = await deliver(
+        { amountMinor: '1', currency: 'SLE' },
+        badEventId,
+      ).expect(200);
+      expect(bad.body.status).toBe('rejected');
+      expect(
+        (await prisma.deposit.findUniqueOrThrow({ where: { id: depositId } }))
+          .status,
+      ).toBe('PENDING');
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedDepositId: depositId },
+        }),
+      ).toBe(0);
+
+      // Operators see it: reported once, persisted OPEN, and a re-run does
+      // not duplicate it. A second rejected event does not add a second row.
+      expect(await mismatches()).toHaveLength(1);
+
+      // Replaying the very same rejected event is ignored: no second event
+      // row and no second anomaly.
+      const replay = await deliver(
+        { amountMinor: '1', currency: 'SLE' },
+        badEventId,
+      ).expect(200);
+      expect(replay.body.status).toBe('ignored');
+      expect(
+        await prisma.providerEvent.count({
+          where: { providerEventId: badEventId },
+        }),
+      ).toBe(1);
+      expect(await mismatches()).toHaveLength(1);
+
+      await deliver({ amountMinor: '5000', currency: 'USD' }).expect(200);
+      expect(await mismatches()).toHaveLength(1);
+      const list = await request(app.getHttpServer())
+        .get('/api/v1/admin/payment-reconciliation/anomalies?status=OPEN')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect(
+        (
+          list.body.items as Array<{ type: string; relatedDepositId?: string }>
+        ).filter(
+          (a) =>
+            a.type === 'AMOUNT_MISMATCH' && a.relatedDepositId === depositId,
+        ),
+      ).toHaveLength(1);
+
+      // A later valid event still completes the deposit exactly once, and the
+      // deposit is no longer reported.
+      const good = await deliver({
+        amountMinor: '5000',
+        currency: 'SLE',
+      }).expect(200);
+      expect(good.body.status).toBe('processed');
+      expect(
+        (await prisma.deposit.findUniqueOrThrow({ where: { id: depositId } }))
+          .status,
+      ).toBe('COMPLETED');
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedDepositId: depositId, type: 'DEPOSIT' },
+        }),
+      ).toBe(1);
+      expect(await mismatches()).toHaveLength(0);
+      void userId;
+    }, 30000);
+
     it('rejects a non-admin attempting to run reconciliation', async () => {
       const { accessToken } = await registerUser('wdreconunauth');
       await request(app.getHttpServer())

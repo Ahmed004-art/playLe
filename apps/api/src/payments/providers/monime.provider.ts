@@ -349,8 +349,21 @@ export class MonimeProvider implements PaymentProviderPort {
     data: Record<string, unknown> | undefined,
   ): WebhookDepositPayload | WebhookPayoutPayload | null {
     switch (eventName) {
-      case 'payment_code.completed':
-        return { eventType: 'deposit.completed', providerReference };
+      case 'payment_code.completed': {
+        // Fail closed: a completion is only ever mapped to a deposit credit
+        // when the event carries evidence of what was actually PAID. Without
+        // it (or with it malformed) the payload is null, the event is stored
+        // as IGNORED and shows up as an ORPHAN_PROVIDER_EVENT - it never
+        // completes a deposit.
+        const paid = this.readPaidAmount(data);
+        if (!paid) return null;
+        return {
+          eventType: 'deposit.completed',
+          providerReference,
+          amountMinor: paid.amountMinor,
+          currency: paid.currency,
+        };
+      }
       case 'payment_code.expired':
         return { eventType: 'deposit.expired', providerReference };
       case 'payout.completed':
@@ -370,6 +383,46 @@ export class MonimeProvider implements PaymentProviderPort {
       default:
         return null;
     }
+  }
+
+  /**
+   * The amount actually PAID against a payment code, from
+   * `data.progress.totalPaymentSum` (`{ currency, value }`, `value` an
+   * integer in the currency's minor unit), or `null` if it is absent or
+   * malformed.
+   *
+   * PROVISIONAL / UNVERIFIED: this field path is taken from Monime's public
+   * documentation (the webhook "Structure and Events" page, whose `data` is the
+   * REST Payment Code object), not from a captured delivery - the docs are
+   * internally inconsistent (sample payloads are `apiVersion 2024-08-01`, the
+   * object pages `caph-2025-08-23`, and they name the processed-payment field
+   * differently) and say nothing about partial or over-payments. It must be
+   * re-checked against a real Test-mode `payment_code.completed` delivery
+   * before this integration is considered production-ready.
+   *
+   * Deliberately NOT read: `data.amount`, the payment code's CONFIGURED amount.
+   * It says what was asked for, not what was paid, so it is never used as a
+   * substitute - a completion without a paid total is not trusted.
+   */
+  private readPaidAmount(
+    data: Record<string, unknown> | undefined,
+  ): { amountMinor: string; currency: string } | null {
+    const progress = data?.progress;
+    if (!progress || typeof progress !== 'object') return null;
+    const sum = (progress as Record<string, unknown>).totalPaymentSum;
+    if (!sum || typeof sum !== 'object') return null;
+    const { currency, value } = sum as Record<string, unknown>;
+    if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
+      return null;
+    }
+    if (
+      typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
+      return null;
+    }
+    return { amountMinor: String(value), currency };
   }
 
   private mapPaymentCodeStatus(status: unknown): ProviderOperationOutcome {
