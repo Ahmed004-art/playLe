@@ -9,11 +9,14 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
+import { WalletService } from '../src/wallet/wallet.service.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
+import { vi } from 'vitest';
 
 describe('Wallet / Deposits / Withdrawals (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let walletService: WalletService;
   let fakeProvider: FakePaymentProvider;
   const runId = randomUUID().slice(0, 8);
 
@@ -47,6 +50,7 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    walletService = moduleFixture.get(WalletService);
   });
 
   afterAll(async () => {
@@ -304,6 +308,98 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
       });
       expect(ledgerCount).toBe(1);
     });
+
+    // Two *different* provider events confirming one deposit are not caught by
+    // the ProviderEvent (provider, providerEventId) uniqueness the test above
+    // relies on, so exactly-once crediting has to come from
+    // `completeFromProviderEvent` itself. It reads the deposit and checks
+    // PENDING outside its transaction, and neither the ledger credit nor the
+    // COMPLETED update re-checks. This forces the interleaving without timing:
+    // both completions are held at the first statement of their transaction
+    // (past the PENDING check) until both have arrived, then released together.
+    it('credits a deposit exactly once when two different events confirm it concurrently', async () => {
+      const { accessToken, userId } = await registerUser('depraceevt');
+
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '4000' })
+        .expect(201);
+      const depositId = created.body.id as string;
+      const providerReference = created.body.providerReference as string;
+
+      const realGetWalletId =
+        walletService.getWalletIdForUser.bind(walletService);
+      let arrived = 0;
+      let release!: () => void;
+      const bothArrived = new Promise<void>((resolve) => (release = resolve));
+      // Safety valve only: with the current code both completions always
+      // arrive within milliseconds. It exists so a future fix that serializes
+      // the two *before* this point cannot leave the test hanging.
+      const valve = setTimeout(release, 5000);
+      vi.spyOn(walletService, 'getWalletIdForUser').mockImplementation(
+        async (client, id) => {
+          if (id === userId && client !== prisma) {
+            arrived += 1;
+            if (arrived === 2) release();
+            await bothArrived;
+          }
+          return realGetWalletId(client, id);
+        },
+      );
+
+      const deliver = () =>
+        request(app.getHttpServer())
+          .post('/api/v1/payments/webhooks/monime')
+          .set('x-fake-signature', fakeProvider.signatureHeader())
+          .set('Content-Type', 'application/json')
+          .send(
+            // A fresh eventId per call: two distinct provider events.
+            fakeProvider.buildWebhookBody({
+              eventType: 'deposit.completed',
+              providerReference,
+            }),
+          )
+          .then((res) => res);
+
+      let responses: { status: number; body: unknown }[];
+      try {
+        responses = await Promise.all([deliver(), deliver()]);
+      } finally {
+        clearTimeout(valve);
+        release();
+        vi.restoreAllMocks();
+      }
+
+      expect(responses.map((r) => r.status)).toEqual([200, 200]);
+      // Both completions really overlapped past the PENDING check.
+      expect(arrived).toBe(2);
+
+      // Two distinct events were recorded and processed - the same-event
+      // dedupe did not apply here.
+      const events = await prisma.providerEvent.findMany({
+        where: { relatedDepositId: depositId },
+      });
+      expect(events).toHaveLength(2);
+      expect(new Set(events.map((e) => e.providerEventId)).size).toBe(2);
+
+      // Credited exactly once.
+      const deposit = await prisma.deposit.findUniqueOrThrow({
+        where: { id: depositId },
+      });
+      expect(deposit.status).toBe('COMPLETED');
+      const wallet = await request(app.getHttpServer())
+        .get('/api/v1/wallet')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+      expect(wallet.body.availableBalanceMinor).toBe('4000');
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedDepositId: depositId, type: 'DEPOSIT' },
+        }),
+      ).toBe(1);
+    }, 20000);
 
     it('marks a deposit FAILED on a verified deposit.failed event, with no ledger effect', async () => {
       const { accessToken } = await registerUser('depfailed');

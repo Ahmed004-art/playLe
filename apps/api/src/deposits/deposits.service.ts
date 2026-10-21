@@ -217,7 +217,10 @@ export class DepositsService {
    * Credits the ledger from a **verified** provider event. Never callable
    * from client input directly — only from the webhook handler after
    * `PaymentProviderPort.verifyWebhookSignature` has succeeded. Idempotent:
-   * a deposit that is no longer PENDING is returned unchanged.
+   * a deposit that is no longer PENDING is returned unchanged, and a deposit
+   * is credited at most once however many distinct provider events (or
+   * concurrent callers) confirm it - the unique `ProviderEvent` id only
+   * stops a *repeated* event, so the exactly-once guarantee has to live here.
    */
   async completeFromProviderEvent(
     depositId: string,
@@ -239,6 +242,26 @@ export class DepositsService {
         existing.userId,
       );
 
+      // Claim the deposit: PENDING -> COMPLETED only if it is *still* PENDING.
+      // The status read above ran outside this transaction, so two
+      // completions can both have seen PENDING. The conditional update takes
+      // the row lock, so the second one waits for the first to commit and then
+      // matches no row (READ COMMITTED re-evaluates the WHERE) - and only the
+      // transaction that claimed the row credits the wallet.
+      const { count } = await tx.deposit.updateMany({
+        where: { id: existing.id, status: 'PENDING' },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          providerReference: providerReference ?? existing.providerReference,
+        },
+      });
+      if (count === 0) {
+        // Already completed (or failed/expired) by a concurrent event: no
+        // credit, no notification - return the deposit as it now stands.
+        return tx.deposit.findUniqueOrThrow({ where: { id: existing.id } });
+      }
+
       await this.ledgerService.applyEntry(tx, walletId, {
         type: 'DEPOSIT',
         availableDeltaMinor: existing.amountMinor,
@@ -246,15 +269,6 @@ export class DepositsService {
         currency: existing.currency,
         relatedDepositId: existing.id,
         providerReference,
-      });
-
-      const updated = await tx.deposit.update({
-        where: { id: existing.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(),
-          providerReference: providerReference ?? existing.providerReference,
-        },
       });
 
       // Same transaction as the ledger write above — never emitted
@@ -269,7 +283,7 @@ export class DepositsService {
         },
       });
 
-      return updated;
+      return tx.deposit.findUniqueOrThrow({ where: { id: existing.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
