@@ -46,6 +46,7 @@ export class PaymentReconciliationService {
     const anomalies: DetectedAnomaly[] = [
       ...(await this.findDepositCreditedWithoutConfirmation()),
       ...(await this.findDepositConfirmedNotCredited()),
+      ...(await this.findRejectedCompletions()),
       ...(await this.findWithdrawalPaidNotCompleted()),
       ...(await this.findWithdrawalCompletedWithoutConfirmation()),
       ...(await this.findDuplicateProviderReferences()),
@@ -123,6 +124,41 @@ export class PaymentReconciliationService {
         relatedDepositId: e.relatedDepositId ?? undefined,
         detail: `Provider confirmed completion but deposit status is ${e.deposit?.status}`,
       }));
+  }
+
+  /**
+   * A completion event that `DepositsService.processProviderWebhook` REJECTED
+   * because the amount or currency it reported disagreed with the deposit (or
+   * was malformed), on a deposit that is still not COMPLETED. The provider may
+   * really have taken money while PlayLe credited nothing, so an operator must
+   * decide: nothing is credited, failed or refunded automatically. One anomaly
+   * per deposit however many such events arrived; once a later valid event
+   * completes the deposit it is no longer reported.
+   */
+  private async findRejectedCompletions(): Promise<DetectedAnomaly[]> {
+    const events = await this.prisma.providerEvent.findMany({
+      where: {
+        status: 'REJECTED',
+        eventType: 'deposit.completed',
+        relatedDepositId: { not: null },
+        deposit: { status: { not: 'COMPLETED' } },
+      },
+      select: { relatedDepositId: true, providerEventId: true },
+    });
+
+    const byDeposit = new Map<string, string[]>();
+    for (const e of events) {
+      if (!e.relatedDepositId) continue;
+      byDeposit.set(e.relatedDepositId, [
+        ...(byDeposit.get(e.relatedDepositId) ?? []),
+        e.providerEventId,
+      ]);
+    }
+    return [...byDeposit.entries()].map(([relatedDepositId, eventIds]) => ({
+      type: 'AMOUNT_MISMATCH' as const,
+      relatedDepositId,
+      detail: `${eventIds.length} provider completion event(s) rejected for an amount/currency mismatch or malformed amount (${eventIds.join(', ')}); the deposit was left unchanged and nothing was credited`,
+    }));
   }
 
   /** A processed/succeeded payout confirmation whose withdrawal never actually moved to COMPLETED. */

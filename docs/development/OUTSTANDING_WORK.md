@@ -590,6 +590,66 @@ real-money launch, run a one-off query for holds on terminal stakes (held
 `MatchStakePlayer` rows whose stake is `REFUNDED`/`SETTLED` with no matching
 `SettlementEntry`) against the target database.
 
+### 27. Completion webhook amount/currency validation — implemented; the Monime paid-amount field is unverified
+**Status**: The gap is closed in code, on branch
+`test/webhook-amount-currency-validation` (CI evidence for it is recorded
+below only once that CI has run — until then treat this as **not merged and not
+CI-verified**). **The gap**: `DepositsService.completeFromProviderEvent`
+credits the deposit's own *stored* amount and never read an amount or currency
+from the event, so a verified `deposit.completed` event for a different amount
+or currency (a partial or over-payment, a different currency) would still have
+credited the full stored amount for money that was not paid. Not exploitable
+by a user (no client input reaches it) and unreachable today (every real Monime
+webhook is rejected by the fail-closed signature check — items 1–2), but a
+correctness hole that would have opened the moment signature verification
+shipped.
+**The contract** (ADR-019, "Completion events: the reported amount and
+currency must match"): `WebhookDepositPayload` gains optional `amountMinor` (a
+canonical non-negative decimal-integer **string** of minor units — never a JS
+number — validated before any `BigInt` conversion) and `currency` (upper-case
+3-letter code), set together by a provider that reports what was *paid*.
+`processProviderWebhook` checks them before claiming or crediting. Neither
+present = a provider that does not report them (fake/manual — unchanged).
+Otherwise both must be present, well-formed and equal to the deposit's; if
+not, the event is stored `REJECTED` and linked to the deposit, and the deposit
+stays `PENDING` — not claimed, not `FAILED`, no ledger credit, no
+notification, no automatic refund. A later valid event (different id)
+completes it exactly once through the existing conditional claim; replaying
+the same event id, rejected or not, is stopped by the unique
+`(provider, providerEventId)` index and changes nothing further.
+**Operators**: `PaymentReconciliationService.findRejectedCompletions` reports a
+`REJECTED` `deposit.completed` event on a not-yet-`COMPLETED` deposit as an
+`AMOUNT_MISMATCH` anomaly (an existing, previously unused enum value — no
+migration), once per deposit, until a later valid event completes it. A real
+payment that was rejected is **not** credited automatically — an operator must
+reconcile it with the provider.
+**Tests**: service-level (fakes, including event-id replay), Monime parser (provisional),
+reconciliation unit spec, and database-backed e2e cases in
+`test/wallet.e2e-spec.ts` and `test/payments-phase6.e2e-spec.ts`. The e2e
+cases need Postgres and were **not run locally** (no database on the
+development machine, by design) — they are verified only by the CI run
+recorded for the branch.
+**OPEN — the Monime paid-amount path is provisional and unverified**:
+`MonimeProvider` completes a deposit only when `data.progress.totalPaymentSum`
+(`{ currency, value }`, integer minor units) is present and well-formed;
+otherwise the payload is null, the event is stored `IGNORED` (an
+`ORPHAN_PROVIDER_EVENT`) and nothing is completed. It deliberately never uses
+`data.amount` (the payment code's *configured* amount) in place of what was
+paid. These field names come from Monime's public documentation, not a
+captured delivery, and that documentation is internally inconsistent and
+silent on partial/over-payments. **Required before the parser is considered
+final**: capture one real Test-mode `payment_code.completed` delivery and
+verify (a) the actual paid-amount field and name, (b) whether the paid amount
+can differ from the configured one, (c) the currency fields, (d) whether our
+own reference or only the payment-code id is echoed. The provisional parser
+tests in `monime.provider.spec.ts` must be re-checked against that payload.
+**The Monime integration remains NOT production-ready**: signature
+verification still always fails closed (items 1–2), this paid-amount path is
+unverified, and business-model eligibility is unconfirmed (item 3).
+**Severity**: High before any live Monime deposit (it would credit unpaid
+money), none today. **Owner**: project owner — the same captured Test-mode
+webhook that unblocks item 1 settles this.
+
 ---
 
 This file is updated whenever a phase's audit or implementation work

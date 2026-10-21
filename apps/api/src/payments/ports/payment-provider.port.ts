@@ -121,11 +121,23 @@ export interface WebhookVerificationResult {
  * this — unrecognized payloads are safely ignored (recorded in
  * `ProviderEvent`, no ledger effect). `providerReference` must be the
  * same value the provider was given back from `initiateDeposit`.
+ *
+ * A provider that reports what was actually paid on a `deposit.completed`
+ * event sets `amountMinor` and `currency` - and then both, always. They are the
+ * PAID amount (not the amount the payment was configured for), `amountMinor`
+ * a canonical non-negative decimal-integer string of minor units (never a JS
+ * number, which cannot represent every amount and is not JSON-safe as a
+ * BigInt) and `currency` an upper-case 3-letter ISO code. When set they must
+ * equal the deposit's stored amount and currency or the event is REJECTED and
+ * the deposit left PENDING. A provider whose contract supplies neither leaves
+ * both out. Enforced in `DepositsService.processProviderWebhook`.
  */
 export interface WebhookDepositPayload {
   eventType: 'deposit.completed' | 'deposit.failed' | 'deposit.expired';
   providerReference: string;
   reason?: string;
+  amountMinor?: string;
+  currency?: string;
 }
 
 /**

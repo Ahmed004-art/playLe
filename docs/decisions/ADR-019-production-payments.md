@@ -71,12 +71,49 @@ Dispatching to only one avoids a race where both services could attempt
 to insert the same `(provider, providerEventId)` row and the "loser"
 would be wrongly treated as a duplicate.
 
+### Completion events: the reported amount and currency must match (amendment)
+A deposit is always credited with its own **stored** amount, never a value
+taken from an event. So a verified `deposit.completed` event for a different
+amount or currency would still credit the full stored amount for money that
+was never paid. `WebhookDepositPayload` therefore has two optional fields,
+which a provider that reports what was paid sets, always together:
+
+- `amountMinor` — the **paid** amount (not the amount a payment was
+  configured for) as a canonical non-negative decimal-integer **string** of
+  minor units (`^(0|[1-9][0-9]*)$`). Never a JS number: a number cannot
+  represent every amount, and a `BigInt` is not JSON-safe in the stored
+  event payload. It is validated as a string before any `BigInt` conversion.
+- `currency` — an upper-case 3-letter ISO code.
+
+`DepositsService.processProviderWebhook` checks them **before** claiming or
+crediting. Neither field present is a provider that does not report them
+(unchanged behaviour: fake/manual providers). Otherwise both must be present,
+well-formed, and equal to the deposit's `amountMinor` and `currency`. On any
+failure — malformed, only one field, or a mismatch — the event is stored as
+`REJECTED` and linked to the deposit, and the deposit is left exactly as it
+was: `PENDING`, not claimed, not `FAILED`, no ledger credit, no notification,
+no automatic refund. Because nothing is consumed, a later valid completion
+event (a different provider event id) still completes it exactly once through
+the existing conditional claim. Replaying the same event id, rejected or not,
+is stopped at the unique `(provider, providerEventId)` index and changes
+nothing further. Failed and expired events carry no amount requirement.
+
+Operators find a rejected completion through
+`PaymentReconciliationService.findRejectedCompletions`, which reports a
+`REJECTED` `deposit.completed` event on a not-yet-`COMPLETED` deposit as an
+`AMOUNT_MISMATCH` anomaly (an existing, previously unused
+`PaymentAnomalyType` — no migration), once per deposit. It stops being
+reported when a later valid event completes the deposit. A real payment that
+was rejected is **not** credited automatically: an operator must reconcile it
+with the provider.
+
 ### Payment reconciliation — a new, separate concern
 `PaymentReconciliationService` (`src/payments/`) is explicitly distinct
 from `settlement/reconciliation.service.ts` (Phase 5's match-financial
-reconciliation, which never touches provider state). It runs nine
+reconciliation, which never touches provider state). It runs ten
 read-only checks (deposit credited without confirmation, deposit
-confirmed not credited, withdrawal paid not completed, withdrawal
+confirmed not credited, rejected completion events — the amendment above —
+withdrawal paid not completed, withdrawal
 completed without confirmation, duplicate provider reference, stuck
 `PROCESSING`, `UNKNOWN` payout outcomes, orphan provider events,
 per-record ledger/provider drift) and only ever *records* a
@@ -107,9 +144,32 @@ official OpenAPI schema names a `hmac256` verification method).
 `MonimeProvider.verifyWebhookSignature` therefore **always returns
 invalid** — extending, never weakening, the exact fail-closed stance
 Phase 3 shipped. The payload-*parsing* logic
-(`parseMonimeWebhookPayload`) is fully implemented and unit-tested
-independently of the signature check, so the only work remaining once
-the canonical string is confirmed is the HMAC computation itself.
+(`parseMonimeWebhookPayload`) is implemented and unit-tested independently
+of the signature check — but see the next paragraph: the completed-payment
+part of it is provisional, so the HMAC computation is **not** the only work
+remaining.
+
+**The Monime paid-amount field path is provisional and unverified.**
+`MonimeProvider` maps `payment_code.completed` to a deposit completion only
+if the event carries `data.progress.totalPaymentSum` (`{ currency, value }`,
+`value` an integer in the currency's minor unit, `SLE 1 = 100`) — the amount
+actually **paid**. It deliberately never uses `data.amount`, the payment
+code's *configured* amount, as a substitute: that says what was asked for, not
+what was paid. If the paid total is absent or malformed the parsed payload is
+`null`, the event is stored `IGNORED` (and shows as an
+`ORPHAN_PROVIDER_EVENT`) and nothing is completed — fail-closed. These field
+names come from Monime's public documentation (the webhook "Structure and
+Events" page, whose `data` is the REST Payment Code object), **not from a
+captured delivery**, and the documentation is internally inconsistent (sample
+payloads are `apiVersion 2024-08-01`, the object pages `caph-2025-08-23`, and
+they name the processed-payment field differently) and silent on partial and
+over-payments, fees and whether our own reference is echoed. Before the parser
+is treated as finalized, one real Test-mode `payment_code.completed` delivery
+must be captured and checked for: the actual paid-amount field and its name;
+whether the paid amount can differ from the configured one; the currency
+fields; and whether our reference or only the payment-code id is echoed. Until
+then, together with the signature gap above, **the Monime integration is not
+production-ready**.
 
 ## USER ACTION REQUIRED
 
