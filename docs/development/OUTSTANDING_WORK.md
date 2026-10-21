@@ -546,6 +546,40 @@ database has been audited for holds already stranded this way, and nothing
 repairs one — the fix only prevents new ones. Real-money gaming is off by
 default, so production exposure is expected to be nil, but that is not
 verified against any real database.
+**In-transaction race coverage (PR #8, merged)**: the overlap test above only
+reaches a competing sweep that finds the match cancelled *before* the first
+refund starts. PR #8 (merge commit `b968e4a009bb39b773a441e6fdfefb5494b7c2ca`,
+test commit `95226d8d2590347698ed434d15b85f4caa4bace8`; test-only, one file
+`test/match-stakes.e2e-spec.ts`) adds "a recovery sweep that races an in-flight
+refund waits for it, then pays nothing". It pauses the first refund *inside*
+its settlement transaction (after the real `applyEntry` has written the
+uncommitted settlement row, x's wallet update and the `STAKE_REFUND` entry),
+captures that transaction's backend pid, starts a competing recovery sweep, and
+waits — by polling `pg_stat_activity`/`pg_blocking_pids` with a 5 s deadline,
+no sleeps — until Postgres reports a backend blocked by the first
+(`wait_event_type = 'Lock'`, on the `settlements` insert). It then releases the
+gate and asserts the competing sweep returned only after the refund was
+committed, exactly once (one settlement, one `STAKE_REFUND`, balances correct),
+and that the second `settle()` never reached the ledger. `finally` always
+releases the gate and settles both sweeps. This is the path previously argued
+only from the code; it is now exercised against real Postgres. CI: PR run
+[39516269695](https://github.com/Ahmed004-art/playLe/actions/runs/39516269695)
+(head `95226d8`) passed Backend, Admin and Mobile; the post-merge run on `main`
+[39517060421](https://github.com/Ahmed004-art/playLe/actions/runs/39517060421)
+failed its first attempt in Mobile's *Build Android (debug)* step — an
+unrelated, test-only change, cause not diagnosed because the job log needs a
+GitHub login — and passed all three jobs on attempt 2. One run each; the test
+has not been run repeatedly, and per-test lines are not visible. It covers the
+race on *current* code in one process; it does not recreate cross-process
+scheduling and does not explain run 39258189645.
+**Status of the historical cause: UNCONFIRMED.** The race remains the best fit
+and the swallowed-`settle()`-failure explanation is weakened (no `Settlement
+failed for` line, which every settlement-failure log site would have produced),
+but no log line ties any event to that match.
+**Separate outstanding task — stranded-stake audit (not started)**: no database
+has been audited for stake holds stranded by the pre-PR #6 late-confirm defect,
+and nothing repairs one. Tracked here as its own task rather than as part of
+the historical-cause question.
 **Severity**: the PR #3 gap and the PR #6 defect — each Medium before any
 real-money launch (money held with no automatic recovery), both now fixed.
 The residual (original failure still unexplained; no audit of existing
