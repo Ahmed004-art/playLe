@@ -828,6 +828,71 @@ describe('Match Stakes / Settlement / Disputes / Reconciliation (e2e)', () => {
     });
   });
 
+  describe('stranded-hold detection (item 26)', () => {
+    it('reconciliation reports a hold that landed after its stake was refunded (the pre-PR #6 state)', async () => {
+      // PR #6 makes this state impossible to create through the API. Holds it
+      // left behind before the fix still exist in any database it ran against,
+      // so this recreates the exact end state directly and checks that the
+      // admin reconciliation run surfaces it - it is the audit item 26 asks for.
+      const { matchId, x, o, admin } = await createStakedMatch('strand', '750');
+      await confirmStake(x.accessToken, matchId).expect(200);
+      await prisma.match.update({
+        where: { id: matchId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      await matchTimeoutService.sweep();
+      const stake = await prisma.matchStake.findUniqueOrThrow({
+        where: { matchId },
+      });
+      expect(stake.status).toBe('REFUNDED');
+
+      const run = async () =>
+        (
+          await request(app.getHttpServer())
+            .get('/api/v1/admin/reconciliation/run')
+            .set('Authorization', `Bearer ${admin.accessToken}`)
+            .expect(200)
+        ).body.anomalies.filter(
+          (a: { matchStakeId?: string }) => a.matchStakeId === stake.id,
+        ) as { type: string; userId?: string }[];
+
+      // Clean before the late hold: x was released by the refund.
+      expect(await run()).toHaveLength(0);
+
+      // The late hold, exactly as the old bug committed it: heldAt set and a
+      // STAKE_HOLD through the ledger (so the wallet still matches its ledger),
+      // after the stake had already been REFUNDED.
+      const oWallet = await prisma.wallet.findUniqueOrThrow({
+        where: { userId: o.userId },
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.matchStakePlayer.updateMany({
+          where: { matchStakeId: stake.id, userId: o.userId },
+          data: { heldAt: new Date() },
+        });
+        await ledgerService.applyEntry(tx, oWallet.id, {
+          type: 'STAKE_HOLD',
+          availableDeltaMinor: -750n,
+          heldDeltaMinor: 750n,
+          relatedMatchStakeId: stake.id,
+        });
+      });
+      expect(await heldBalance(o.userId)).toBe(750n);
+
+      const anomalies = await run();
+      expect(anomalies).toHaveLength(1);
+      expect(anomalies[0]).toMatchObject({
+        type: 'STRANDED_HOLD',
+        userId: o.userId,
+      });
+      // None of the pre-existing checks would have caught it on their own.
+      expect(anomalies.some((a) => a.type === 'ORPHANED_HOLD')).toBe(false);
+      expect(anomalies.some((a) => a.type === 'MISSING_SETTLEMENT')).toBe(
+        false,
+      );
+    }, 20000);
+  });
+
   describe('disconnect forfeit settles like a win', () => {
     it('awards the connected player a forfeit win and settles it', async () => {
       const { matchId, x, o } = await createStakedMatch('forfeit', '600');

@@ -7,11 +7,14 @@ export interface ReconciliationAnomaly {
     | 'MISSING_SETTLEMENT'
     | 'DUPLICATE_SETTLEMENT'
     | 'UNBALANCED_SETTLEMENT'
-    | 'WALLET_LEDGER_MISMATCH';
+    | 'WALLET_LEDGER_MISMATCH'
+    | 'STRANDED_HOLD';
   matchId?: string;
   matchStakeId?: string;
   settlementId?: string;
   walletId?: string;
+  /** The player concerned, for player-level anomalies (STRANDED_HOLD). */
+  userId?: string;
   detail: string;
 }
 
@@ -38,8 +41,64 @@ export class ReconciliationService {
       ...(await this.findDuplicateSettlements()),
       ...(await this.findUnbalancedSettlements()),
       ...(await this.findWalletLedgerMismatches()),
+      ...(await this.findStrandedHolds()),
     ];
     return { generatedAt: new Date(), anomalies };
+  }
+
+  /**
+   * A player who holds on a stake whose COMPLETED settlement never released
+   * them (OUTSTANDING_WORK item 26). Settlement releases every held stake
+   * whatever the outcome - a win pays the winner and releases each loser, a
+   * draw or a refund returns each holder's stake - so every player with
+   * `heldAt` set must have a settlement entry. Before PR #6 a stake confirmed
+   * while the stake-commit timeout was cancelling its match could commit its
+   * hold after the refund had run: that money stayed held, and none of the
+   * other checks see it (the stake is terminal, a settlement exists, and the
+   * wallet still matches its own ledger). Read-only, like every check here:
+   * it flags the player for a human; it does not refund.
+   */
+  private async findStrandedHolds(): Promise<ReconciliationAnomaly[]> {
+    const stakes = await this.prisma.matchStake.findMany({
+      where: {
+        status: { in: ['SETTLED', 'REFUNDED'] },
+        settlement: { isNot: null },
+      },
+      select: {
+        id: true,
+        matchId: true,
+        status: true,
+        players: { select: { userId: true, heldAt: true } },
+        settlement: {
+          select: {
+            id: true,
+            status: true,
+            entries: { select: { userId: true } },
+          },
+        },
+      },
+    });
+
+    const anomalies: ReconciliationAnomaly[] = [];
+    for (const stake of stakes) {
+      const settlement = stake.settlement;
+      // A settlement still in progress (or failed) is another check's concern.
+      if (!settlement || settlement.status !== 'COMPLETED') continue;
+      const released = new Set(settlement.entries.map((e) => e.userId));
+      for (const player of stake.players) {
+        if (player.heldAt !== null && !released.has(player.userId)) {
+          anomalies.push({
+            type: 'STRANDED_HOLD',
+            matchId: stake.matchId,
+            matchStakeId: stake.id,
+            settlementId: settlement.id,
+            userId: player.userId,
+            detail: `Player holds on a ${stake.status} stake but its completed settlement has no entry releasing them`,
+          });
+        }
+      }
+    }
+    return anomalies;
   }
 
   /** A terminal match whose stake never reached SETTLED/REFUNDED. */

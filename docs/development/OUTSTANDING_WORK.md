@@ -576,19 +576,28 @@ scheduling and does not explain run 39258189645.
 and the swallowed-`settle()`-failure explanation is weakened (no `Settlement
 failed for` line, which every settlement-failure log site would have produced),
 but no log line ties any event to that match.
-**Separate outstanding task — stranded-stake audit (not started)**: no database
-has been audited for stake holds stranded by the pre-PR #6 late-confirm defect,
-and nothing repairs one. Tracked here as its own task rather than as part of
-the historical-cause question.
+**Stranded-stake audit — now possible (branch `fix/item-26-stranded-holds`,
+not merged, not CI-verified until recorded here)**: a hold stranded by the
+pre-PR #6 late-confirm defect was invisible to every reconciliation check (the
+stake is terminal, so not `ORPHANED_HOLD`; a settlement exists, so not
+`MISSING_SETTLEMENT`; the wallet still matches its ledger). The settlement
+`ReconciliationService` now has a read-only `STRANDED_HOLD` check: in a
+COMPLETED settlement every player with `heldAt` set must have a settlement
+entry (a win, draw or refund releases every held stake), and any who does not
+is reported with match, stake, settlement and user. Unit spec
+`reconciliation.stranded.spec.ts` (4 of its 6 cases fail on the previous
+service) and an e2e case recreating the exact pre-PR #6 end state. Nothing
+repairs a stranded hold automatically - an admin decides. The audit itself
+(running it against a real database) is still to do.
 **Severity**: the PR #3 gap and the PR #6 defect — each Medium before any
 real-money launch (money held with no automatic recovery), both now fixed.
 The residual (original failure still unexplained; no audit of existing
 stranded holds) — Low.
 **Owner**: project owner may fetch the log of run 39258189645 and run the
 search above — the only thing that would settle H1 vs H2. Before any
-real-money launch, run a one-off query for holds on terminal stakes (held
-`MatchStakePlayer` rows whose stake is `REFUNDED`/`SETTLED` with no matching
-`SettlementEntry`) against the target database.
+real-money launch, run the admin reconciliation (`GET
+/api/v1/admin/reconciliation/run`) against the target database and resolve any
+`STRANDED_HOLD` it reports.
 
 ### 27. Completion webhook amount/currency validation — implemented; the Monime paid-amount field is unverified
 **Status**: The gap is closed in code, on branch
@@ -668,6 +677,16 @@ alerts, and a retry with a valid signature completes the deposit exactly once
 (ADR-019, "Response codes"). Test-mode webhooks cannot be created through the
 API (`403 Test mode is not supported for this endpoint: '/v1/webhooks'`); the
 Monime dashboard's Test-mode "Create Webhook" form is the supported route.
+**Capture attempt (2026-10-26) — no delivery**: a Test webhook was configured
+through that dashboard form against a capture receiver behind an ngrok tunnel.
+The tunnel stayed up and pointed at the receiver, and ngrok's own inspector
+recorded **zero inbound requests** over the whole window - not even one to a
+wrong path - so Monime made no delivery attempt at all; nothing on the PlayLe
+side was involved. Why is not established (the dashboard form has no event
+selector and the docs do not say which events a dashboard webhook receives, nor
+how a Test payment code is completed). Next step is Monime's, via the only
+documented developer contact (`dev@monime.io`): how does a Test-mode webhook
+receive events, and how is a Test payment code completed?
 **The Monime integration remains NOT production-ready**: signature
 verification still always fails closed (items 1–2), this paid-amount path is
 unverified, and business-model eligibility is unconfirmed (item 3).
