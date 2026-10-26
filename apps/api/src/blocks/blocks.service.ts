@@ -7,7 +7,7 @@ import type { Prisma, UserBlock } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RealtimeEmitterService } from '../realtime/realtime-emitter.service.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
-import { lockUserPair } from './pair-lock.js';
+import { lockUserPair, orderPair, pairKeyOf } from './pair-lock.js';
 
 /** Anything with a `userBlock` delegate: the root client or a transaction client. */
 export type BlockReader = Pick<Prisma.TransactionClient, 'userBlock'>;
@@ -109,9 +109,12 @@ export class BlocksService {
 
   /**
    * Idempotent: blocking someone already blocked returns the existing block.
-   * Under the pair lock, also cancels every PENDING challenge between the two
-   * players (either direction). The friendship and friend-request cascade of
-   * ADR-026 is added in the friends PR, in the same transaction.
+   * Under the pair lock and in ONE transaction with the block itself, also:
+   * cancels every PENDING challenge between the two players (either
+   * direction), removes any friendship between them, and cancels a pending
+   * friend request between them (either direction). Nobody is notified of the
+   * friendship/request cleanup - a block must not announce itself. A match
+   * that is already running is left untouched.
    */
   async block(
     blockerId: string,
@@ -135,6 +138,11 @@ export class BlocksService {
         create: { blockerId, blockedId: blockedUserId },
         update: {},
       });
+      await this.removeFriendshipAndRequestsBetween(
+        tx,
+        blockerId,
+        blockedUserId,
+      );
       return {
         row: created,
         cancelled: await this.cancelPendingChallengesBetween(
@@ -202,6 +210,31 @@ export class BlocksService {
       items,
       nextCursor: hasMore ? items[items.length - 1].blockedId : null,
     };
+  }
+
+  /**
+   * Called only from `block`, which already holds the pair lock. A friendship is
+   * one row per unordered pair; a pending request is found by its unique
+   * `pendingPairKey`, which is the same for either direction. Unblocking never
+   * restores either (there is nothing to restore from).
+   */
+  private async removeFriendshipAndRequestsBetween(
+    tx: Prisma.TransactionClient,
+    userIdA: string,
+    userIdB: string,
+  ): Promise<void> {
+    const { low, high } = orderPair(userIdA, userIdB);
+    await tx.friendship.deleteMany({
+      where: { userLowId: low, userHighId: high },
+    });
+    await tx.friendRequest.updateMany({
+      where: { pendingPairKey: pairKeyOf(userIdA, userIdB), status: 'PENDING' },
+      data: {
+        status: 'CANCELLED',
+        pendingPairKey: null,
+        respondedAt: new Date(),
+      },
+    });
   }
 
   private async cancelPendingChallengesBetween(
