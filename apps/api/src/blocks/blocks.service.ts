@@ -69,6 +69,45 @@ export class BlocksService {
   }
 
   /**
+   * `relationBetween` for many players in ONE query (Phase 12 PR 2 - summaries
+   * and profiles must not issue a block lookup per player). Every id in
+   * `otherIds` is present in the result, `NONE` when no block exists.
+   */
+  async relationsBetween(
+    viewerId: string,
+    otherIds: string[],
+    client: BlockReader = this.prisma,
+  ): Promise<Map<string, BlockRelation>> {
+    const relations = new Map<string, BlockRelation>(
+      otherIds.map((id) => [
+        id,
+        { blockedByViewer: false, blockedViewer: false },
+      ]),
+    );
+    if (otherIds.length === 0) return relations;
+
+    const rows = await client.userBlock.findMany({
+      where: {
+        OR: [
+          { blockerId: viewerId, blockedId: { in: otherIds } },
+          { blockerId: { in: otherIds }, blockedId: viewerId },
+        ],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    for (const row of rows) {
+      if (row.blockerId === viewerId) {
+        const relation = relations.get(row.blockedId);
+        if (relation) relation.blockedByViewer = true;
+      } else {
+        const relation = relations.get(row.blockerId);
+        if (relation) relation.blockedViewer = true;
+      }
+    }
+    return relations;
+  }
+
+  /**
    * Idempotent: blocking someone already blocked returns the existing block.
    * Under the pair lock, also cancels every PENDING challenge between the two
    * players (either direction). The friendship and friend-request cascade of
