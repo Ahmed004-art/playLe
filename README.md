@@ -15,8 +15,9 @@ receives the remaining 90%.
 > behavior and adds no chat, feed, groups or followers. Design:
 > [ADR-026](docs/decisions/ADR-026-social-foundation.md); plan and PR-by-PR
 > status: [`PHASE_12_PLAN.md`](docs/development/PHASE_12_PLAN.md). PR 1
-> (blocking) is implemented locally and awaiting review; nothing else is
-> started.
+> (blocking) is merged; PR 2 (profiles, summaries, match statistics,
+> block-aware lookup) is implemented and awaiting review; friends and the
+> Flutter screens are not started.
 >
 > *Previous phase — Phase 11 (verification, security and engineering
 > hardening):*

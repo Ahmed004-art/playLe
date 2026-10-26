@@ -63,9 +63,65 @@ owned by the blocker.
   challenges only, per the Phase 12 scope.
 - *Planned (friends PR):* blocking also deletes an existing friendship and
   cancels pending friend requests in either direction, in the same
-  transaction; and the blocked/blocker's profile, lookup and presence are
-  hidden from each other. *Planned (profiles PR):* `GET users/lookup` and the
-  profile endpoint 404 for a player who has blocked the caller.
+  transaction, and presence is hidden between a blocked pair.
+
+### Discoverability (PR 2)
+One policy, in `blocks/block-visibility.ts`, used by profile, username lookup
+and summaries so they cannot drift apart:
+
+| Surface | Hidden from the viewer when | Hidden player looks like |
+|---|---|---|
+| `GET users/lookup`, `GET users/:id/profile` | the other player has **blocked the viewer** | an unknown username / unknown id: same status and body |
+| `GET users/summaries` | a block exists in **either direction** | simply absent from `items`: no error, no marker |
+
+- The **blocker can still resolve and open the player they blocked**, so they
+  can see who it is and unblock them; the blocked player cannot do the reverse.
+- Summaries are stricter because they label lists (match history, friends): a
+  list must never name a player who has a block against the viewer or whom the
+  viewer has a block against.
+- A viewer always sees themselves. A player who is not `ACTIVE` is hidden
+  everywhere, as lookup already did.
+- Summaries answer for up to 50 players in **two queries** (users, then every
+  block between them and the viewer via `BlocksService.relationsBetween`), never
+  one per player.
+- Malformed ids are `400` (profile path, summaries); a well-formed id that does
+  not exist or is hidden is `404` (profile) or absent (summaries). Absent or
+  empty `ids` is the empty list.
+
+### Match statistics (PR 2)
+Computed on read from stored match results; nothing is written and no
+financial table is read. One aggregate query over `matches`, filtered through
+`match_players` (indexed on `userId`). A match counts for a player only if they
+are one of its players, its status is `COMPLETED`, and its stored result is
+consistent:
+
+- **win**: not a draw, and the winner is the player;
+- **loss**: not a draw, the winner is someone else, and that winner is also one
+  of the match's players;
+- **draw**: `resultIsDraw` is true and there is no winner.
+
+Every other `COMPLETED` row (no winner and not a draw; a draw that also names
+a winner; a winner who is not a player) is excluded rather than guessed at, so
+`gamesPlayed = wins + losses + draws` always holds. `ABANDONED`, `CANCELLED`,
+`EXPIRED`, `WAITING`, `READY` and `ACTIVE` matches never count.
+
+**Limitation (deliberate):** a disconnect forfeit is stored as `ABANDONED` with
+a winner (`MatchTimeoutService`). It is *not* counted as a win or a loss: the
+requirement is that outcomes are never inferred from disconnects, and the
+stored status does not say the match was played to a result. The cost is that a
+player who wins by their opponent leaving does not see that win in their
+record. Counting it would be a product decision (and arguably a separate
+"forfeits" figure), not something to infer here. Resignations and turn
+timeouts are stored as `COMPLETED` with a winner and do count.
+
+### Module wiring (PR 2)
+`UsersModule` now imports `BlocksModule`, and `BlocksModule` imports
+`AuthModule` and `RealtimeModule`, which import `UsersModule`/`AuthModule`.
+That is a file-level import cycle (Realtime -> Auth -> Users -> Blocks ->
+Realtime), so whichever module file loads first sees the others as `undefined`;
+every edge on the cycle that Nest resolves lazily is a `forwardRef`. A boot-time
+check that `AppModule` composes caught this before it was ever run against a
+database.
 
 ### Pair lock
 `lockUserPair(tx, a, b)` takes `pg_advisory_xact_lock(1201, hashtext("low:high"))`
@@ -103,7 +159,7 @@ any route not marked `@SocialThrottle()`, so registering it changes the rate
 limit of no existing endpoint. Block/unblock/list are marked; friend-request
 routes will be.
 
-### Planned (not implemented in PR 1)
+### Planned (friends PR and later)
 - `FriendRequest` (status PENDING/ACCEPTED/DECLINED/CANCELLED) with a nullable
   `pendingPairKey` that is set only while PENDING and unique, giving "at most
   one open request per pair" without a raw-SQL partial index; `Friendship`
@@ -114,9 +170,10 @@ routes will be.
   friends (never to a blocked pair), in addition to a current match opponent.
   This changes the privacy rule documented in `PresenceService`, which will be
   updated in the friends PR.
-- Public profile: username, display name, avatar, games played, wins, losses,
-  draws (from COMPLETED matches only). Never email, phone, date of birth,
-  role, status, wallet or stakes.
+- Public profile (**implemented in PR 2**): id, username, display name, games
+  played, wins, losses, draws. Never email, phone, date of birth, role, status,
+  wallet or stakes. The avatar was left out: nothing in the product sets or
+  shows one yet.
 
 ## Consequences
 - One additive migration (`user_blocks`, and an index on `match_players(userId)`
