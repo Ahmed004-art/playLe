@@ -99,8 +99,10 @@ class _MatchHistoryScreenState extends State<MatchHistoryScreen> {
                   final state = controller.state;
                   return switch (state) {
                     MatchHistoryLoading() => const LoadingView(),
-                    MatchHistoryError(message: final message) =>
-                      ErrorRetryView(message: message, onRetry: controller.load),
+                    MatchHistoryError(message: final message) => ErrorRetryView(
+                      message: message,
+                      onRetry: controller.load,
+                    ),
                     MatchHistoryUnauthorized() => _SessionExpired(
                       onSignIn: widget.authController.logout,
                     ),
@@ -294,7 +296,8 @@ class _MatchTile extends StatelessWidget {
                           color: color,
                         ),
                       ),
-                      if (detail != null) Text(detail, style: theme.textTheme.bodySmall),
+                      if (detail != null)
+                        Text(detail, style: theme.textTheme.bodySmall),
                       const SizedBox(height: AppSpacing.xs),
                       Text(
                         '${item.gameLabel} · vs ${item.opponentLabel}',

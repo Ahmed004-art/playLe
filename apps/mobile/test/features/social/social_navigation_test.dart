@@ -7,115 +7,119 @@ import 'social_test_support.dart';
 /// navigation from the account hub (the entry point this PR adds).
 void main() {
   group('Account hub entry points', () {
-    testWidgets('"My profile" opens your own profile, and back returns to the hub', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileToReturn = buildProfile(
-          id: myId,
-          username: 'playerone',
-          displayName: null,
+    testWidgets(
+      '"My profile" opens your own profile, and back returns to the hub',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileToReturn = buildProfile(
+            id: myId,
+            username: 'playerone',
+            displayName: null,
+          );
+        final auth = await signedIn();
+        useTallScreen(tester);
+        await tester.pumpWidget(
+          socialApp(buildSocialRouter(auth: auth.controller, social: social)),
         );
-      final auth = await signedIn();
-      useTallScreen(tester);
-      await tester.pumpWidget(
-        socialApp(buildSocialRouter(auth: auth.controller, social: social)),
-      );
-      await tester.pumpAndSettle();
+        await tester.pumpAndSettle();
 
-      await tester.ensureVisible(find.text('My profile'));
-      await tester.tap(find.text('My profile'));
-      await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('My profile'));
+        await tester.tap(find.text('My profile'));
+        await tester.pumpAndSettle();
 
-      // The app bar says so, and it is this player's own record.
-      expect(find.text('This is you'), findsOneWidget);
-      expect(social.profileRequests, [myId]);
+        // The app bar says so, and it is this player's own record.
+        expect(find.text('This is you'), findsOneWidget);
+        expect(social.profileRequests, [myId]);
 
-      await tester.pageBack();
-      await tester.pumpAndSettle();
+        await tester.pageBack();
+        await tester.pumpAndSettle();
 
-      expect(find.text('This is you'), findsNothing);
-      expect(find.text('@playerone'), findsOneWidget); // the account hub
-      expect(find.text('My profile'), findsOneWidget); // the hub's button
-    });
+        expect(find.text('This is you'), findsNothing);
+        expect(find.text('@playerone'), findsOneWidget); // the account hub
+        expect(find.text('My profile'), findsOneWidget); // the hub's button
+      },
+    );
 
-    testWidgets('"Match history" opens the history, and back returns to the hub', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository();
-      final auth = await signedIn();
-      useTallScreen(tester);
-      await tester.pumpWidget(
-        socialApp(buildSocialRouter(auth: auth.controller, social: social)),
-      );
-      await tester.pumpAndSettle();
+    testWidgets(
+      '"Match history" opens the history, and back returns to the hub',
+      (tester) async {
+        final social = FakeSocialRepository();
+        final auth = await signedIn();
+        useTallScreen(tester);
+        await tester.pumpWidget(
+          socialApp(buildSocialRouter(auth: auth.controller, social: social)),
+        );
+        await tester.pumpAndSettle();
 
-      await tester.ensureVisible(find.text('Match history'));
-      await tester.tap(find.text('Match history'));
-      await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Match history'));
+        await tester.tap(find.text('Match history'));
+        await tester.pumpAndSettle();
 
-      expect(
-        find.text('No matches yet. Play a game and it will show up here.'),
-        findsOneWidget,
-      );
-      expect(social.historyCalls, 1);
+        expect(
+          find.text('No matches yet. Play a game and it will show up here.'),
+          findsOneWidget,
+        );
+        expect(social.historyCalls, 1);
 
-      await tester.pageBack();
-      await tester.pumpAndSettle();
+        await tester.pageBack();
+        await tester.pumpAndSettle();
 
-      expect(find.text('@playerone'), findsOneWidget);
-    });
+        expect(find.text('@playerone'), findsOneWidget);
+      },
+    );
 
-    testWidgets('both entries sit beside the existing ones, which are still there', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository();
-      final auth = await signedIn();
-      useTallScreen(tester);
-      await tester.pumpWidget(
-        socialApp(buildSocialRouter(auth: auth.controller, social: social)),
-      );
-      await tester.pumpAndSettle();
+    testWidgets(
+      'both entries sit beside the existing ones, which are still there',
+      (tester) async {
+        final social = FakeSocialRepository();
+        final auth = await signedIn();
+        useTallScreen(tester);
+        await tester.pumpWidget(
+          socialApp(buildSocialRouter(auth: auth.controller, social: social)),
+        );
+        await tester.pumpAndSettle();
 
-      for (final label in [
-        'Games',
-        'Wallet',
-        'My profile',
-        'Match history',
-        'My Disputes',
-        'Two-factor authentication',
-        'Active sessions',
-        'Responsible gaming',
-        'Log out',
-      ]) {
-        expect(find.text(label), findsOneWidget, reason: label);
-      }
-    });
+        for (final label in [
+          'Games',
+          'Wallet',
+          'My profile',
+          'Match history',
+          'My Disputes',
+          'Two-factor authentication',
+          'Active sessions',
+          'Responsible gaming',
+          'Log out',
+        ]) {
+          expect(find.text(label), findsOneWidget, reason: label);
+        }
+      },
+    );
   });
 
   group('Opening a profile from another route', () {
-    testWidgets('a deep link to a profile shows that player, not the previous one', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileToReturn = buildProfile(
-          id: otherOpponentId,
-          username: 'grace_h',
-          displayName: 'Grace Hopper',
+    testWidgets(
+      'a deep link to a profile shows that player, not the previous one',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileToReturn = buildProfile(
+            id: otherOpponentId,
+            username: 'grace_h',
+            displayName: 'Grace Hopper',
+          );
+        final auth = await signedIn();
+        useTallScreen(tester);
+        final router = buildSocialRouter(
+          auth: auth.controller,
+          social: social,
+          initialLocation: '/players/$otherOpponentId',
         );
-      final auth = await signedIn();
-      useTallScreen(tester);
-      final router = buildSocialRouter(
-        auth: auth.controller,
-        social: social,
-        initialLocation: '/players/$otherOpponentId',
-      );
-      await tester.pumpWidget(socialApp(router));
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(socialApp(router));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Grace Hopper'), findsOneWidget);
-      expect(social.profileRequests, [otherOpponentId]);
-    });
+        expect(find.text('Grace Hopper'), findsOneWidget);
+        expect(social.profileRequests, [otherOpponentId]);
+      },
+    );
 
     testWidgets('moving from one profile to another loads the new player', (
       tester,

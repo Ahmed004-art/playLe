@@ -33,7 +33,10 @@ void main() {
 
     test('a 404 is "not found" (hidden and missing look the same)', () async {
       final repository = FakeSocialRepository()
-        ..profileError = const NetworkException('Player not found', statusCode: 404);
+        ..profileError = const NetworkException(
+          'Player not found',
+          statusCode: 404,
+        );
       final controller = _controller(repository);
       addTearDown(controller.dispose);
 
@@ -66,7 +69,10 @@ void main() {
 
     test('a 401 is unauthorized, not a retryable error', () async {
       final repository = FakeSocialRepository()
-        ..profileError = const NetworkException('Unauthorized', statusCode: 401);
+        ..profileError = const NetworkException(
+          'Unauthorized',
+          statusCode: 401,
+        );
       final controller = _controller(repository);
       addTearDown(controller.dispose);
 
@@ -149,19 +155,22 @@ void main() {
       expect(controller.state, isA<PlayerProfileLoaded>());
     });
 
-    test('a reply that arrives after dispose is dropped without error', () async {
-      final gate = Completer<void>();
-      final repository = FakeSocialRepository()..profileGate = gate;
-      final controller = _controller(repository);
+    test(
+      'a reply that arrives after dispose is dropped without error',
+      () async {
+        final gate = Completer<void>();
+        final repository = FakeSocialRepository()..profileGate = gate;
+        final controller = _controller(repository);
 
-      final loading = controller.load();
-      controller.dispose();
-      gate.complete();
+        final loading = controller.load();
+        controller.dispose();
+        gate.complete();
 
-      // Would throw "used after being disposed" if the reply were applied.
-      await loading;
-      expect(repository.profileCalls, 1);
-    });
+        // Would throw "used after being disposed" if the reply were applied.
+        await loading;
+        expect(repository.profileCalls, 1);
+      },
+    );
 
     test('notifies listeners on each state change', () async {
       final repository = FakeSocialRepository();

@@ -298,10 +298,7 @@ MatchResultView describeMatchResult(MatchHistoryEntry match, String myUserId) {
             : null,
       );
     case 'WAITING':
-      return const MatchResultView(
-        MatchOutcome.inProgress,
-        'Waiting to start',
-      );
+      return const MatchResultView(MatchOutcome.inProgress, 'Waiting to start');
     case 'READY':
     case 'ACTIVE':
       return const MatchResultView(MatchOutcome.inProgress, 'In progress');

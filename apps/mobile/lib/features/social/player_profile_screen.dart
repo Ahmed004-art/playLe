@@ -164,9 +164,9 @@ class _ProfileMessage extends StatelessWidget {
             Text(
               message,
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppColors.onSurfaceMuted,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: AppColors.onSurfaceMuted),
             ),
             const SizedBox(height: AppSpacing.xl),
             OutlinedButton(onPressed: onAction, child: Text(actionLabel)),

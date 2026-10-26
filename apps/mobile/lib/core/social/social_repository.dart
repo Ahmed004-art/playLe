@@ -42,7 +42,11 @@ class HttpSocialRepository implements SocialRepository {
   Future<List<PlayerSummary>> getSummaries(List<String> userIds) async {
     final unique = userIds.toSet().toList();
     final summaries = <PlayerSummary>[];
-    for (var start = 0; start < unique.length; start += maxSummaryIdsPerRequest) {
+    for (
+      var start = 0;
+      start < unique.length;
+      start += maxSummaryIdsPerRequest
+    ) {
       final end = start + maxSummaryIdsPerRequest < unique.length
           ? start + maxSummaryIdsPerRequest
           : unique.length;
@@ -56,14 +60,12 @@ class HttpSocialRepository implements SocialRepository {
         if (raw is! List) {
           throw const FormatException('Expected a list for "items"');
         }
-        return raw
-            .map((item) {
-              if (item is! Map) {
-                throw const FormatException('Expected an object in "items"');
-              }
-              return PlayerSummary.fromJson(Map<String, dynamic>.from(item));
-            })
-            .toList();
+        return raw.map((item) {
+          if (item is! Map) {
+            throw const FormatException('Expected an object in "items"');
+          }
+          return PlayerSummary.fromJson(Map<String, dynamic>.from(item));
+        }).toList();
       });
       summaries.addAll(items);
     }

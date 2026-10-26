@@ -106,43 +106,44 @@ void main() {
       expect(social.summaryRequests, hasLength(1));
     });
 
-    testWidgets('abandoned, cancelled and in-progress matches are not wins or losses', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..pages = [
-          MatchHistoryPage(
-            items: [
-              buildMatch(
-                id: 'a',
-                status: 'ABANDONED',
-                winnerUserId: myId,
-                terminationReason: 'ABANDONED_DISCONNECT',
-              ),
-              buildMatch(
-                id: 'c',
-                status: 'CANCELLED',
-                terminationReason: 'WAITING_TIMEOUT',
-              ),
-              buildMatch(id: 'p', status: 'ACTIVE'),
-              buildMatch(id: 'w', status: 'WAITING'),
-              buildMatch(id: 'x'),
-            ],
-            nextCursor: null,
-          ),
-        ];
+    testWidgets(
+      'abandoned, cancelled and in-progress matches are not wins or losses',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..pages = [
+            MatchHistoryPage(
+              items: [
+                buildMatch(
+                  id: 'a',
+                  status: 'ABANDONED',
+                  winnerUserId: myId,
+                  terminationReason: 'ABANDONED_DISCONNECT',
+                ),
+                buildMatch(
+                  id: 'c',
+                  status: 'CANCELLED',
+                  terminationReason: 'WAITING_TIMEOUT',
+                ),
+                buildMatch(id: 'p', status: 'ACTIVE'),
+                buildMatch(id: 'w', status: 'WAITING'),
+                buildMatch(id: 'x'),
+              ],
+              nextCursor: null,
+            ),
+          ];
 
-      await _openHistory(tester, social, await signedIn());
+        await _openHistory(tester, social, await signedIn());
 
-      expect(find.text('Abandoned'), findsOneWidget);
-      expect(find.text('Cancelled'), findsOneWidget);
-      expect(find.text('The match never started.'), findsOneWidget);
-      expect(find.text('In progress'), findsOneWidget);
-      expect(find.text('Waiting to start'), findsOneWidget);
-      expect(find.text('Result not recorded'), findsOneWidget);
-      expect(find.text('Won'), findsNothing);
-      expect(find.text('Lost'), findsNothing);
-    });
+        expect(find.text('Abandoned'), findsOneWidget);
+        expect(find.text('Cancelled'), findsOneWidget);
+        expect(find.text('The match never started.'), findsOneWidget);
+        expect(find.text('In progress'), findsOneWidget);
+        expect(find.text('Waiting to start'), findsOneWidget);
+        expect(find.text('Result not recorded'), findsOneWidget);
+        expect(find.text('Won'), findsNothing);
+        expect(find.text('Lost'), findsNothing);
+      },
+    );
 
     testWidgets('a hidden opponent is shown as unavailable, not invented', (
       tester,
@@ -157,10 +158,7 @@ void main() {
 
       await _openHistory(tester, social, await signedIn());
 
-      expect(
-        find.text('Tic-Tac-Toe · vs Player unavailable'),
-        findsOneWidget,
-      );
+      expect(find.text('Tic-Tac-Toe · vs Player unavailable'), findsOneWidget);
     });
 
     testWidgets('shows nothing about money', (tester) async {
@@ -179,7 +177,9 @@ void main() {
       }
     });
 
-    testWidgets('loads more on request and then stops offering it', (tester) async {
+    testWidgets('loads more on request and then stops offering it', (
+      tester,
+    ) async {
       final social = FakeSocialRepository()
         ..pages = [
           MatchHistoryPage(
@@ -231,7 +231,9 @@ void main() {
 
       expect(find.text('Won'), findsOneWidget); // still there
       expect(
-        find.text('Could not reach PlayLe. Check your connection and try again.'),
+        find.text(
+          'Could not reach PlayLe. Check your connection and try again.',
+        ),
         findsOneWidget,
       );
 
@@ -250,7 +252,9 @@ void main() {
       await _openHistory(tester, social, await signedIn());
 
       expect(
-        find.text('Could not reach PlayLe. Check your connection and try again.'),
+        find.text(
+          'Could not reach PlayLe. Check your connection and try again.',
+        ),
         findsOneWidget,
       );
 
@@ -263,96 +267,106 @@ void main() {
       );
     });
 
-    testWidgets('an expired session offers to sign in again, through the existing auth flow', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..historyErrorsByCall[0] =
-            const NetworkException('Unauthorized', statusCode: 401);
-      final auth = await signedIn();
+    testWidgets(
+      'an expired session offers to sign in again, through the existing auth flow',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..historyErrorsByCall[0] = const NetworkException(
+            'Unauthorized',
+            statusCode: 401,
+          );
+        final auth = await signedIn();
 
-      await _openHistory(tester, social, auth);
+        await _openHistory(tester, social, auth);
 
-      expect(
-        find.text('Your session has expired. Please sign in again.'),
-        findsOneWidget,
-      );
-      expect(find.text('Retry'), findsNothing);
+        expect(
+          find.text('Your session has expired. Please sign in again.'),
+          findsOneWidget,
+        );
+        expect(find.text('Retry'), findsNothing);
 
-      await tester.tap(find.text('Sign in again'));
-      await tester.pump();
+        await tester.tap(find.text('Sign in again'));
+        await tester.pump();
 
-      expect(auth.repository.loggedOut, isTrue);
-      expect(auth.controller.state, isA<AuthUnauthenticated>());
-    });
+        expect(auth.repository.loggedOut, isTrue);
+        expect(auth.controller.state, isA<AuthUnauthenticated>());
+      },
+    );
 
-    testWidgets('opens the opponent\'s profile, and back returns to the history', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileToReturn = buildProfile(displayName: 'Ada Lovelace')
-        ..pages = [
-          MatchHistoryPage(
-            items: [buildMatch(id: 'm', winnerUserId: myId)],
-            nextCursor: null,
-          ),
-        ]
-        ..summariesToReturn = const [
-          PlayerSummary(id: opponentId, username: 'ada_l', displayName: 'Ada'),
-        ];
+    testWidgets(
+      'opens the opponent\'s profile, and back returns to the history',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileToReturn = buildProfile(displayName: 'Ada Lovelace')
+          ..pages = [
+            MatchHistoryPage(
+              items: [buildMatch(id: 'm', winnerUserId: myId)],
+              nextCursor: null,
+            ),
+          ]
+          ..summariesToReturn = const [
+            PlayerSummary(
+              id: opponentId,
+              username: 'ada_l',
+              displayName: 'Ada',
+            ),
+          ];
 
-      await _openHistory(tester, social, await signedIn());
-      await tester.tap(find.text('Won'));
-      await tester.pumpAndSettle();
+        await _openHistory(tester, social, await signedIn());
+        await tester.tap(find.text('Won'));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Player profile'), findsOneWidget);
-      expect(find.text('@ada_l'), findsOneWidget);
-      expect(social.profileRequests, [opponentId]);
+        expect(find.text('Player profile'), findsOneWidget);
+        expect(find.text('@ada_l'), findsOneWidget);
+        expect(social.profileRequests, [opponentId]);
 
-      await tester.pageBack();
-      await tester.pumpAndSettle();
+        await tester.pageBack();
+        await tester.pumpAndSettle();
 
-      expect(find.text('Match history'), findsOneWidget);
-      expect(find.text('Won'), findsOneWidget);
-    });
+        expect(find.text('Match history'), findsOneWidget);
+        expect(find.text('Won'), findsOneWidget);
+      },
+    );
 
-    testWidgets('a match with several opponents does not open a single profile', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..pages = [
-          MatchHistoryPage(
-            items: [
-              buildMatch(
-                id: 'g',
-                winnerUserId: myId,
-                players: [myId, opponentId, otherOpponentId],
-              ),
-            ],
-            nextCursor: null,
-          ),
-        ];
+    testWidgets(
+      'a match with several opponents does not open a single profile',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..pages = [
+            MatchHistoryPage(
+              items: [
+                buildMatch(
+                  id: 'g',
+                  winnerUserId: myId,
+                  players: [myId, opponentId, otherOpponentId],
+                ),
+              ],
+              nextCursor: null,
+            ),
+          ];
 
-      await _openHistory(tester, social, await signedIn());
-      await tester.tap(find.text('Won'));
-      await tester.pumpAndSettle();
+        await _openHistory(tester, social, await signedIn());
+        await tester.tap(find.text('Won'));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Match history'), findsOneWidget);
-      expect(social.profileCalls, 0);
-    });
+        expect(find.text('Match history'), findsOneWidget);
+        expect(social.profileCalls, 0);
+      },
+    );
 
-    testWidgets('without a signed-in player it asks them to sign in and fetches nothing', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository();
-      final auth = await signedIn();
-      await auth.controller.logout();
+    testWidgets(
+      'without a signed-in player it asks them to sign in and fetches nothing',
+      (tester) async {
+        final social = FakeSocialRepository();
+        final auth = await signedIn();
+        await auth.controller.logout();
 
-      await _openHistory(tester, social, auth);
+        await _openHistory(tester, social, auth);
 
-      expect(find.text('Sign in to see your match history.'), findsOneWidget);
-      expect(social.historyCalls, 0);
-    });
+        expect(find.text('Sign in to see your match history.'), findsOneWidget);
+        expect(social.historyCalls, 0);
+      },
+    );
   });
 }
 

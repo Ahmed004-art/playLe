@@ -29,32 +29,33 @@ Future<void> _openProfile(
 
 void main() {
   group('PlayerProfileScreen', () {
-    testWidgets('shows the name, handle, games played and win/draw/loss record', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileToReturn = buildProfile(
-          gamesPlayed: 10,
-          wins: 6,
-          losses: 3,
-          draws: 1,
-        );
+    testWidgets(
+      'shows the name, handle, games played and win/draw/loss record',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileToReturn = buildProfile(
+            gamesPlayed: 10,
+            wins: 6,
+            losses: 3,
+            draws: 1,
+          );
 
-      await _openProfile(tester, social, await signedIn());
+        await _openProfile(tester, social, await signedIn());
 
-      expect(find.text('Ada Lovelace'), findsOneWidget);
-      expect(find.text('@ada_l'), findsOneWidget);
-      expect(find.text('Games played'), findsOneWidget);
-      expect(find.text('10'), findsOneWidget);
-      expect(find.text('Wins'), findsOneWidget);
-      expect(find.text('6'), findsOneWidget);
-      expect(find.text('Draws'), findsOneWidget);
-      expect(find.text('1'), findsOneWidget);
-      expect(find.text('Losses'), findsOneWidget);
-      expect(find.text('3'), findsOneWidget);
-      expect(find.text('Player profile'), findsOneWidget);
-      expect(social.profileRequests, [opponentId]);
-    });
+        expect(find.text('Ada Lovelace'), findsOneWidget);
+        expect(find.text('@ada_l'), findsOneWidget);
+        expect(find.text('Games played'), findsOneWidget);
+        expect(find.text('10'), findsOneWidget);
+        expect(find.text('Wins'), findsOneWidget);
+        expect(find.text('6'), findsOneWidget);
+        expect(find.text('Draws'), findsOneWidget);
+        expect(find.text('1'), findsOneWidget);
+        expect(find.text('Losses'), findsOneWidget);
+        expect(find.text('3'), findsOneWidget);
+        expect(find.text('Player profile'), findsOneWidget);
+        expect(social.profileRequests, [opponentId]);
+      },
+    );
 
     testWidgets('falls back to the username when there is no display name', (
       tester,
@@ -133,7 +134,9 @@ void main() {
       expect(find.text('My profile'), findsNothing);
     });
 
-    testWidgets('shows a spinner while loading, then the profile', (tester) async {
+    testWidgets('shows a spinner while loading, then the profile', (
+      tester,
+    ) async {
       final gate = Completer<void>();
       final social = FakeSocialRepository()
         ..profileToReturn = buildProfile()
@@ -176,28 +179,31 @@ void main() {
       expect(social.profileCalls, 1);
     });
 
-    testWidgets('a network failure shows a retryable error, and Retry recovers', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileToReturn = buildProfile()
-        ..profileError = const NetworkException('connection errored');
+    testWidgets(
+      'a network failure shows a retryable error, and Retry recovers',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileToReturn = buildProfile()
+          ..profileError = const NetworkException('connection errored');
 
-      await _openProfile(tester, social, await signedIn());
+        await _openProfile(tester, social, await signedIn());
 
-      expect(
-        find.text('Could not reach PlayLe. Check your connection and try again.'),
-        findsOneWidget,
-      );
-      expect(find.text('Ada Lovelace'), findsNothing);
+        expect(
+          find.text(
+            'Could not reach PlayLe. Check your connection and try again.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Ada Lovelace'), findsNothing);
 
-      social.profileError = null;
-      await tester.tap(find.text('Retry'));
-      await tester.pumpAndSettle();
+        social.profileError = null;
+        await tester.tap(find.text('Retry'));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Ada Lovelace'), findsOneWidget);
-      expect(social.profileCalls, 2);
-    });
+        expect(find.text('Ada Lovelace'), findsOneWidget);
+        expect(social.profileCalls, 2);
+      },
+    );
 
     testWidgets('a server error shows a friendly retryable message', (
       tester,
@@ -214,22 +220,29 @@ void main() {
       expect(find.text('Retry'), findsOneWidget);
     });
 
-    testWidgets('a 404 (missing or hidden) shows "Player not found", with no retry', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileError = const NetworkException('Player not found', statusCode: 404);
+    testWidgets(
+      'a 404 (missing or hidden) shows "Player not found", with no retry',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileError = const NetworkException(
+            'Player not found',
+            statusCode: 404,
+          );
 
-      await _openProfile(tester, social, await signedIn());
+        await _openProfile(tester, social, await signedIn());
 
-      expect(find.text('Player not found'), findsOneWidget);
-      expect(find.text("This player isn't available."), findsOneWidget);
-      expect(find.text('Retry'), findsNothing);
-    });
+        expect(find.text('Player not found'), findsOneWidget);
+        expect(find.text("This player isn't available."), findsOneWidget);
+        expect(find.text('Retry'), findsNothing);
+      },
+    );
 
     testWidgets('"Go back" returns to where you came from', (tester) async {
       final social = FakeSocialRepository()
-        ..profileError = const NetworkException('Player not found', statusCode: 404);
+        ..profileError = const NetworkException(
+          'Player not found',
+          statusCode: 404,
+        );
       final auth = await signedIn();
       useTallScreen(tester);
       final router = buildSocialRouter(auth: auth.controller, social: social);
@@ -247,52 +260,66 @@ void main() {
       expect(find.text('@playerone'), findsOneWidget); // the account hub
     });
 
-    testWidgets('"Go back" with nothing to go back to lands on the account hub', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileError = const NetworkException('Player not found', statusCode: 404);
+    testWidgets(
+      '"Go back" with nothing to go back to lands on the account hub',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileError = const NetworkException(
+            'Player not found',
+            statusCode: 404,
+          );
 
-      await _openProfile(tester, social, await signedIn());
-      await tester.tap(find.text('Go back'));
-      await tester.pumpAndSettle();
+        await _openProfile(tester, social, await signedIn());
+        await tester.tap(find.text('Go back'));
+        await tester.pumpAndSettle();
 
-      expect(find.text('@playerone'), findsOneWidget);
-    });
+        expect(find.text('@playerone'), findsOneWidget);
+      },
+    );
 
-    testWidgets('a route id that is not a user id is "not found" without a request', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository();
+    testWidgets(
+      'a route id that is not a user id is "not found" without a request',
+      (tester) async {
+        final social = FakeSocialRepository();
 
-      await _openProfile(tester, social, await signedIn(), userId: 'not-a-user');
+        await _openProfile(
+          tester,
+          social,
+          await signedIn(),
+          userId: 'not-a-user',
+        );
 
-      expect(find.text('Player not found'), findsOneWidget);
-      expect(social.profileCalls, 0);
-    });
+        expect(find.text('Player not found'), findsOneWidget);
+        expect(social.profileCalls, 0);
+      },
+    );
 
-    testWidgets('an expired session offers to sign in again, through the existing auth flow', (
-      tester,
-    ) async {
-      final social = FakeSocialRepository()
-        ..profileError = const NetworkException('Unauthorized', statusCode: 401);
-      final auth = await signedIn();
+    testWidgets(
+      'an expired session offers to sign in again, through the existing auth flow',
+      (tester) async {
+        final social = FakeSocialRepository()
+          ..profileError = const NetworkException(
+            'Unauthorized',
+            statusCode: 401,
+          );
+        final auth = await signedIn();
 
-      await _openProfile(tester, social, auth);
+        await _openProfile(tester, social, auth);
 
-      expect(find.text('Session expired'), findsOneWidget);
-      expect(
-        find.text('Your session has expired. Please sign in again.'),
-        findsOneWidget,
-      );
-      expect(find.text('Retry'), findsNothing);
+        expect(find.text('Session expired'), findsOneWidget);
+        expect(
+          find.text('Your session has expired. Please sign in again.'),
+          findsOneWidget,
+        );
+        expect(find.text('Retry'), findsNothing);
 
-      await tester.tap(find.text('Sign in again'));
-      await tester.pump();
+        await tester.tap(find.text('Sign in again'));
+        await tester.pump();
 
-      expect(auth.repository.loggedOut, isTrue);
-      expect(auth.controller.state, isA<AuthUnauthenticated>());
-    });
+        expect(auth.repository.loggedOut, isTrue);
+        expect(auth.controller.state, isA<AuthUnauthenticated>());
+      },
+    );
 
     testWidgets('shows no private account information', (tester) async {
       final social = FakeSocialRepository()..profileToReturn = buildProfile();

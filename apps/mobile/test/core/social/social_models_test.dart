@@ -90,30 +90,33 @@ void main() {
       expect(profile.gamesPlayed, 10);
     });
 
-    test('ignores anything the contract does not include (never surfaces it)', () {
-      final profile = PlayerProfile.fromJson(
-        _profileJson(
-          overrides: {
-            'email': 'ada@example.com',
-            'phoneNumber': '+23270000000',
-            'dateOfBirth': '1990-01-01',
-            'role': 'ADMIN',
-            'walletBalance': '1000',
-          },
-        ),
-      );
+    test(
+      'ignores anything the contract does not include (never surfaces it)',
+      () {
+        final profile = PlayerProfile.fromJson(
+          _profileJson(
+            overrides: {
+              'email': 'ada@example.com',
+              'phoneNumber': '+23270000000',
+              'dateOfBirth': '1990-01-01',
+              'role': 'ADMIN',
+              'walletBalance': '1000',
+            },
+          ),
+        );
 
-      // The model has no field for any of them, so there is nothing to show.
-      expect(
-        [
-          profile.id,
-          profile.username,
-          profile.displayName,
-          '${profile.gamesPlayed}',
-        ].join(' '),
-        isNot(contains('ada@example.com')),
-      );
-    });
+        // The model has no field for any of them, so there is nothing to show.
+        expect(
+          [
+            profile.id,
+            profile.username,
+            profile.displayName,
+            '${profile.gamesPlayed}',
+          ].join(' '),
+          isNot(contains('ada@example.com')),
+        );
+      },
+    );
 
     test('never defaults a missing statistic to zero', () {
       for (final key in ['gamesPlayed', 'wins', 'losses', 'draws']) {
@@ -148,9 +151,8 @@ void main() {
         throwsFormatException,
       );
       expect(
-        () => PlayerProfile.fromJson(
-          _profileJson(overrides: {'displayName': 5}),
-        ),
+        () =>
+            PlayerProfile.fromJson(_profileJson(overrides: {'displayName': 5})),
         throwsFormatException,
       );
     });
@@ -192,24 +194,29 @@ void main() {
       expect(entry.when, entry.completedAt);
     });
 
-    test('falls back to the creation time for a match that has not finished', () {
-      final entry = MatchHistoryEntry.fromJson(
-        _matchJson(
-          overrides: {
-            'status': 'ACTIVE',
-            'completedAt': null,
-            'winnerUserId': null,
-          },
-        ),
-      );
+    test(
+      'falls back to the creation time for a match that has not finished',
+      () {
+        final entry = MatchHistoryEntry.fromJson(
+          _matchJson(
+            overrides: {
+              'status': 'ACTIVE',
+              'completedAt': null,
+              'winnerUserId': null,
+            },
+          ),
+        );
 
-      expect(entry.completedAt, isNull);
-      expect(entry.when, entry.createdAt);
-    });
+        expect(entry.completedAt, isNull);
+        expect(entry.when, entry.createdAt);
+      },
+    );
 
     test('rejects a malformed match', () {
       expect(
-        () => MatchHistoryEntry.fromJson(_matchJson(overrides: {'players': null})),
+        () => MatchHistoryEntry.fromJson(
+          _matchJson(overrides: {'players': null}),
+        ),
         throwsFormatException,
       );
       expect(
@@ -242,7 +249,10 @@ void main() {
   group('MatchHistoryPage.fromJson', () {
     test('parses items and the next cursor', () {
       final page = MatchHistoryPage.fromJson({
-        'items': [_matchJson(), _matchJson(overrides: {'id': 'match-2'})],
+        'items': [
+          _matchJson(),
+          _matchJson(overrides: {'id': 'match-2'}),
+        ],
         'nextCursor': 'match-2',
       });
 
@@ -266,7 +276,8 @@ void main() {
   });
 
   group('describeMatchResult (the stored result is the only source)', () {
-    MatchResultView describe(MatchHistoryEntry m) => describeMatchResult(m, myId);
+    MatchResultView describe(MatchHistoryEntry m) =>
+        describeMatchResult(m, myId);
 
     test('a completed match won by the viewer is a win', () {
       final view = describe(buildMatch(id: 'm', winnerUserId: myId));
@@ -342,19 +353,22 @@ void main() {
       );
     });
 
-    test('an abandoned match is never a win or a loss, even with a winner stored', () {
-      final view = describe(
-        buildMatch(
-          id: 'm',
-          status: 'ABANDONED',
-          winnerUserId: myId,
-          terminationReason: 'ABANDONED_DISCONNECT',
-        ),
-      );
+    test(
+      'an abandoned match is never a win or a loss, even with a winner stored',
+      () {
+        final view = describe(
+          buildMatch(
+            id: 'm',
+            status: 'ABANDONED',
+            winnerUserId: myId,
+            terminationReason: 'ABANDONED_DISCONNECT',
+          ),
+        );
 
-      expect(view.outcome, MatchOutcome.abandoned);
-      expect(view.label, 'Abandoned');
-    });
+        expect(view.outcome, MatchOutcome.abandoned);
+        expect(view.label, 'Abandoned');
+      },
+    );
 
     test('cancelled and expired matches are cancelled', () {
       final cancelled = describe(
@@ -380,31 +394,34 @@ void main() {
       }
     });
 
-    test('an inconsistent completed match is "result not recorded", not guessed', () {
-      final cases = <String, MatchHistoryEntry>{
-        'no winner, not a draw': buildMatch(id: 'm'),
-        'a draw that also names a winner': buildMatch(
-          id: 'm',
-          resultIsDraw: true,
-          winnerUserId: myId,
-        ),
-        'a winner who was not a player': buildMatch(
-          id: 'm',
-          winnerUserId: otherOpponentId,
-        ),
-        'the viewer was not a player': buildMatch(
-          id: 'm',
-          winnerUserId: opponentId,
-          players: [opponentId, otherOpponentId],
-        ),
-      };
+    test(
+      'an inconsistent completed match is "result not recorded", not guessed',
+      () {
+        final cases = <String, MatchHistoryEntry>{
+          'no winner, not a draw': buildMatch(id: 'm'),
+          'a draw that also names a winner': buildMatch(
+            id: 'm',
+            resultIsDraw: true,
+            winnerUserId: myId,
+          ),
+          'a winner who was not a player': buildMatch(
+            id: 'm',
+            winnerUserId: otherOpponentId,
+          ),
+          'the viewer was not a player': buildMatch(
+            id: 'm',
+            winnerUserId: opponentId,
+            players: [opponentId, otherOpponentId],
+          ),
+        };
 
-      cases.forEach((name, match) {
-        final view = describe(match);
-        expect(view.outcome, MatchOutcome.unrecorded, reason: name);
-        expect(view.label, 'Result not recorded', reason: name);
-      });
-    });
+        cases.forEach((name, match) {
+          final view = describe(match);
+          expect(view.outcome, MatchOutcome.unrecorded, reason: name);
+          expect(view.label, 'Result not recorded', reason: name);
+        });
+      },
+    );
 
     test('an unknown status is unknown rather than a result', () {
       final view = describe(buildMatch(id: 'm', status: 'SOMETHING_NEW'));
