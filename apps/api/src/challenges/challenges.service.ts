@@ -16,6 +16,8 @@ import { EligibilityService } from '../eligibility/eligibility.service.js';
 import type { StakeRequestDto } from '../match-stakes/dto/stake-request.dto.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
+import { BlocksService } from '../blocks/blocks.service.js';
+import { lockUserPair } from '../blocks/pair-lock.js';
 
 @Injectable()
 export class ChallengesService {
@@ -28,6 +30,7 @@ export class ChallengesService {
     private readonly matchStakesService: MatchStakesService,
     private readonly eligibilityService: EligibilityService,
     private readonly configService: ConfigService<AppConfiguration, true>,
+    private readonly blocksService: BlocksService,
   ) {}
 
   async create(
@@ -45,6 +48,24 @@ export class ChallengesService {
 
     const opponent = await this.usersService.findById(opponentUserId);
     if (!opponent || opponent.status !== 'ACTIVE') {
+      throw new NotFoundException('Opponent not found');
+    }
+
+    // Blocks (Phase 12 - ADR-026). Checked straight after the opponent is
+    // resolved, before any other state-dependent check, so a blocked player
+    // learns nothing else. The blocker is told plainly (409); the blocked
+    // player gets exactly the answer for a player that does not exist, so a
+    // block never reveals itself. Advisory here: a block that lands between
+    // this check and the insert is caught by the pair-locked recheck in
+    // `accept`.
+    const relation = await this.blocksService.relationBetween(
+      challengerId,
+      opponentUserId,
+    );
+    if (relation.blockedByViewer) {
+      throw new ConflictException('You have blocked this player');
+    }
+    if (relation.blockedViewer) {
       throw new NotFoundException('Opponent not found');
     }
 
@@ -151,7 +172,33 @@ export class ChallengesService {
       );
     }
 
-    const resolved = await this.prisma.$transaction(async (tx) => {
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      // The pair lock comes FIRST: before the row claim below and before
+      // `createMatchGuarded`'s per-user locks. `BlocksService.block` takes the
+      // same lock before it touches challenge rows, so taking it in the
+      // opposite order here could deadlock the two (ADR-026, "Pair lock").
+      // Holding it also serialises this accept against a concurrent block: if
+      // the block committed first, the recheck below sees it; if this accept
+      // goes first, the match exists before the block and is left running.
+      await lockUserPair(tx, challenge.challengerId, challenge.opponentId);
+
+      const relation = await this.blocksService.relationBetween(
+        challenge.challengerId,
+        challenge.opponentId,
+        tx,
+      );
+      if (relation.blockedByViewer || relation.blockedViewer) {
+        // Only reachable when a challenge was created concurrently with a
+        // block (the block's own cascade cancels every challenge that already
+        // existed). Cancel it rather than leave it PENDING and acceptable,
+        // and commit that - throwing here would roll the cancellation back.
+        const { count: cancelledCount } = await tx.challenge.updateMany({
+          where: { id: challengeId, status: 'PENDING' },
+          data: { status: 'CANCELLED', respondedAt: new Date() },
+        });
+        return { blocked: true as const, cancelled: cancelledCount > 0 };
+      }
+
       const { count } = await tx.challenge.updateMany({
         where: {
           id: challengeId,
@@ -192,6 +239,21 @@ export class ChallengesService {
         data: { matchId: match.id },
       });
     });
+
+    if ('blocked' in outcome) {
+      if (outcome.cancelled) {
+        for (const userId of [challenge.challengerId, challenge.opponentId]) {
+          this.emitter.emitToUser(userId, 'challenge:resolved', {
+            challengeId,
+            status: 'CANCELLED',
+          });
+        }
+      }
+      // The same answer as any other challenge that is gone, so accepting
+      // never reveals that a block exists.
+      throw new ConflictException('This challenge is no longer pending');
+    }
+    const resolved = outcome;
 
     // Emitted only after the transaction has actually committed — a
     // client must never be told a challenge resolved into a match that

@@ -73,6 +73,9 @@ model User {
   challengesSent        Challenge[]    @relation("ChallengeChallenger")
   challengesReceived    Challenge[]    @relation("ChallengeOpponent")
 
+  blocksMade     UserBlock[] @relation("UserBlockBlocker")
+  blocksReceived UserBlock[] @relation("UserBlockBlocked")
+
   matchStakePlayers MatchStakePlayer[]
   settlementEntries SettlementEntry[]
   disputesRaised    Dispute[]          @relation("DisputeRaisedBy")
@@ -547,6 +550,9 @@ model MatchPlayer {
 
   @@unique([matchId, userId])
   @@unique([matchId, seat])
+  /// Phase 12: per-user match history and profile stats look matches up by
+  /// player; both unique keys above lead with `matchId`.
+  @@index([userId])
   @@map("match_players")
 }
 
@@ -607,6 +613,24 @@ model Challenge {
   @@index([challengerId])
   @@index([opponentId])
   @@map("challenges")
+}
+
+/// Phase 12 (ADR-026): `blockerId` has blocked `blockedId`. One directed row;
+/// the *effect* is symmetric (neither side can challenge the other) but the
+/// row is owned by, and only visible to, the blocker. A `CHECK
+/// ("blockerId" <> "blockedId")` constraint forbids self-blocks; it lives in
+/// the migration SQL because Prisma cannot declare check constraints.
+model UserBlock {
+  blockerId String
+  blocker   User   @relation("UserBlockBlocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedId String
+  blocked   User   @relation("UserBlockBlocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("user_blocks")
 }
 
 // ---------------------------------------------------------------------------

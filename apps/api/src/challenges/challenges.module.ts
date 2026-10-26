@@ -7,10 +7,12 @@ import { RealtimeModule } from '../realtime/realtime.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { MatchStakesModule } from '../match-stakes/match-stakes.module.js';
 import { EligibilityModule } from '../eligibility/eligibility.module.js';
+import { BlocksModule } from '../blocks/blocks.module.js';
 
 @Module({
   imports: [
     AuthModule,
+    BlocksModule,
     GamesModule,
     MatchesModule,
     RealtimeModule,

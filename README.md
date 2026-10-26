@@ -6,8 +6,20 @@ matchmaking, and compete in real-money-staked matches (2, 3, or 4 players).
 Stakes form a prize pool; PlayLe takes a 10% platform fee; the winner
 receives the remaining 90%.
 
-> **CURRENT PHASE: PHASE 11 — VERIFICATION, SECURITY AND ENGINEERING
-> HARDENING**
+> **CURRENT PHASE: PHASE 12 — SOCIAL FOUNDATION**
+>
+> Phase 12 adds the social half of the product: player blocking, public
+> profiles, friend requests, a friends list with presence, challenging
+> friends, and a match-history screen. It changes no wallet, ledger,
+> payment, settlement, eligibility, responsible-gaming or real-money
+> behavior and adds no chat, feed, groups or followers. Design:
+> [ADR-026](docs/decisions/ADR-026-social-foundation.md); plan and PR-by-PR
+> status: [`PHASE_12_PLAN.md`](docs/development/PHASE_12_PLAN.md). PR 1
+> (blocking) is implemented locally and awaiting review; nothing else is
+> started.
+>
+> *Previous phase — Phase 11 (verification, security and engineering
+> hardening):*
 >
 > Phase 11 builds no new game and changes no financial, eligibility or
 > real-money behavior. It fixes verified narrow-screen/large-text defects
@@ -302,8 +314,13 @@ this repository.
   **disabled** — launching it, and any real-money use, is a separate
   owner decision. See
   [ADR-025](docs/decisions/ADR-025-dice-game-module.md).
+- **Phase 12 — Social Foundation** (current). Blocking, public profiles,
+  friend requests, a friends list with presence, challenging friends and a
+  match-history screen, delivered as five PRs. See
+  [ADR-026](docs/decisions/ADR-026-social-foundation.md) and
+  [`PHASE_12_PLAN.md`](docs/development/PHASE_12_PLAN.md) for status.
 - **Phase 11 — Verification, Security and Engineering Hardening**
-  (current). No new game. Shared match widgets (`MatchStatusBar`,
+  (complete). No new game. Shared match widgets (`MatchStatusBar`,
   `MatchStakeStatusBar`, `DrawOfferBanner`, `FinancialResultBanner`) and
   the Dice roll rows no longer overflow on narrow screens or at large text
   scales, covered by a 320/390 px × 1.0/1.5/2.0× test matrix; the eight
@@ -311,7 +328,7 @@ this repository.
   exists, and the `deepmerge-ts` fix needs the Prisma 7 major); and the
   Phase 8, 9, 10 and 11 reports are written from Git/CI evidence. See
   [`PHASE_11_REPORT.md`](docs/development/PHASE_11_REPORT.md).
-- The next phase is not yet defined/scheduled. Each phase is specified
+- Phases after 12 are not yet defined/scheduled. Each phase is specified
   explicitly before implementation begins — see `CLAUDE.md`, "Phase
   Discipline".
 

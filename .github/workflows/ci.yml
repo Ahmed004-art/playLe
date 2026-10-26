@@ -79,6 +79,10 @@ jobs:
       # wait a real 30s.
       MATCHES_THROTTLE_LIMIT: 1000
       MATCHES_THROTTLE_TTL_MS: 60000
+      # Phase 12: the block/unblock e2e suite exceeds the production
+      # default (20) in well under 60s.
+      SOCIAL_THROTTLE_LIMIT: 1000
+      SOCIAL_THROTTLE_TTL_MS: 60000
       CHALLENGE_EXPIRY_MS: 120000
       MATCH_ABANDON_GRACE_MS: 5000
       MATCH_TIMEOUT_SWEEP_INTERVAL_MS: 2000
