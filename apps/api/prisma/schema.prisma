@@ -76,6 +76,11 @@ model User {
   blocksMade     UserBlock[] @relation("UserBlockBlocker")
   blocksReceived UserBlock[] @relation("UserBlockBlocked")
 
+  friendRequestsSent     FriendRequest[] @relation("FriendRequestRequester")
+  friendRequestsReceived FriendRequest[] @relation("FriendRequestAddressee")
+  friendshipsAsLow       Friendship[]    @relation("FriendshipLow")
+  friendshipsAsHigh      Friendship[]    @relation("FriendshipHigh")
+
   matchStakePlayers MatchStakePlayer[]
   settlementEntries SettlementEntry[]
   disputesRaised    Dispute[]          @relation("DisputeRaisedBy")
@@ -631,6 +636,55 @@ model UserBlock {
   @@id([blockerId, blockedId])
   @@index([blockedId])
   @@map("user_blocks")
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+}
+
+/// Phase 12 PR 3 (ADR-026). A friend request from `requesterId` to
+/// `addresseeId`. `pendingPairKey` is the sorted "lowId:highId" of the two
+/// users while the request is PENDING and NULL once it is resolved; its unique
+/// index is what allows at most one open request per unordered pair (a unique
+/// index ignores NULLs, so resolved requests never collide). The migration adds
+/// CHECK constraints Prisma cannot declare: requester <> addressee,
+/// `pendingPairKey` is set exactly while PENDING, and equals the sorted pair of
+/// the two ids (compared with the "C" collation, matching a JS string sort).
+model FriendRequest {
+  id          String @id @default(uuid())
+  requesterId String
+  requester   User   @relation("FriendRequestRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addresseeId String
+  addressee   User   @relation("FriendRequestAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  status         FriendRequestStatus @default(PENDING)
+  pendingPairKey String?             @unique
+
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+
+  @@index([requesterId, status])
+  @@index([addresseeId, status])
+  @@map("friend_requests")
+}
+
+/// Phase 12 PR 3 (ADR-026). One row per unordered pair, stored canonically as
+/// `userLowId < userHighId` (a CHECK in the migration, using the "C"
+/// collation, so the same pair can never be stored twice or as a self-pair).
+model Friendship {
+  userLowId  String
+  low        User   @relation("FriendshipLow", fields: [userLowId], references: [id], onDelete: Cascade)
+  userHighId String
+  high       User   @relation("FriendshipHigh", fields: [userHighId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userLowId, userHighId])
+  @@index([userHighId])
+  @@map("friendships")
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ import { VerificationModule } from './verification/verification.module.js';
 import { EligibilityModule } from './eligibility/eligibility.module.js';
 import { NotificationOutboxModule } from './notification-outbox/notification-outbox.module.js';
 import { BlocksModule } from './blocks/blocks.module.js';
+import { FriendsModule } from './friends/friends.module.js';
 import { socialThrottleSkipIf } from './common/social-throttle.js';
 
 @Module({
@@ -122,6 +123,7 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
     EligibilityModule,
     NotificationOutboxModule,
     BlocksModule,
+    FriendsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

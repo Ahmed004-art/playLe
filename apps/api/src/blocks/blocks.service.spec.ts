@@ -29,6 +29,8 @@ function build(options: { pending?: Row[]; targetExists?: boolean } = {}) {
       findMany: vi.fn(() => Promise.resolve(pending)),
       updateMany: vi.fn(() => Promise.resolve({ count: pending.length })),
     },
+    friendship: { deleteMany: vi.fn(() => Promise.resolve({ count: 1 })) },
+    friendRequest: { updateMany: vi.fn(() => Promise.resolve({ count: 1 })) },
   };
   const prisma = {
     user: {
