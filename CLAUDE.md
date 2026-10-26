@@ -79,8 +79,16 @@ implement a future phase's functionality early, even if it looks small or
 convenient. The active phase must always be explicitly identified (see
 `README.md`, "Current Phase").
 
-**Current phase: Phase 11 — Verification, Security and Engineering
-Hardening.** Phase 11 builds **no new game** and changes no wallet,
+**Current phase: Phase 12 — Social Foundation.** Phase 12 adds player
+blocking, public profiles, friend requests, a friends list with presence,
+challenging friends and a match-history screen, delivered as five PRs. It
+changes no wallet, ledger, settlement, eligibility, payment-provider or
+real-money behavior and adds no chat, feed, groups, followers or new
+matchmaking engine — see [ADR-026](docs/decisions/ADR-026-social-foundation.md)
+and [PHASE_12_PLAN.md](docs/development/PHASE_12_PLAN.md) for the design,
+the PR sequence and the "do not build" list.
+
+Phase 11 (complete) builds **no new game** and changes no wallet,
 ledger, settlement, eligibility, payment-provider or real-money-flag
 behavior: it fixes verified narrow-screen/large-text defects in the
 shared match widgets (with tests), records a disposition for the

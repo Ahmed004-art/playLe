@@ -156,6 +156,17 @@ class EnvironmentVariables {
   @Min(1)
   MATCH_DRAW_OFFER_TIMEOUT_MS: number = 60000;
 
+  // Phase 12 - see docs/decisions/ADR-026-social-foundation.md. Applies only
+  // to routes marked @SocialThrottle() (block/unblock/list now; friend
+  // requests later), never to existing routes.
+  @IsInt()
+  @Min(1)
+  SOCIAL_THROTTLE_LIMIT: number = 20;
+
+  @IsInt()
+  @Min(1)
+  SOCIAL_THROTTLE_TTL_MS: number = 60000;
+
   // Phase 5 — see docs/decisions/ADR-016-match-financial-architecture.md.
   // Defaults are all safe-off/conservative — real-money gaming never turns
   // on because a variable is merely unset.

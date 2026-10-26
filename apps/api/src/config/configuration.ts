@@ -84,6 +84,11 @@ export interface AppConfiguration {
      */
     drawOfferTimeoutMs: number;
   };
+  /** Phase 12 - see docs/decisions/ADR-026-social-foundation.md. */
+  social: {
+    throttleLimit: number;
+    throttleTtlMs: number;
+  };
   stakes: {
     /**
      * Master real-money gate. Defaults to `false` — the system never
@@ -208,6 +213,10 @@ export default (): AppConfiguration => ({
       process.env.MATCH_DRAW_OFFER_TIMEOUT_MS ?? '60000',
       10,
     ),
+  },
+  social: {
+    throttleLimit: parseInt(process.env.SOCIAL_THROTTLE_LIMIT ?? '20', 10),
+    throttleTtlMs: parseInt(process.env.SOCIAL_THROTTLE_TTL_MS ?? '60000', 10),
   },
   stakes: {
     realMoneyGamingEnabled: process.env.REAL_MONEY_GAMING_ENABLED === 'true',

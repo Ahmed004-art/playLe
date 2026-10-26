@@ -32,6 +32,8 @@ import { PasswordResetModule } from './password-reset/password-reset.module.js';
 import { VerificationModule } from './verification/verification.module.js';
 import { EligibilityModule } from './eligibility/eligibility.module.js';
 import { NotificationOutboxModule } from './notification-outbox/notification-outbox.module.js';
+import { BlocksModule } from './blocks/blocks.module.js';
+import { socialThrottleSkipIf } from './common/social-throttle.js';
 
 @Module({
   imports: [
@@ -72,6 +74,17 @@ import { NotificationOutboxModule } from './notification-outbox/notification-out
             limit: configService.get('matches.throttleLimit', { infer: true }),
           },
           {
+            // Limit for block/unblock (and later friend-request) endpoints
+            // — see docs/decisions/ADR-026-social-foundation.md. Opt-in
+            // per route: ThrottlerGuard applies every named throttler to
+            // every route, so `social` skips anything not marked
+            // @SocialThrottle() and no existing route is affected.
+            name: 'social',
+            ttl: configService.get('social.throttleTtlMs', { infer: true }),
+            limit: configService.get('social.throttleLimit', { infer: true }),
+            skipIf: socialThrottleSkipIf,
+          },
+          {
             // Separately-configurable limit for stake/dispute endpoints —
             // see docs/decisions/ADR-016-match-financial-architecture.md.
             name: 'stakes',
@@ -108,6 +121,7 @@ import { NotificationOutboxModule } from './notification-outbox/notification-out
     VerificationModule,
     EligibilityModule,
     NotificationOutboxModule,
+    BlocksModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
