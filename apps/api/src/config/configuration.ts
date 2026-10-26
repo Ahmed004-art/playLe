@@ -49,7 +49,11 @@ export interface AppConfiguration {
     monimeSpaceId?: string;
     monimeWebhookSecret?: string;
     monimeBaseUrl: string;
-    /** Optional `Monime-Version` header pin, e.g. `caph.2025-08-23`. */
+    /**
+     * Optional override of the `Monime-Version` header sent on every request;
+     * when unset the provider pins `MONIME_DEFAULT_API_VERSION`. Validated
+     * against the documented values in `env.validation.ts`.
+     */
     monimeApiVersion?: string;
     monimeHttpTimeoutMs: number;
     /**

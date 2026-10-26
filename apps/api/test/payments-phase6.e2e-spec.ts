@@ -462,12 +462,14 @@ describe('Phase 6 payments (e2e)', () => {
         providerReference: approved.body.providerReference,
       });
 
+      // 401, not 200: nothing is recorded for an unauthenticated delivery, so it
+      // must not be acknowledged (the sender would never retry it).
       await request(app.getHttpServer())
         .post('/api/v1/payments/webhooks/monime')
         .set('x-fake-signature', 'not-the-real-secret')
         .set('Content-Type', 'application/json')
         .send(body)
-        .expect(200); // still 200 — rejection is recorded, not surfaced as an error to the caller
+        .expect(401);
 
       const withdrawal = await prisma.withdrawal.findUnique({
         where: { id },

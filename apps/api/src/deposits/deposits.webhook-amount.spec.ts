@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { DepositsService } from './deposits.service.js';
+import { MonimeProvider } from '../payments/providers/monime.provider.js';
+import type { WebhookVerificationResult } from '../payments/ports/payment-provider.port.js';
 
 /**
  * `processProviderWebhook` for a verified `deposit.completed` event whose
@@ -35,6 +37,8 @@ function build(
   claimCounts: number[] = [1],
   /** Deliver every event under this one provider event id (a replay). */
   fixedEventId?: string,
+  /** Replace the provider double, e.g. with the real Monime parser. */
+  providerOverride?: unknown,
 ) {
   const claims = [...claimCounts];
   // Models the unique (provider, providerEventId) index: a second create for
@@ -94,7 +98,7 @@ function build(
     ledgerService as never,
     walletService as never,
     {} as never,
-    provider as never,
+    (providerOverride ?? provider) as never,
     {} as never,
     notificationOutbox as never,
   );
@@ -333,5 +337,176 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
 
     expect(await h.service.processProviderWebhook('{}', {})).toBe('processed');
     expect(h.ledgerService.applyEntry).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The real Monime parser feeding the real deposit service. Signature
+ * verification is the one thing replaced: `TrustingMonime` marks a delivery
+ * valid so the layers BEHIND the signature check - parsing the paid amount out
+ * of a Monime body and validating it against the stored deposit - can be
+ * exercised. The production class never does this (it always rejects); this
+ * subclass exists only in this test and proves nothing about signatures.
+ */
+class TrustingMonime extends MonimeProvider {
+  override verifyWebhookSignature(rawBody: string): WebhookVerificationResult {
+    const parsed = this.parseMonimeWebhookPayload(rawBody);
+    if (!parsed) return { valid: false };
+    return {
+      valid: true,
+      providerEventId: parsed.providerEventId,
+      eventType: parsed.eventType,
+      parsedPayload: parsed.parsedPayload ?? undefined,
+    };
+  }
+}
+
+describe('Monime body -> parser -> deposit service (signature check replaced)', () => {
+  const monime = () => new TrustingMonime({ get: () => ({}) } as never);
+
+  /** A payment_code.completed body whose pmc-1 is the stored deposit's providerReference. */
+  const body = (data: Record<string, unknown>, eventId = 'evt-m1') =>
+    JSON.stringify({
+      event: { id: eventId, name: 'payment_code.completed', timestamp: 1 },
+      object: { id: 'pmc-1', type: 'payment_code' },
+      data,
+    });
+  const money = (value: unknown, currency = 'SLE') => ({ currency, value });
+
+  it('credits exactly once when the paid amount and currency equal the deposit (caph processedPaymentData)', async () => {
+    const h = build({}, [1], undefined, monime());
+
+    const result = await h.service.processProviderWebhook(
+      body({
+        amount: money(4000),
+        processedPaymentData: { amount: money(4000) },
+      }),
+      {},
+    );
+
+    expect(result).toBe('processed');
+    expect(h.ledgerService.applyEntry).toHaveBeenCalledTimes(1);
+    expect(h.ledgerService.applyEntry).toHaveBeenCalledWith(
+      h.tx,
+      'wallet-1',
+      expect.objectContaining({ availableDeltaMinor: 4000n, currency: 'SLE' }),
+    );
+  });
+
+  it('credits exactly once for the legacy progress.totalPaymentSum location', async () => {
+    const h = build({}, [1], undefined, monime());
+
+    expect(
+      await h.service.processProviderWebhook(
+        body({ progress: { totalPaymentSum: money(4000) } }),
+        {},
+      ),
+    ).toBe('processed');
+    expect(h.ledgerService.applyEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a partial payment', money(1000)],
+    ['an over-payment', money(8000)],
+    ['a payment in another currency', money(4000, 'USD')],
+  ])(
+    'rejects %s even though the code was configured for the full amount',
+    async (_name, paid) => {
+      const h = build({}, [1], undefined, monime());
+
+      const result = await h.service.processProviderWebhook(
+        // data.amount (configured) says 4000 SLE; what was PAID differs.
+        body({ amount: money(4000), processedPaymentData: { amount: paid } }),
+        {},
+      );
+
+      expect(result).toBe('rejected');
+      expectUntouched(h);
+      expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'REJECTED',
+            relatedDepositId: 'deposit-1',
+          }),
+        }),
+      );
+    },
+  );
+
+  it('never credits on the configured amount alone: a completion with no paid evidence is ignored', async () => {
+    const h = build({}, [1], undefined, monime());
+
+    const result = await h.service.processProviderWebhook(
+      body({ amount: money(4000), mode: 'one_time', status: 'completed' }),
+      {},
+    );
+
+    // The parser yields no deposit payload, so the event is stored IGNORED.
+    expect(result).toBe('ignored');
+    expectUntouched(h);
+    expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'IGNORED' }),
+      }),
+    );
+  });
+
+  it('keeps the dedupe: a replayed matching body credits once', async () => {
+    const h = build({}, [1, 0], undefined, monime());
+    const matching = body({ processedPaymentData: { amount: money(4000) } });
+
+    expect(await h.service.processProviderWebhook(matching, {})).toBe(
+      'processed',
+    );
+    expect(await h.service.processProviderWebhook(matching, {})).toBe(
+      'ignored',
+    );
+    expect(h.ledgerService.applyEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('a payment.completed or payment_code.processed event can never credit, whatever it carries', async () => {
+    for (const name of ['payment.completed', 'payment_code.processed']) {
+      const h = build({}, [1], undefined, monime());
+      const raw = JSON.stringify({
+        event: { id: `evt-${name}`, name, timestamp: 1 },
+        object: { id: 'pmc-1', type: 'payment_code' },
+        data: { processedPaymentData: { amount: money(4000) } },
+      });
+
+      expect(await h.service.processProviderWebhook(raw, {})).toBe('ignored');
+      expectUntouched(h);
+    }
+  });
+
+  it('a late payment_code.expired after the completion cannot overwrite it or credit again', async () => {
+    // Claim counts model the database: the completion wins the PENDING row, the
+    // later expiry's conditional claim then matches nothing.
+    const h = build({}, [1, 0], undefined, monime());
+
+    expect(
+      await h.service.processProviderWebhook(
+        body({ processedPaymentData: { amount: money(4000) } }, 'evt-done'),
+        {},
+      ),
+    ).toBe('processed');
+
+    const expired = JSON.stringify({
+      event: { id: 'evt-expired', name: 'payment_code.expired', timestamp: 2 },
+      object: { id: 'pmc-1', type: 'payment_code' },
+      data: { status: 'expired' },
+    });
+    expect(await h.service.processProviderWebhook(expired, {})).toBe(
+      'processed',
+    );
+
+    // The expiry tried only a conditional PENDING -> EXPIRED claim, which lost.
+    expect(h.tx.deposit.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { id: 'deposit-1', status: 'PENDING' },
+        data: expect.objectContaining({ status: 'EXPIRED' }),
+      }),
+    );
+    expect(h.ledgerService.applyEntry).toHaveBeenCalledTimes(1);
+    expect(h.notificationOutbox.enqueue).toHaveBeenCalledTimes(1);
   });
 });

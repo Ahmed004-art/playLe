@@ -1,6 +1,12 @@
+import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MonimeProvider } from './monime.provider.js';
+import {
+  MONIME_DEFAULT_API_VERSION,
+  MONIME_SUPPORTED_API_VERSIONS,
+  webhookApiReleaseFor,
+} from './monime.constants.js';
 import type { AppConfiguration } from '../../config/configuration.js';
 
 function fakeConfigService(
@@ -474,5 +480,344 @@ describe('MonimeProvider - completed-payment amount (PROVISIONAL, unverified fie
       eventType: 'deposit.expired',
       providerReference: 'pmc-1',
     });
+  });
+
+  describe('paid amount in the documented caph / legacy locations (PROVISIONAL)', () => {
+    // Same provisional status as above: locations transcribed from
+    // docs.monime.io, never from a captured delivery.
+    const caphPaid = (value: unknown, currency: unknown = 'SLE') => ({
+      amount: sle(4000),
+      processedPaymentData: { amount: { currency, value } },
+    });
+
+    it('reads the caph processedPaymentData.amount as the paid amount', () => {
+      const parsed = provider.parseMonimeWebhookPayload(
+        completed(caphPaid(4000)),
+      );
+
+      expect(parsed?.parsedPayload).toEqual({
+        eventType: 'deposit.completed',
+        providerReference: 'pmc-1',
+        amountMinor: '4000',
+        currency: 'SLE',
+      });
+    });
+
+    it('reads the legacy paymentData.amount as the paid amount', () => {
+      const parsed = provider.parseMonimeWebhookPayload(
+        completed({ paymentData: { amount: sle(2500) } }),
+      );
+
+      expect(parsed?.parsedPayload).toMatchObject({ amountMinor: '2500' });
+    });
+
+    it('accepts two locations that agree', () => {
+      const parsed = provider.parseMonimeWebhookPayload(
+        completed({
+          progress: { totalPaymentSum: sle(4000) },
+          processedPaymentData: { amount: sle(4000) },
+        }),
+      );
+
+      expect(parsed?.parsedPayload).toMatchObject({
+        amountMinor: '4000',
+        currency: 'SLE',
+      });
+    });
+
+    it.each([
+      [
+        'amounts disagree',
+        {
+          progress: { totalPaymentSum: sle(4000) },
+          processedPaymentData: { amount: sle(1000) },
+        },
+      ],
+      [
+        'currencies disagree',
+        {
+          progress: { totalPaymentSum: sle(4000) },
+          processedPaymentData: { amount: { currency: 'USD', value: 4000 } },
+        },
+      ],
+      [
+        'one location is valid and another is malformed',
+        {
+          progress: { totalPaymentSum: sle(4000) },
+          processedPaymentData: { amount: sle(4000.5) },
+        },
+      ],
+      ['a present location is malformed (string value)', caphPaid('4000')],
+      ['a present location is malformed (negative)', caphPaid(-1)],
+      ['a present location has a non-ISO currency', caphPaid(4000, 'sle')],
+    ])('fails closed when %s', (_name, data) => {
+      const parsed = provider.parseMonimeWebhookPayload(completed(data));
+
+      expect(parsed?.eventType).toBe('payment_code.completed');
+      expect(parsed?.parsedPayload).toBeNull();
+    });
+
+    it('treats a null location as absent, not as evidence', () => {
+      const parsed = provider.parseMonimeWebhookPayload(
+        completed({
+          amount: sle(4000),
+          progress: { totalPaymentSum: null },
+          processedPaymentData: null,
+        }),
+      );
+
+      expect(parsed?.parsedPayload).toBeNull();
+    });
+
+    it('never treats the configured amount as the paid amount', () => {
+      const parsed = provider.parseMonimeWebhookPayload(
+        completed({ amount: sle(4000), mode: 'one_time', status: 'completed' }),
+      );
+
+      expect(parsed?.parsedPayload).toBeNull();
+    });
+  });
+
+  describe('event names that must never credit a deposit', () => {
+    const event = (name: string, objectType: string) =>
+      JSON.stringify({
+        event: { id: 'evt-x', name, timestamp: 1 },
+        object: { id: 'pay-1', type: objectType },
+        data: {
+          amount: sle(4000),
+          progress: { totalPaymentSum: sle(4000) },
+          processedPaymentData: { amount: sle(4000) },
+        },
+      });
+
+    it.each([
+      // Named in the caph webhook pages, but nothing says object.id is a
+      // payment CODE id, so it cannot be matched to a deposit.
+      ['payment.completed', 'payment'],
+      ['payment.created', 'payment'],
+      // A payment was processed; nothing establishes it is final.
+      ['payment_code.processed', 'payment_code'],
+      ['payment_code.created', 'payment_code'],
+      ['checkout_session.completed', 'checkout_session'],
+    ])(
+      '%s is recorded but mapped to nothing, even with full paid data',
+      (name, type) => {
+        const parsed = provider.parseMonimeWebhookPayload(event(name, type));
+
+        expect(parsed).not.toBeNull();
+        expect(parsed?.eventType).toBe(name);
+        expect(parsed?.parsedPayload).toBeNull();
+      },
+    );
+  });
+});
+
+describe('MonimeProvider - API release pinning on requests', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const depositParams = {
+    depositId: 'dep-1',
+    userId: 'user-1',
+    amountMinor: 4000n,
+    currency: 'SLE',
+    providerIdempotencyKey: 'key-1',
+  };
+
+  function okResponse() {
+    return new Response(
+      JSON.stringify({ success: true, result: { id: 'pmc-1' } }),
+      { status: 200 },
+    );
+  }
+
+  function lastRequest(spy: ReturnType<typeof vi.spyOn>) {
+    const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+    return {
+      url,
+      method: init.method,
+      headers: init.headers as Record<string, string>,
+      // A GET (status check) has no body.
+      body: (typeof init.body === 'string'
+        ? JSON.parse(init.body)
+        : undefined) as Record<string, unknown> | undefined,
+    };
+  }
+
+  it('pins the default caph release when MONIME_API_VERSION is unset', async () => {
+    const provider = new MonimeProvider(
+      fakeConfigService({
+        monimeApiKey: 'mon_test_abc',
+        monimeSpaceId: 'spc-1',
+      }),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(okResponse());
+
+    await provider.initiateDeposit(depositParams);
+
+    expect(lastRequest(fetchSpy).headers['Monime-Version']).toBe(
+      MONIME_DEFAULT_API_VERSION,
+    );
+    expect(MONIME_DEFAULT_API_VERSION).toBe('caph.2025-08-23');
+  });
+
+  it('uses the configured release when one is set', async () => {
+    const provider = new MonimeProvider(
+      fakeConfigService({
+        monimeApiKey: 'mon_test_abc',
+        monimeSpaceId: 'spc-1',
+        monimeApiVersion: 'caph.2025-06-20',
+      }),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(okResponse());
+
+    await provider.initiateDeposit(depositParams);
+
+    expect(lastRequest(fetchSpy).headers['Monime-Version']).toBe(
+      'caph.2025-06-20',
+    );
+  });
+
+  it('pins the release on status checks too, not only on creation', async () => {
+    const provider = new MonimeProvider(
+      fakeConfigService({
+        monimeApiKey: 'mon_test_abc',
+        monimeSpaceId: 'spc-1',
+      }),
+    );
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ result: { status: 'pending' } }), {
+        status: 200,
+      }),
+    );
+
+    await provider.checkDepositStatus({
+      depositId: 'dep-1',
+      providerReference: 'pmc-1',
+    });
+
+    expect(lastRequest(fetchSpy).headers['Monime-Version']).toBe(
+      MONIME_DEFAULT_API_VERSION,
+    );
+  });
+
+  it('creates a single-use payment code with the documented request shape', async () => {
+    const provider = new MonimeProvider(
+      fakeConfigService({
+        monimeApiKey: 'mon_test_abc',
+        monimeSpaceId: 'spc-1',
+      }),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(okResponse());
+
+    await provider.initiateDeposit(depositParams);
+
+    const request = lastRequest(fetchSpy);
+    expect(request.url).toBe('https://api.monime.io/v1/payment-codes');
+    expect(request.method).toBe('POST');
+    expect(request.headers['Monime-Space-Id']).toBe('spc-1');
+    expect(request.headers['Idempotency-Key']).toBe('key-1');
+    expect(request.headers.Authorization).toBe('Bearer mon_test_abc');
+    // The create schema is additionalProperties:false, so every key must be a
+    // documented one; `mode` is explicit so a deposit takes exactly one payment.
+    expect(request.body).toEqual({
+      name: 'PlayLe deposit dep-1',
+      mode: 'one_time',
+      amount: { currency: 'SLE', value: 4000 },
+      reference: 'dep-1',
+      authorizedProviders: ['m17'],
+      metadata: { depositId: 'dep-1', userId: 'user-1' },
+    });
+  });
+
+  it('derives the webhook apiRelease from the pinned version, for every supported version', () => {
+    for (const version of MONIME_SUPPORTED_API_VERSIONS) {
+      expect(webhookApiReleaseFor(version)).toBe('caph');
+    }
+    expect(webhookApiReleaseFor(MONIME_DEFAULT_API_VERSION)).toBe('caph');
+  });
+});
+
+describe('MonimeProvider - webhook signature verification (fail-closed)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const body = JSON.stringify({
+    event: { id: 'evt-1', name: 'payment_code.completed', timestamp: 1 },
+    object: { id: 'pmc-1', type: 'payment_code' },
+    data: { progress: { totalPaymentSum: { currency: 'SLE', value: 4000 } } },
+  });
+
+  it.each([
+    ['no signature header at all', {}],
+    ['a Monime-Signature header', { 'monime-signature': 'SECRET-SIG-VALUE' }],
+    [
+      'an X-Monime-Signature header',
+      { 'x-monime-signature': 'SECRET-SIG-VALUE' },
+    ],
+    ['an Authorization header', { authorization: 'Bearer SECRET-SIG-VALUE' }],
+    ['a plausible t=,v1= value', { 'monime-signature': 't=1,v1=abcdef' }],
+  ])('rejects a delivery with %s', (_name, headers) => {
+    const provider = new MonimeProvider(fakeConfigService());
+
+    expect(provider.verifyWebhookSignature(body, headers)).toEqual({
+      valid: false,
+    });
+  });
+
+  it('rejects even when the configured webhook secret could be used', () => {
+    const provider = new MonimeProvider(
+      fakeConfigService({ monimeWebhookSecret: 'x'.repeat(40) }),
+    );
+
+    expect(
+      provider.verifyWebhookSignature(body, { 'monime-signature': 'anything' }),
+    ).toEqual({ valid: false });
+  });
+
+  it('logs which header NAMES arrived, the body size and the claimed event - never a header value or the body', () => {
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => {});
+    const provider = new MonimeProvider(fakeConfigService());
+
+    provider.verifyWebhookSignature(body, {
+      'Monime-Signature': 'SECRET-SIG-VALUE',
+      'Content-Type': 'application/json',
+      'X-Other': ['SECRET-SIG-VALUE', 'SECOND-SECRET'],
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0][0]);
+    expect(message).toContain('content-type, monime-signature, x-other');
+    expect(message).toContain('Monime-Signature header present: true');
+    expect(message).toContain(`Body bytes: ${Buffer.byteLength(body)}`);
+    expect(message).toContain('payment_code.completed (evt-1)');
+    expect(message).not.toContain('SECRET-SIG-VALUE');
+    expect(message).not.toContain('SECOND-SECRET');
+    expect(message).not.toContain('totalPaymentSum');
+  });
+
+  it('copes with an unparseable body in the diagnostic', () => {
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => {});
+    const provider = new MonimeProvider(fakeConfigService());
+
+    expect(provider.verifyWebhookSignature('not json', {})).toEqual({
+      valid: false,
+    });
+    expect(String(warn.mock.calls[0][0])).toContain('unparseable');
+    expect(String(warn.mock.calls[0][0])).toContain(
+      'Monime-Signature header present: false',
+    );
   });
 });

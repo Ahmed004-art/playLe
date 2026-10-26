@@ -250,22 +250,121 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
         .send({ amountMinor: '5000' })
         .expect(201);
 
+      const eventId = randomUUID();
       const body = fakeProvider.buildWebhookBody({
+        eventId,
         eventType: 'deposit.completed',
         providerReference: created.body.providerReference,
       });
 
+      // Not acknowledged: a 2xx would tell the sender the event was received
+      // while PlayLe stored nothing, so it would never be retried.
       await request(app.getHttpServer())
         .post('/api/v1/payments/webhooks/monime')
         .set('x-fake-signature', 'wrong-secret')
         .set('Content-Type', 'application/json')
         .send(body)
-        .expect(200); // handled, but internally rejected
+        .expect(401);
 
       const deposit = await prisma.deposit.findUnique({
         where: { id: created.body.id },
       });
       expect(deposit?.status).toBe('PENDING');
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedDepositId: created.body.id },
+        }),
+      ).toBe(0);
+      // Nothing recorded for the rejected delivery, so its event id is not
+      // consumed by the dedupe.
+      expect(
+        await prisma.providerEvent.count({
+          where: { providerEventId: eventId },
+        }),
+      ).toBe(0);
+    });
+
+    it('rejects a delivery with no signature at all (401) and stores nothing', async () => {
+      const { accessToken } = await registerUser('depnosig');
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const eventId = randomUUID();
+
+      await request(app.getHttpServer())
+        .post('/api/v1/payments/webhooks/monime')
+        .set('Content-Type', 'application/json')
+        .send(
+          fakeProvider.buildWebhookBody({
+            eventId,
+            eventType: 'deposit.completed',
+            providerReference: created.body.providerReference,
+          }),
+        )
+        .expect(401);
+
+      expect(
+        (
+          await prisma.deposit.findUniqueOrThrow({
+            where: { id: created.body.id },
+          })
+        ).status,
+      ).toBe('PENDING');
+      expect(
+        await prisma.providerEvent.count({
+          where: { providerEventId: eventId },
+        }),
+      ).toBe(0);
+    });
+
+    it('a retry of the same event with a valid signature, after a 401, completes the deposit exactly once', async () => {
+      const { accessToken } = await registerUser('depsigretry');
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const body = fakeProvider.buildWebhookBody({
+        eventId: randomUUID(),
+        eventType: 'deposit.completed',
+        providerReference: created.body.providerReference,
+      });
+      const deliver = (signature: string) =>
+        request(app.getHttpServer())
+          .post('/api/v1/payments/webhooks/monime')
+          .set('x-fake-signature', signature)
+          .set('Content-Type', 'application/json')
+          .send(body);
+
+      // First attempt fails authentication; the sender retries the SAME event.
+      await deliver('wrong-secret').expect(401);
+      const retried = await deliver(fakeProvider.signatureHeader()).expect(200);
+      expect(retried.body.status).toBe('processed');
+      // A further redelivery of that event is a duplicate.
+      const again = await deliver(fakeProvider.signatureHeader()).expect(200);
+      expect(again.body.status).toBe('ignored');
+
+      expect(
+        (
+          await prisma.deposit.findUniqueOrThrow({
+            where: { id: created.body.id },
+          })
+        ).status,
+      ).toBe('COMPLETED');
+      const wallet = await request(app.getHttpServer())
+        .get('/api/v1/wallet')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+      expect(wallet.body.availableBalanceMinor).toBe('5000');
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedDepositId: created.body.id, type: 'DEPOSIT' },
+        }),
+      ).toBe(1);
     });
 
     it('is idempotent against a duplicate webhook delivery (same event id)', async () => {

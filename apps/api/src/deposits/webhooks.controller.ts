@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Post,
   Req,
+  UnauthorizedException,
   type RawBodyRequest,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
@@ -36,6 +37,16 @@ import { WithdrawalsService } from '../withdrawals/withdrawals.service.js';
  * to create a `ProviderEvent` for the same provider event id (the
  * dedup-by-uniqueness mechanism only works if exactly one of them ever
  * attempts the insert for a given delivery).
+ *
+ * Response codes: a delivery whose authenticity cannot be established (no raw
+ * body to verify, or a signature that does not verify) gets **401** and is not
+ * processed. It must not be acknowledged with a 2xx: nothing is stored for it, so
+ * a 200 would tell the sender the event was received while PlayLe silently
+ * dropped it - no retry, no alert, a deposit never credited. A non-2xx lets the
+ * sender retry and raise its delivery-failure notification. Every AUTHENTICATED
+ * delivery gets 200, whatever the outcome (processed, a duplicate that is
+ * ignored, or a business rejection such as an amount mismatch), so a valid
+ * sender is never pushed into a retry storm over an event PlayLe has recorded.
  */
 @ApiExcludeController()
 @Controller({ path: 'payments/webhooks/monime', version: '1' })
@@ -50,7 +61,12 @@ export class WebhooksController {
   async handle(
     @Req() req: RawBodyRequest<Request>,
   ): Promise<{ status: string }> {
-    const rawBody = req.rawBody ? req.rawBody.toString('utf-8') : '';
+    // Without the exact bytes received there is nothing to verify a signature
+    // against; never fall back to verifying an empty or re-serialised body.
+    if (!req.rawBody) {
+      throw new UnauthorizedException('Webhook could not be authenticated');
+    }
+    const rawBody = req.rawBody.toString('utf-8');
     const headers = req.headers as Record<
       string,
       string | string[] | undefined
@@ -58,8 +74,11 @@ export class WebhooksController {
 
     const provider = this.depositsService.getProvider();
     const peek = provider.verifyWebhookSignature(rawBody, headers);
+    if (!peek.valid) {
+      // Not acknowledged: see the class comment. The body is never processed.
+      throw new UnauthorizedException('Webhook could not be authenticated');
+    }
     const isPayout =
-      peek.valid &&
       Boolean(peek.eventType) &&
       typeof peek.eventType === 'string' &&
       this.looksLikePayoutEvent(peek.parsedPayload);
@@ -68,10 +87,8 @@ export class WebhooksController {
       ? await this.withdrawalsService.processProviderWebhook(rawBody, headers)
       : await this.depositsService.processProviderWebhook(rawBody, headers);
 
-    // Always 200 for a syntactically-handled delivery (including rejected/
-    // ignored) so the provider doesn't retry-storm us over something we
-    // deliberately chose not to apply; the distinction is visible in our
-    // own ProviderEvent audit log, not in the HTTP status.
+    // 200 for every authenticated delivery (processed, duplicate-ignored, or a
+    // business rejection); the distinction is in the ProviderEvent audit log.
     return { status };
   }
 

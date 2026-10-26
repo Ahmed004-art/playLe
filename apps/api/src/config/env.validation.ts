@@ -8,8 +8,10 @@ import {
   Max,
   Min,
   MinLength,
+  ValidateIf,
   validateSync,
 } from 'class-validator';
+import { MONIME_SUPPORTED_API_VERSIONS } from '../payments/providers/monime.constants.js';
 
 /**
  * Declares every environment variable the API requires and its shape. The
@@ -97,6 +99,18 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   MONIME_WEBHOOK_SECRET?: string;
+
+  // The `Monime-Version` pinned on every request. Unset or blank (as in
+  // `.env.example`) means the documented default; anything else must be a
+  // version Monime documents, so a typo cannot silently pick another release.
+  @ValidateIf(
+    (env: { MONIME_API_VERSION?: string }) =>
+      env.MONIME_API_VERSION !== undefined && env.MONIME_API_VERSION !== '',
+  )
+  @IsIn([...MONIME_SUPPORTED_API_VERSIONS], {
+    message: `MONIME_API_VERSION must be one of: ${MONIME_SUPPORTED_API_VERSIONS.join(', ')}`,
+  })
+  MONIME_API_VERSION?: string;
 
   @IsInt()
   @Min(1)
