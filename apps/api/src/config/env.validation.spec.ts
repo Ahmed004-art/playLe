@@ -57,6 +57,36 @@ describe('validate (environment variables)', () => {
     expect(result.PAYMENTS_PROVIDER).toBe('manual');
   });
 
+  describe('MONIME_API_VERSION', () => {
+    it.each(['caph.2025-08-23', 'caph.2025-06-20'])(
+      'accepts the documented version %s',
+      (version) => {
+        expect(() =>
+          validate({ ...validEnv, MONIME_API_VERSION: version }),
+        ).not.toThrow();
+      },
+    );
+
+    it('accepts it unset', () => {
+      expect(() => validate(validEnv)).not.toThrow();
+    });
+
+    it('accepts it blank, as in a copied .env.example', () => {
+      expect(() =>
+        validate({ ...validEnv, MONIME_API_VERSION: '' }),
+      ).not.toThrow();
+    });
+
+    it.each(['caph.2025-08-24', 'siriusb.2025-08-23', '2024-08-01', 'latest'])(
+      'rejects an undocumented version %s, naming the allowed ones',
+      (version) => {
+        expect(() =>
+          validate({ ...validEnv, MONIME_API_VERSION: version }),
+        ).toThrow(/MONIME_API_VERSION must be one of: caph\.2025-08-23/);
+      },
+    );
+  });
+
   it('rejects an unknown PAYMENTS_PROVIDER', () => {
     expect(() =>
       validate({ ...validEnv, PAYMENTS_PROVIDER: 'stripe' }),

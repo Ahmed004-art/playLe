@@ -643,6 +643,31 @@ verify (a) the actual paid-amount field and name, (b) whether the paid amount
 can differ from the configured one, (c) the currency fields, (d) whether our
 own reference or only the payment-code id is echoed. The provisional parser
 tests in `monime.provider.spec.ts` must be re-checked against that payload.
+**`caph` compatibility pass (branch `fix/monime-test-webhook-compat`, same
+caveats — not merged, not CI-verified until recorded here)**: requests now pin
+`Monime-Version` (default `caph.2025-08-23`, validated against the documented
+values; the Space's webhook must use `apiRelease: "caph"` to match) and send
+`mode: "one_time"`; the paid amount is read from every documented location
+(`progress.totalPaymentSum`, `processedPaymentData.amount`, `paymentData.amount`)
+and fails closed on a malformed location or a disagreement; `payment.*` and
+`payment_code.processed` are deliberately not mapped to a credit; and a
+rejected delivery now logs header **names**, body size and the claimed event
+(never values) so the signature header can be found on a real Test-mode
+delivery. **Established from the official `caph` documentation** — the webhook
+verification method is `HS256` (caller-supplied secret, 32–256 characters) or
+`ES256`; **not** established anywhere public — the signature header name, its
+value format, the signed bytes, the encoding, any timestamp tolerance, and the
+real `caph` completion payload and event names. Signature verification
+therefore stays **fail-closed** (nothing is guessed), and
+`MONIME_WEBHOOK_SECRET` is still unused. The signature header NAME is now
+documented (`Monime-Signature`, "cryptographic signature with timestamp") and a
+rejected delivery logs whether it was present. **Fixed**: an unauthenticated
+delivery used to be answered 200 while nothing was stored for it (silently
+dropped, never retried); it is now answered **401** so the sender retries and
+alerts, and a retry with a valid signature completes the deposit exactly once
+(ADR-019, "Response codes"). Test-mode webhooks cannot be created through the
+API (`403 Test mode is not supported for this endpoint: '/v1/webhooks'`); the
+Monime dashboard's Test-mode "Create Webhook" form is the supported route.
 **The Monime integration remains NOT production-ready**: signature
 verification still always fails closed (items 1–2), this paid-amount path is
 unverified, and business-model eligibility is unconfirmed (item 3).

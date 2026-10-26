@@ -71,6 +71,19 @@ Dispatching to only one avoids a race where both services could attempt
 to insert the same `(provider, providerEventId)` row and the "loser"
 would be wrongly treated as a duplicate.
 
+**Response codes (amended).** A delivery whose authenticity cannot be
+established — no raw body to verify, or a signature that does not verify — is
+answered **401** and never processed. It was previously answered 200 like any
+other delivery, but nothing is stored for an unauthenticated delivery, so a 200
+told the sender "received" while PlayLe dropped it: no retry, no alert, a
+deposit never credited (with verification fail-closed, that would have been
+every genuine Monime delivery). A non-2xx lets the sender retry and raise its
+delivery-failure notification; once verification is correct, the retried event
+is processed normally and its event id was never consumed. Every
+**authenticated** delivery is still answered 200 whatever the outcome
+(processed, duplicate-ignored, or a recorded business rejection such as an
+amount mismatch), so a valid sender is never pushed into a retry storm.
+
 ### Completion events: the reported amount and currency must match (amendment)
 A deposit is always credited with its own **stored** amount, never a value
 taken from an event. So a verified `deposit.completed` event for a different
@@ -135,12 +148,18 @@ during a live operation: an unready `MonimeProvider` returns
 
 ## Open/Unverified — kept fail-closed, not guessed
 
-The exact byte string Monime's `Monime-Signature` header HMAC-SHA256
-covers is not verifiable against any source reachable during this
-implementation (the official HMAC-verification guide page renders only a
-client-side loading placeholder to automated fetches, and no SDK source
-was reachable either). The algorithm itself **is** confirmed (the
-official OpenAPI schema names a `hmac256` verification method).
+The webhook signature procedure is not established by any public source
+reachable so far. Updated finding (API release `caph-2025-08-23`): a webhook
+is registered with `verificationMethod.type` **`HS256`** (HMAC; the caller
+supplies the `secret`, 32–256 characters) or **`ES256`** (ECDSA, P-256; a
+read-only `publicKey`). The older `2024-08-01` release called the HMAC option
+`hmac256` (secret 32–100). What is **not** documented anywhere: the header the
+signature arrives in, its value format, exactly which bytes it covers, its
+encoding, any timestamp and tolerance, and how an ES256 key is produced. The
+official HMAC-verification guide is an empty placeholder, the webhook
+best-practice/introduction pages are too, and no official SDK or CLI source
+that implements verification is public (the CLI's Webhook Inspector source was
+not readable). So nothing may be guessed:
 `MonimeProvider.verifyWebhookSignature` therefore **always returns
 invalid** — extending, never weakening, the exact fail-closed stance
 Phase 3 shipped. The payload-*parsing* logic
@@ -170,6 +189,39 @@ whether the paid amount can differ from the configured one; the currency
 fields; and whether our reference or only the payment-code id is echoed. Until
 then, together with the signature gap above, **the Monime integration is not
 production-ready**.
+
+**Compatibility work done against the `caph` documentation (still
+provisional):**
+- *One API release, explicit.* Every request pins `Monime-Version`
+  (`MONIME_API_VERSION`, default `caph.2025-08-23`; only the documented
+  `caph.2025-08-23` / `caph.2025-06-20` are accepted at startup). The Space's
+  webhook must be registered with the **same** release — `apiRelease: "caph"`,
+  derived by `webhookApiReleaseFor` — so the events received match the schema
+  the parser was written for. The docs do not say the two must match; keeping
+  them equal is the conservative reading.
+- *Single-use codes.* The payment-code request sends `mode: "one_time"`
+  explicitly (the documented default), because the amount check assumes one
+  payment per deposit; a `recurrent` code can take several. The create schema
+  is `additionalProperties: false`, so the request carries only documented keys.
+  `duration` is left at its documented default of 10 minutes.
+- *Where the paid amount is read.* `data.progress.totalPaymentSum` (the
+  `2024-08-01` completed sample), `data.processedPaymentData.amount` (the
+  `caph` object; documented as present on `payment_code.processed`) and
+  `data.paymentData.amount` (the `2024-08-01` processed sample). Every location
+  present is read; a malformed one, or two that disagree, yields no payload.
+- *Event names.* Only `payment_code.completed` / `payment_code.expired` and the
+  `payout.*` names are mapped. The `caph` webhook pages also mention
+  `payment.completed` and `payment.created`, but nothing says their `object.id`
+  is a payment-code id, so they cannot be matched to a deposit and are **not**
+  mapped. `payment_code.processed` is not mapped either: nothing establishes it
+  is final. Both are recorded and `IGNORED`, never credited. Whether the real
+  `caph` completion event carries a paid amount at all is exactly what a
+  captured delivery must show.
+- *Rejected deliveries are diagnosable without leaking the signature.* A
+  fail-closed rejection logs which header **names** arrived, the body size and
+  the claimed event — never a header value or the body — so the signature header
+  can be identified from a real Test-mode delivery without recording the
+  signature.
 
 ## USER ACTION REQUIRED
 

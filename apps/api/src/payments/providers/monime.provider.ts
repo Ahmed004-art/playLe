@@ -16,6 +16,11 @@ import type {
   WebhookPayoutPayload,
   WebhookVerificationResult,
 } from '../ports/payment-provider.port.js';
+import {
+  MONIME_DEFAULT_API_VERSION,
+  MONIME_PAYMENT_CODE_MODE,
+  MONIME_SIGNATURE_HEADER,
+} from './monime.constants.js';
 
 /** The largest minor-unit amount that round-trips exactly through a JSON number. */
 const MAX_SAFE_MINOR_VALUE = BigInt(Number.MAX_SAFE_INTEGER);
@@ -46,13 +51,14 @@ type Readiness =
  * their sources). Deposits use Payment Codes (USSD/MoMo, no redirect —
  * the right fit for a native mobile app); payouts use the Payouts API.
  *
- * One fact remains genuinely unverifiable from any reachable source: the
- * exact byte string Monime's `Monime-Signature` HMAC-SHA256 covers.
- * `verifyWebhookSignature` therefore still **always returns invalid** —
- * extending, never weakening, the fail-closed stance Phase 3 shipped.
- * Everything else here (outbound calls, response parsing, webhook
- * *payload* parsing) is real and ready the moment that one fact is
- * confirmed (see the owner action in the checklist).
+ * The webhook signature procedure is not established by any public source:
+ * which header carries it, its value format, the exact bytes it covers and its
+ * encoding are all undocumented (the method is only known to be `HS256` or
+ * `ES256`). `verifyWebhookSignature` therefore still **always returns
+ * invalid** — extending, never weakening, the fail-closed stance Phase 3
+ * shipped. Outbound calls and response parsing are implemented against the
+ * documentation; the webhook *payload* parsing (event names, paid-amount
+ * location) is provisional until a real Test-mode delivery is captured.
  */
 @Injectable()
 export class MonimeProvider implements PaymentProviderPort {
@@ -92,6 +98,8 @@ export class MonimeProvider implements PaymentProviderPort {
       readiness,
       {
         name: `PlayLe deposit ${params.depositId}`.slice(0, 64),
+        // Single-use, explicitly: see MONIME_PAYMENT_CODE_MODE.
+        mode: MONIME_PAYMENT_CODE_MODE,
         amount: { currency: params.currency, value: amountValue },
         reference: params.depositId,
         // Only `m17` (Orange Money SL) is a provider id the official
@@ -261,25 +269,40 @@ export class MonimeProvider implements PaymentProviderPort {
 
   verifyWebhookSignature(
     rawBody: string,
-    _headers: Record<string, string | string[] | undefined>,
+    headers: Record<string, string | string[] | undefined>,
   ): WebhookVerificationResult {
-    // Fail closed: the HMAC-SHA256 *algorithm* is confirmed (via the
-    // official OpenAPI schema's `verificationMethod.hmac256` field), but
-    // the exact canonical string it signs is not verifiable against any
-    // reachable source as of this implementation — see
-    // docs/development/PHASE_6_CHECKLIST.md §0.1 for the owner action
-    // that unblocks this. Every delivery is rejected until then, exactly
-    // extending (never weakening) the stance MonimeProvider has shipped
-    // with since Phase 3.
+    // Fail closed. Monime's public sources establish only that a webhook is
+    // verified by `verificationMethod.type` `HS256` (an HMAC over a
+    // caller-supplied secret, 32-256 characters) or `ES256` (ECDSA, P-256).
+    // They do NOT establish the header the signature arrives in, its value
+    // format, the exact bytes it covers, its encoding, or any timestamp
+    // tolerance: the HMAC-verification guide is an empty placeholder and no
+    // official SDK implements it. Guessing any of those would risk crediting a
+    // wallet on a forgeable request, so every delivery is rejected until a
+    // documented procedure or a verified test vector exists - see
+    // docs/decisions/ADR-019-production-payments.md. This only ever extends
+    // (never weakens) the stance MonimeProvider has shipped with since Phase 3.
+    //
+    // What a rejected delivery DOES tell an operator, safely: which header
+    // NAMES arrived (the names are not secret; the values are never logged),
+    // the body size, and the event the body claims to be. That is what is needed
+    // to find the signature header on a real Test-mode delivery without
+    // recording the signature itself.
+    const parsed = this.parseMonimeWebhookPayload(rawBody);
+    const names = Object.keys(headers).map((name) => name.toLowerCase());
+    const headerNames = [...names].sort().join(', ');
+    // The header NAME is documented (docs.monime.io standard headers:
+    // "Monime-Signature - Cryptographic signature with timestamp"); its value
+    // format and the bytes it covers are not.
+    const signatureHeaderPresent = names.includes(MONIME_SIGNATURE_HEADER);
     this.logger.warn(
-      'Rejected a Monime webhook: signature verification is not yet implemented ' +
-        '(owner action pending — see docs/development/PHASE_6_CHECKLIST.md item 3).',
+      'Rejected a Monime webhook: signature verification is not implemented ' +
+        '(fail-closed). ' +
+        `Monime-Signature header present: ${signatureHeaderPresent}. ` +
+        `Header names received: [${headerNames}]. ` +
+        `Body bytes: ${Buffer.byteLength(rawBody, 'utf-8')}. ` +
+        `Claimed event: ${parsed ? `${parsed.eventType} (${parsed.providerEventId})` : 'unparseable'}.`,
     );
-    // Exercises the payload-parsing logic below even though its result
-    // is discarded, so that logic is proven correct by the same request
-    // that will, once verification is unblocked, actually use it — see
-    // the dedicated unit tests for `parseMonimeWebhookPayload`.
-    this.parseMonimeWebhookPayload(rawBody);
     return { valid: false };
   }
 
@@ -348,6 +371,15 @@ export class MonimeProvider implements PaymentProviderPort {
     providerReference: string,
     data: Record<string, unknown> | undefined,
   ): WebhookDepositPayload | WebhookPayoutPayload | null {
+    // Only the `payment_code.*` and `payout.*` names the documentation ties to
+    // a payment code / payout are mapped. Two documented-but-ambiguous names are
+    // deliberately NOT mapped, so they can never credit a wallet:
+    //  - `payment.*` (e.g. `payment.completed`, named in the caph webhook pages):
+    //    nothing says `object.id` is a payment CODE id, so it cannot be matched to
+    //    a deposit's providerReference;
+    //  - `payment_code.processed`: a payment was processed against the code, but
+    //    nothing establishes it is final/settled the way `completed` is.
+    // Both fall through to `null` (stored IGNORED, visible to reconciliation).
     switch (eventName) {
       case 'payment_code.completed': {
         // Fail closed: a completion is only ever mapped to a deposit credit
@@ -386,43 +418,82 @@ export class MonimeProvider implements PaymentProviderPort {
   }
 
   /**
-   * The amount actually PAID against a payment code, from
-   * `data.progress.totalPaymentSum` (`{ currency, value }`, `value` an
-   * integer in the currency's minor unit), or `null` if it is absent or
-   * malformed.
+   * The amount actually PAID against a payment code, or `null` if the event
+   * carries no usable evidence of it.
    *
-   * PROVISIONAL / UNVERIFIED: this field path is taken from Monime's public
-   * documentation (the webhook "Structure and Events" page, whose `data` is the
-   * REST Payment Code object), not from a captured delivery - the docs are
-   * internally inconsistent (sample payloads are `apiVersion 2024-08-01`, the
-   * object pages `caph-2025-08-23`, and they name the processed-payment field
-   * differently) and say nothing about partial or over-payments. It must be
-   * re-checked against a real Test-mode `payment_code.completed` delivery
+   * Monime's public documentation puts the paid amount in different places
+   * depending on the release, and never in `data.amount`:
+   *  - `data.progress.totalPaymentSum` - the `2024-08-01` `payment_code.completed`
+   *    sample (cumulative paid total);
+   *  - `data.processedPaymentData.amount` - the `caph-2025-08-23` payment-code
+   *    object (the single payment that was processed; documented as present on
+   *    the `payment_code.processed` event);
+   *  - `data.paymentData.amount` - the `2024-08-01` `payment_code.processed`
+   *    sample.
+   * Each is `{ currency, value }`, `value` an integer in the currency's minor
+   * unit. Every location that IS present is read, and the result is fail-closed:
+   * a present-but-malformed location, or two present locations that disagree
+   * on amount or currency, yield `null`. At least one valid location is
+   * required.
+   *
+   * PROVISIONAL / UNVERIFIED: these paths are transcribed from the public
+   * documentation, which is internally inconsistent across releases and silent
+   * on partial and over-payments, not from a captured `caph` delivery. It must
+   * be re-checked against a real Test-mode `payment_code.completed` delivery
    * before this integration is considered production-ready.
    *
    * Deliberately NOT read: `data.amount`, the payment code's CONFIGURED amount.
    * It says what was asked for, not what was paid, so it is never used as a
-   * substitute - a completion without a paid total is not trusted.
+   * substitute.
    */
   private readPaidAmount(
     data: Record<string, unknown> | undefined,
   ): { amountMinor: string; currency: string } | null {
-    const progress = data?.progress;
-    if (!progress || typeof progress !== 'object') return null;
-    const sum = (progress as Record<string, unknown>).totalPaymentSum;
-    if (!sum || typeof sum !== 'object') return null;
-    const { currency, value } = sum as Record<string, unknown>;
+    if (!data) return null;
+
+    const at = (parent: unknown, key: string): unknown =>
+      parent && typeof parent === 'object'
+        ? (parent as Record<string, unknown>)[key]
+        : undefined;
+
+    const candidates: unknown[] = [
+      at(data.progress, 'totalPaymentSum'),
+      at(data.processedPaymentData, 'amount'),
+      at(data.paymentData, 'amount'),
+    ].filter((candidate) => candidate !== undefined && candidate !== null);
+    if (candidates.length === 0) return null;
+
+    const parsed = candidates.map((candidate) => this.toPaidMoney(candidate));
+    if (parsed.some((money) => money === null)) return null;
+
+    const [first, ...rest] = parsed as {
+      amountMinor: string;
+      currency: string;
+    }[];
+    const agree = rest.every(
+      (money) =>
+        money.amountMinor === first.amountMinor &&
+        money.currency === first.currency,
+    );
+    return agree ? first : null;
+  }
+
+  private toPaidMoney(
+    value: unknown,
+  ): { amountMinor: string; currency: string } | null {
+    if (!value || typeof value !== 'object') return null;
+    const { currency, value: minor } = value as Record<string, unknown>;
     if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
       return null;
     }
     if (
-      typeof value !== 'number' ||
-      !Number.isSafeInteger(value) ||
-      value < 0
+      typeof minor !== 'number' ||
+      !Number.isSafeInteger(minor) ||
+      minor < 0
     ) {
       return null;
     }
-    return { amountMinor: String(value), currency };
+    return { amountMinor: String(minor), currency };
   }
 
   private mapPaymentCodeStatus(status: unknown): ProviderOperationOutcome {
@@ -568,9 +639,11 @@ export class MonimeProvider implements PaymentProviderPort {
       'Monime-Space-Id': readiness.spaceId,
       'Content-Type': 'application/json',
     };
-    if (this.config.monimeApiVersion) {
-      headers['Monime-Version'] = this.config.monimeApiVersion;
-    }
+    // Always pinned (never left to Monime's current default) so the payment
+    // code and the webhook registered for the Space share one API release -
+    // see monime.constants.ts.
+    headers['Monime-Version'] =
+      this.config.monimeApiVersion ?? MONIME_DEFAULT_API_VERSION;
     if (idempotencyKey) {
       headers['Idempotency-Key'] = idempotencyKey;
     }
