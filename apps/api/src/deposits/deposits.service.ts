@@ -23,6 +23,10 @@ import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
 import { EligibilityService } from '../eligibility/eligibility.service.js';
 import { NotificationOutboxService } from '../notification-outbox/notification-outbox.service.js';
+import {
+  finishProviderEvent,
+  recordProviderEvent,
+} from '../payments/provider-events.js';
 
 export interface DepositPaymentInstructions {
   ussdCode?: string;
@@ -377,7 +381,10 @@ export class DepositsService {
    * signature — see MonimeProvider), records every delivery attempt in
    * `ProviderEvent` for idempotency + audit, and only then applies any
    * ledger effect. A duplicate delivery (same provider + event id) is a
-   * no-op by database constraint, not application logic.
+   * no-op by database constraint once the stored event is finished; one whose
+   * earlier attempt failed part-way (still `RECEIVED`) is processed again -
+   * see `recordProviderEvent`. Every ledger effect below is a conditional
+   * claim, so a re-run never credits twice.
    */
   async processProviderWebhook(
     rawBody: string,
@@ -389,27 +396,17 @@ export class DepositsService {
       return 'rejected';
     }
 
-    let providerEvent;
-    try {
-      providerEvent = await this.prisma.providerEvent.create({
-        data: {
-          provider: this.provider.name,
-          providerEventId: verification.providerEventId,
-          eventType: verification.eventType ?? 'unknown',
-          payload: verification.parsedPayload ?? {},
-          status: 'RECEIVED',
-        },
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        // Already seen this exact provider event before — duplicate
-        // delivery, safely ignored.
-        return 'ignored';
-      }
-      throw error;
+    const providerEvent = await recordProviderEvent(
+      this.prisma,
+      this.logger,
+      this.provider.name,
+      verification.providerEventId,
+      verification.eventType ?? 'unknown',
+      verification.parsedPayload ?? {},
+    );
+    if (!providerEvent) {
+      // Already finished, or a conflicting redelivery: safely ignored.
+      return 'ignored';
     }
 
     const payload = this.asDepositPayload(verification.parsedPayload);
@@ -418,9 +415,8 @@ export class DepositsService {
       : null;
 
     if (!payload || !deposit) {
-      await this.prisma.providerEvent.update({
-        where: { id: providerEvent.id },
-        data: { status: 'IGNORED', processedAt: new Date() },
+      await finishProviderEvent(this.prisma, providerEvent.id, {
+        status: 'IGNORED',
       });
       return 'ignored';
     }
@@ -442,13 +438,9 @@ export class DepositsService {
         this.logger.warn(
           `Rejected completion event ${verification.providerEventId} for deposit ${deposit.id}: ${problem}. Deposit left PENDING.`,
         );
-        await this.prisma.providerEvent.update({
-          where: { id: providerEvent.id },
-          data: {
-            status: 'REJECTED',
-            processedAt: new Date(),
-            relatedDepositId: deposit.id,
-          },
+        await finishProviderEvent(this.prisma, providerEvent.id, {
+          status: 'REJECTED',
+          relatedDepositId: deposit.id,
         });
         return 'rejected';
       }
@@ -466,13 +458,9 @@ export class DepositsService {
       await this.markExpired(deposit.id);
     }
 
-    await this.prisma.providerEvent.update({
-      where: { id: providerEvent.id },
-      data: {
-        status: 'PROCESSED',
-        processedAt: new Date(),
-        relatedDepositId: deposit.id,
-      },
+    await finishProviderEvent(this.prisma, providerEvent.id, {
+      status: 'PROCESSED',
+      relatedDepositId: deposit.id,
     });
 
     return 'processed';

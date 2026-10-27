@@ -61,3 +61,60 @@ relies on the single-flight `SessionRefresher` via `ApiClient`.
   now governed by the default limit only.
 - Random matchmaking still ignores blocks (documented Phase 12 scope).
 - Database-backed e2e suites run only in CI; nothing is device-verified.
+
+## PR 2 - Recoverable webhook processing failures
+
+### Confirmed defects
+1. **A webhook whose processing failed after its `ProviderEvent` was stored
+   was lost.** The event row (`RECEIVED`) is written before the money
+   transaction. If that transaction (or the final status update) threw, the
+   provider got a 500 and retried, but the retry hit the unique
+   `(provider, providerEventId)` index and was answered 200 as a duplicate.
+   A paid deposit stayed `PENDING`, a payout stayed `PROCESSING`, and nothing
+   (code or reconciliation) looked at `RECEIVED` events.
+2. **Withdrawal terminal outcomes were not claimed.** Provider completion/
+   failure and admin `complete`/`fail` checked the status outside their
+   transaction and then updated unconditionally, so two concurrent terminal
+   outcomes (e.g. `payout.completed` and `payout.failed`) could both write
+   the ledger - a payout completed *and* its hold released - whenever the
+   held balance covered both.
+
+### Design
+- `payments/provider-events.ts`: `recordProviderEvent` stores the event, and
+  on a duplicate returns the stored row for processing only if it is still
+  `RECEIVED` **and** its event type and payload equal the redelivery
+  (compared as stored JSON, key order ignored). A finished event, or one
+  redelivered with different content, is ignored as before.
+  `finishProviderEvent` moves an event out of `RECEIVED` only (conditional),
+  never over a final status.
+- Withdrawals: `claimFinal` locks the wallet (keeping the existing
+  wallet-then-withdrawal lock order), then moves the withdrawal to its
+  terminal status with `updateMany ... WHERE status IN (APPROVED,
+  PROCESSING)` inside the money transaction. Only the winner writes the ledger
+  and notifies; a provider-side loser returns the row unchanged, an admin
+  loser gets the usual 409. Deposits already worked this way.
+- Re-running a recovered event is safe because every money step is such a
+  claim: a re-run, a re-run concurrent with a slow first attempt, or a re-run
+  after the money committed but before the event was finished applies no
+  second effect and just finishes the event.
+- No schema change, no migration, no change to amounts, fees, ledger entry
+  types, signature verification or the Monime provider.
+
+### Deferred
+- A reconciliation anomaly for `RECEIVED` events older than a threshold
+  (needs a new anomaly type and a migration). Until then an event is
+  recovered only if the provider redelivers it.
+- A redelivery whose content differs from the stored unfinished event is
+  logged and left `RECEIVED` for an operator.
+- `approve` vs `cancel`/`reject` on a `PENDING_REVIEW` withdrawal has the same
+  check-outside-the-transaction shape; not a terminal-outcome path, so not
+  changed here.
+
+### Verification
+Unit: `provider-events.spec.ts`, `deposits.webhook-recovery.spec.ts`,
+`withdrawals.terminal.spec.ts` (in-memory database model with per-transaction
+rollback and atomic claims), plus the existing deposit webhook specs.
+Database-backed: three new cases in `test/payments-phase6.e2e-spec.ts`
+(deposit and payout recovery after an injected ledger failure; concurrent
+`payout.completed`/`payout.failed`). **Those run only in CI** - there is no
+local Postgres - and are unverified until CI runs them.

@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
+import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
+import { LedgerService } from '../src/ledger/ledger.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
@@ -475,6 +477,206 @@ describe('Phase 6 payments (e2e)', () => {
         where: { id },
       });
       expect(withdrawal?.status).toBe('PROCESSING');
+    });
+  });
+
+  describe('recovering webhook deliveries that failed part-way (Phase 13)', () => {
+    const postWebhook = (body: string) =>
+      request(app.getHttpServer())
+        .post('/api/v1/payments/webhooks/monime')
+        .set('x-fake-signature', fakeProvider.signatureHeader())
+        .set('Content-Type', 'application/json')
+        .send(body);
+
+    it('a deposit completion whose credit failed is recovered by the redelivery and credited exactly once', async () => {
+      const { accessToken, userId } = await registerUser('deprecover');
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const eventId = `recover-dep-${runId}`;
+      const body = fakeProvider.buildWebhookBody({
+        eventId,
+        eventType: 'deposit.completed',
+        providerReference: created.body.providerReference,
+      });
+
+      // The credit transaction fails once (a real rollback in Postgres).
+      const ledger = app.get(LedgerService);
+      const spy = vi
+        .spyOn(ledger, 'applyEntry')
+        .mockRejectedValueOnce(new Error('injected transient failure'));
+      try {
+        // Not acknowledged, so the provider retries.
+        await postWebhook(body).expect(500);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(
+        (await prisma.deposit.findUnique({ where: { id: created.body.id } }))
+          ?.status,
+      ).toBe('PENDING');
+      expect(
+        (await prisma.wallet.findUnique({ where: { userId } }))
+          ?.availableBalanceMinor,
+      ).toBe(0n);
+      expect(
+        (
+          await prisma.providerEvent.findUnique({
+            where: {
+              provider_providerEventId: {
+                provider: 'FAKE',
+                providerEventId: eventId,
+              },
+            },
+          })
+        )?.status,
+      ).toBe('RECEIVED');
+
+      // The provider's retry: the same event, now processed.
+      await postWebhook(body).expect(200);
+      // And any later duplicate is a no-op.
+      await postWebhook(body).expect(200);
+
+      expect(
+        (await prisma.deposit.findUnique({ where: { id: created.body.id } }))
+          ?.status,
+      ).toBe('COMPLETED');
+      expect(
+        (await prisma.wallet.findUnique({ where: { userId } }))
+          ?.availableBalanceMinor,
+      ).toBe(5000n);
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedDepositId: created.body.id, type: 'DEPOSIT' },
+        }),
+      ).toBe(1);
+      const event = await prisma.providerEvent.findUnique({
+        where: {
+          provider_providerEventId: {
+            provider: 'FAKE',
+            providerEventId: eventId,
+          },
+        },
+      });
+      expect(event?.status).toBe('PROCESSED');
+      expect(event?.relatedDepositId).toBe(created.body.id);
+    });
+
+    it('a payout completion whose ledger write failed is recovered by the redelivery and finalized once', async () => {
+      const { accessToken, userId, adminToken } = await setupFundedUser(
+        'wdrecover',
+        '10000',
+      );
+      const { id } = await createWithdrawal(accessToken, '4000');
+      const approved = await request(app.getHttpServer())
+        .post(`/api/v1/admin/withdrawals/${id}/approve`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ reason: 'Verified identity' })
+        .expect(200);
+      const eventId = `recover-wd-${runId}`;
+      const body = fakeProvider.buildPayoutWebhookBody({
+        eventId,
+        eventType: 'payout.completed',
+        providerReference: approved.body.providerReference,
+      });
+
+      const ledger = app.get(LedgerService);
+      const spy = vi
+        .spyOn(ledger, 'applyEntry')
+        .mockRejectedValueOnce(new Error('injected transient failure'));
+      try {
+        await postWebhook(body).expect(500);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(
+        (await prisma.withdrawal.findUnique({ where: { id } }))?.status,
+      ).toBe('PROCESSING');
+
+      await postWebhook(body).expect(200);
+      await postWebhook(body).expect(200);
+
+      expect(
+        (await prisma.withdrawal.findUnique({ where: { id } }))?.status,
+      ).toBe('COMPLETED');
+      const wallet = await prisma.wallet.findUnique({ where: { userId } });
+      expect(wallet?.availableBalanceMinor).toBe(6000n);
+      expect(wallet?.heldBalanceMinor).toBe(0n);
+      expect(
+        await prisma.ledgerEntry.count({
+          where: { relatedWithdrawalId: id, type: 'WITHDRAWAL' },
+        }),
+      ).toBe(1);
+      expect(
+        (
+          await prisma.providerEvent.findUnique({
+            where: {
+              provider_providerEventId: {
+                provider: 'FAKE',
+                providerEventId: eventId,
+              },
+            },
+          })
+        )?.status,
+      ).toBe('PROCESSED');
+    });
+
+    it('competing payout.completed and payout.failed deliveries apply exactly one outcome', async () => {
+      // Two withdrawals hold 8000 of 10000, so the held balance alone could
+      // cover both a debit and a release of the first one: only the claim
+      // stops a double outcome.
+      const { accessToken, userId, adminToken } = await setupFundedUser(
+        'wdrace',
+        '10000',
+      );
+      const { id } = await createWithdrawal(accessToken, '4000');
+      await createWithdrawal(accessToken, '4000');
+      const approved = await request(app.getHttpServer())
+        .post(`/api/v1/admin/withdrawals/${id}/approve`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ reason: 'Verified identity' })
+        .expect(200);
+      const reference = approved.body.providerReference as string;
+
+      const responses = await Promise.all([
+        postWebhook(
+          fakeProvider.buildPayoutWebhookBody({
+            eventType: 'payout.completed',
+            providerReference: reference,
+          }),
+        ),
+        postWebhook(
+          fakeProvider.buildPayoutWebhookBody({
+            eventType: 'payout.failed',
+            providerReference: reference,
+            reason: 'bounced',
+          }),
+        ),
+      ]);
+      expect(responses.map((r) => r.status)).toEqual([200, 200]);
+
+      const withdrawal = await prisma.withdrawal.findUnique({ where: { id } });
+      const outcomes = await prisma.ledgerEntry.findMany({
+        where: {
+          relatedWithdrawalId: id,
+          type: { in: ['WITHDRAWAL', 'RELEASE'] },
+        },
+      });
+      expect(outcomes).toHaveLength(1);
+      expect(withdrawal?.status).toBe(
+        outcomes[0].type === 'WITHDRAWAL' ? 'COMPLETED' : 'FAILED',
+      );
+
+      const wallet = await prisma.wallet.findUnique({ where: { userId } });
+      // The other withdrawal's hold is untouched.
+      expect(wallet?.heldBalanceMinor).toBe(4000n);
+      expect(wallet?.availableBalanceMinor).toBe(
+        outcomes[0].type === 'WITHDRAWAL' ? 2000n : 6000n,
+      );
     });
   });
 

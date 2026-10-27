@@ -23,6 +23,13 @@ import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.cons
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
 import { NotificationOutboxService } from '../notification-outbox/notification-outbox.service.js';
+import {
+  finishProviderEvent,
+  recordProviderEvent,
+} from '../payments/provider-events.js';
+
+/** The statuses a withdrawal can be finalized (completed or failed) from. */
+const FINALIZABLE: WithdrawalStatus[] = ['APPROVED', 'PROCESSING'];
 
 @Injectable()
 export class WithdrawalsService {
@@ -390,9 +397,21 @@ export class WithdrawalsService {
     providerReference?: string,
   ): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
-    this.assertTransition(withdrawal.status, ['APPROVED', 'PROCESSING']);
+    this.assertTransition(withdrawal.status, FINALIZABLE);
 
     return this.prisma.$transaction(async (tx) => {
+      // The check above ran outside this transaction; a provider event (or a
+      // second admin action) may have finalized it since. Only a won claim
+      // moves money.
+      await this.claimFinalOrThrow(tx, withdrawal, {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        reviewedByAdminId: adminId,
+        reviewedAt: new Date(),
+        reviewReason: reason,
+        providerReference,
+      });
+
       await this.ledgerService.applyEntry(tx, withdrawal.walletId, {
         type: 'WITHDRAWAL',
         availableDeltaMinor: 0n,
@@ -401,26 +420,27 @@ export class WithdrawalsService {
         providerReference,
       });
 
-      return tx.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(),
-          reviewedByAdminId: adminId,
-          reviewedAt: new Date(),
-          reviewReason: reason,
-          providerReference,
-        },
-      });
+      return tx.withdrawal.findUniqueOrThrow({ where: { id: withdrawal.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
   /** Mirrors `complete` — allowed from `APPROVED` or `PROCESSING` (see above). */
   async fail(adminId: string, id: string, reason: string): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
-    this.assertTransition(withdrawal.status, ['APPROVED', 'PROCESSING']);
+    this.assertTransition(withdrawal.status, FINALIZABLE);
 
     return this.prisma.$transaction(async (tx) => {
+      // Same claim as `complete`: never release a hold for a withdrawal that a
+      // concurrent provider event or admin action already finalized.
+      await this.claimFinalOrThrow(tx, withdrawal, {
+        status: 'FAILED',
+        failedAt: new Date(),
+        failureReason: reason,
+        reviewedByAdminId: adminId,
+        reviewedAt: new Date(),
+        reviewReason: reason,
+      });
+
       await this.ledgerService.applyEntry(tx, withdrawal.walletId, {
         type: 'RELEASE',
         availableDeltaMinor: withdrawal.amountMinor,
@@ -428,17 +448,7 @@ export class WithdrawalsService {
         relatedWithdrawalId: withdrawal.id,
       });
 
-      return tx.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: {
-          status: 'FAILED',
-          failedAt: new Date(),
-          failureReason: reason,
-          reviewedByAdminId: adminId,
-          reviewedAt: new Date(),
-          reviewReason: reason,
-        },
-      });
+      return tx.withdrawal.findUniqueOrThrow({ where: { id: withdrawal.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
@@ -448,6 +458,11 @@ export class WithdrawalsService {
    * withdrawal no longer in `APPROVED`/`PROCESSING` is returned
    * unchanged, so a duplicate webhook delivery never double-releases the
    * hold. Never callable from client input directly.
+   *
+   * The status check above the transaction is only a fast path: the
+   * transaction claims the withdrawal conditionally (`claimFinal`), so of
+   * several concurrent terminal outcomes (this, `failFromProviderEvent`, an
+   * admin `complete`/`fail`) exactly one writes the ledger and notifies.
    */
   async completeFromProviderEvent(
     withdrawalId: string,
@@ -459,26 +474,27 @@ export class WithdrawalsService {
     if (!existing) {
       throw new NotFoundException('Withdrawal not found');
     }
-    if (existing.status !== 'APPROVED' && existing.status !== 'PROCESSING') {
+    if (!FINALIZABLE.includes(existing.status)) {
       return existing;
     }
 
     return this.prisma.$transaction(async (tx) => {
+      const claimed = await this.claimFinal(tx, existing, {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        providerReference: providerReference ?? existing.providerReference,
+      });
+      if (!claimed) {
+        // Lost to a concurrent terminal outcome: no ledger entry, no notice.
+        return tx.withdrawal.findUniqueOrThrow({ where: { id: existing.id } });
+      }
+
       await this.ledgerService.applyEntry(tx, existing.walletId, {
         type: 'WITHDRAWAL',
         availableDeltaMinor: 0n,
         heldDeltaMinor: -existing.amountMinor,
         relatedWithdrawalId: existing.id,
         providerReference,
-      });
-
-      const updated = await tx.withdrawal.update({
-        where: { id: existing.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(),
-          providerReference: providerReference ?? existing.providerReference,
-        },
       });
 
       await this.notificationOutbox.enqueue(tx, {
@@ -491,7 +507,7 @@ export class WithdrawalsService {
         },
       });
 
-      return updated;
+      return tx.withdrawal.findUniqueOrThrow({ where: { id: existing.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
@@ -506,11 +522,21 @@ export class WithdrawalsService {
     if (!existing) {
       throw new NotFoundException('Withdrawal not found');
     }
-    if (existing.status !== 'APPROVED' && existing.status !== 'PROCESSING') {
+    if (!FINALIZABLE.includes(existing.status)) {
       return existing;
     }
 
     return this.prisma.$transaction(async (tx) => {
+      const claimed = await this.claimFinal(tx, existing, {
+        status: 'FAILED',
+        failedAt: new Date(),
+        failureReason: reason,
+      });
+      if (!claimed) {
+        // Lost to a concurrent terminal outcome: no release, no notice.
+        return tx.withdrawal.findUniqueOrThrow({ where: { id: existing.id } });
+      }
+
       await this.ledgerService.applyEntry(tx, existing.walletId, {
         type: 'RELEASE',
         availableDeltaMinor: existing.amountMinor,
@@ -529,11 +555,50 @@ export class WithdrawalsService {
         },
       });
 
-      return tx.withdrawal.update({
-        where: { id: existing.id },
-        data: { status: 'FAILED', failedAt: new Date(), failureReason: reason },
-      });
+      return tx.withdrawal.findUniqueOrThrow({ where: { id: existing.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
+  }
+
+  /**
+   * Claims a withdrawal for a terminal outcome inside the caller's
+   * transaction: moves it to `data.status` only if it is *still* `APPROVED`
+   * or `PROCESSING`, and reports whether this transaction won.
+   *
+   * The wallet row is locked first, keeping the lock order every other
+   * withdrawal transaction uses (wallet, then withdrawal - see
+   * `LedgerService.lockWallet`). The conditional update then takes the
+   * withdrawal row lock; a concurrent claimer waits for it, and under READ
+   * COMMITTED re-evaluates the WHERE after the winner commits and matches no
+   * row. Only the winner goes on to write the ledger, all in one transaction,
+   * so a later failure rolls the claim back too.
+   */
+  private async claimFinal(
+    tx: Prisma.TransactionClient,
+    withdrawal: Pick<Withdrawal, 'id' | 'walletId'>,
+    data: Prisma.WithdrawalUncheckedUpdateManyInput,
+  ): Promise<boolean> {
+    await this.ledgerService.lockWallet(tx, withdrawal.walletId);
+    const { count } = await tx.withdrawal.updateMany({
+      where: { id: withdrawal.id, status: { in: FINALIZABLE } },
+      data,
+    });
+    return count === 1;
+  }
+
+  /** `claimFinal` for admin actions: a lost claim is the usual 409. */
+  private async claimFinalOrThrow(
+    tx: Prisma.TransactionClient,
+    withdrawal: Pick<Withdrawal, 'id' | 'walletId'>,
+    data: Prisma.WithdrawalUncheckedUpdateManyInput,
+  ): Promise<void> {
+    if (!(await this.claimFinal(tx, withdrawal, data))) {
+      const current = await tx.withdrawal.findUniqueOrThrow({
+        where: { id: withdrawal.id },
+      });
+      throw new ConflictException(
+        `Cannot perform this action on a withdrawal in status ${current.status}`,
+      );
+    }
   }
 
   getProvider(): PaymentProviderPort {
@@ -565,27 +630,19 @@ export class WithdrawalsService {
       return 'rejected';
     }
 
-    let providerEvent;
-    try {
-      providerEvent = await this.prisma.providerEvent.create({
-        data: {
-          provider: this.provider.name,
-          providerEventId: verification.providerEventId,
-          eventType: verification.eventType ?? 'unknown',
-          payload: verification.parsedPayload ?? {},
-          status: 'RECEIVED',
-        },
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        // Already seen this exact provider event before — duplicate
-        // delivery, safely ignored.
-        return 'ignored';
-      }
-      throw error;
+    // A finished duplicate is ignored; an unfinished (RECEIVED) one is
+    // processed again - safe because both finalizers below are conditional
+    // claims (see `recordProviderEvent`).
+    const providerEvent = await recordProviderEvent(
+      this.prisma,
+      this.logger,
+      this.provider.name,
+      verification.providerEventId,
+      verification.eventType ?? 'unknown',
+      verification.parsedPayload ?? {},
+    );
+    if (!providerEvent) {
+      return 'ignored';
     }
 
     const payload = this.asPayoutPayload(verification.parsedPayload);
@@ -594,9 +651,8 @@ export class WithdrawalsService {
       : null;
 
     if (!payload || !withdrawal) {
-      await this.prisma.providerEvent.update({
-        where: { id: providerEvent.id },
-        data: { status: 'IGNORED', processedAt: new Date() },
+      await finishProviderEvent(this.prisma, providerEvent.id, {
+        status: 'IGNORED',
       });
       return 'ignored';
     }
@@ -616,13 +672,9 @@ export class WithdrawalsService {
     // effect — the withdrawal is already PROCESSING; recorded below for
     // audit only.
 
-    await this.prisma.providerEvent.update({
-      where: { id: providerEvent.id },
-      data: {
-        status: 'PROCESSED',
-        processedAt: new Date(),
-        relatedWithdrawalId: withdrawal.id,
-      },
+    await finishProviderEvent(this.prisma, providerEvent.id, {
+      status: 'PROCESSED',
+      relatedWithdrawalId: withdrawal.id,
     });
 
     return 'processed';

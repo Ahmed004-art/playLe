@@ -42,8 +42,13 @@ function build(
 ) {
   const claims = [...claimCounts];
   // Models the unique (provider, providerEventId) index: a second create for
-  // an id already stored fails with P2002, exactly as Postgres does.
-  const seenEventIds = new Set<string>();
+  // an id already stored fails with P2002, exactly as Postgres does. Stored
+  // events keep their status, so a redelivery can tell a finished event from
+  // an unfinished one.
+  const events = new Map<
+    string,
+    { id: string; status: string; eventType: string; payload: unknown }
+  >();
   const tx = {
     deposit: {
       updateMany: vi.fn(() => Promise.resolve({ count: claims.shift() ?? 0 })),
@@ -54,19 +59,53 @@ function build(
   };
   const prisma = {
     providerEvent: {
-      create: vi.fn((args: { data: { providerEventId: string } }) => {
-        if (seenEventIds.has(args.data.providerEventId)) {
-          return Promise.reject(
-            new Prisma.PrismaClientKnownRequestError('Unique constraint', {
-              code: 'P2002',
-              clientVersion: 'test',
-            }),
+      create: vi.fn(
+        (args: {
+          data: {
+            providerEventId: string;
+            eventType: string;
+            payload: unknown;
+          };
+        }) => {
+          if (events.has(args.data.providerEventId)) {
+            return Promise.reject(
+              new Prisma.PrismaClientKnownRequestError('Unique constraint', {
+                code: 'P2002',
+                clientVersion: 'test',
+              }),
+            );
+          }
+          const row = {
+            id: `pe-${events.size + 1}`,
+            status: 'RECEIVED',
+            eventType: args.data.eventType,
+            payload: args.data.payload,
+          };
+          events.set(args.data.providerEventId, row);
+          return Promise.resolve(row);
+        },
+      ),
+      findUnique: vi.fn(
+        (args: {
+          where: { provider_providerEventId: { providerEventId: string } };
+        }) =>
+          Promise.resolve(
+            events.get(args.where.provider_providerEventId.providerEventId) ??
+              null,
+          ),
+      ),
+      updateMany: vi.fn(
+        (args: {
+          where: { id: string; status: string };
+          data: { status: string };
+        }) => {
+          const row = [...events.values()].find(
+            (e) => e.id === args.where.id && e.status === args.where.status,
           );
-        }
-        seenEventIds.add(args.data.providerEventId);
-        return Promise.resolve({ id: 'pe-1' });
-      }),
-      update: vi.fn(() => Promise.resolve({})),
+          if (row) row.status = args.data.status;
+          return Promise.resolve({ count: row ? 1 : 0 });
+        },
+      ),
     },
     deposit: {
       findFirst: vi.fn(() => Promise.resolve({ ...pending })),
@@ -134,7 +173,7 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
         }),
       );
       expect(h.notificationOutbox.enqueue).toHaveBeenCalledTimes(1);
-      expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ status: 'PROCESSED' }),
         }),
@@ -199,8 +238,8 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
 
       expectUntouched(h);
       // Recorded for audit as REJECTED - never PROCESSED.
-      expect(h.prisma.providerEvent.update).toHaveBeenCalledTimes(1);
-      expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledTimes(1);
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             status: 'REJECTED',
@@ -243,7 +282,7 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
       expect(await h.service.processProviderWebhook('{}', {})).toBe('rejected');
 
       expectUntouched(h);
-      expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             status: 'REJECTED',
@@ -285,7 +324,7 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
 
       expect(await h.service.processProviderWebhook('{}', {})).toBe('rejected');
       const eventsStored = h.prisma.providerEvent.create.mock.calls.length;
-      const eventUpdates = h.prisma.providerEvent.update.mock.calls.length;
+      const eventUpdates = h.prisma.providerEvent.updateMany.mock.calls.length;
 
       // The identical delivery again (same provider event id).
       expect(await h.service.processProviderWebhook('{}', {})).toBe('ignored');
@@ -295,7 +334,7 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
       expect(h.prisma.providerEvent.create.mock.calls.length).toBe(
         eventsStored + 1,
       );
-      expect(h.prisma.providerEvent.update.mock.calls.length).toBe(
+      expect(h.prisma.providerEvent.updateMany.mock.calls.length).toBe(
         eventUpdates,
       );
       expectUntouched(h);
@@ -317,7 +356,7 @@ describe('processProviderWebhook - deposit.completed amount/currency', () => {
       expect(h.ledgerService.applyEntry).toHaveBeenCalledTimes(1);
       expect(h.notificationOutbox.enqueue).toHaveBeenCalledTimes(1);
       // Only the first delivery's event was ever updated.
-      expect(h.prisma.providerEvent.update).toHaveBeenCalledTimes(1);
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -422,7 +461,7 @@ describe('Monime body -> parser -> deposit service (signature check replaced)', 
 
       expect(result).toBe('rejected');
       expectUntouched(h);
-      expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             status: 'REJECTED',
@@ -444,7 +483,7 @@ describe('Monime body -> parser -> deposit service (signature check replaced)', 
     // The parser yields no deposit payload, so the event is stored IGNORED.
     expect(result).toBe('ignored');
     expectUntouched(h);
-    expect(h.prisma.providerEvent.update).toHaveBeenCalledWith(
+    expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'IGNORED' }),
       }),
