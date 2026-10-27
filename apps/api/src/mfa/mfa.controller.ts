@@ -53,6 +53,7 @@ export class MfaController {
   }
 
   @Post('enroll')
+  @Throttle(AUTH_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

@@ -170,6 +170,7 @@ export class AdminSessionController {
   }
 
   @Post('refresh')
+  @Throttle(AUTH_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

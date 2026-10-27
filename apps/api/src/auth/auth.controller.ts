@@ -110,6 +110,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Throttle(AUTH_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Exchange a refresh token for a new access/refresh token pair.',
@@ -154,6 +155,7 @@ export class AuthController {
   }
 
   @Post('change-password')
+  @Throttle(AUTH_THROTTLE)
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()

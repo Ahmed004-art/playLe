@@ -83,6 +83,7 @@ export class ChallengesController {
   }
 
   @Post(':id/decline')
+  @Throttle(MATCHES_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Decline a pending challenge.' })
   @ApiResponse({ status: 200, type: ChallengeResponseDto })
@@ -95,6 +96,7 @@ export class ChallengesController {
   }
 
   @Post(':id/cancel')
+  @Throttle(MATCHES_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Cancel a challenge you sent, while still pending.',

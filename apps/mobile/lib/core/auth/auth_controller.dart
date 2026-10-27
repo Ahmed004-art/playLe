@@ -95,6 +95,16 @@ class AuthController extends ChangeNotifier {
     }
   }
 
+  /// The session can no longer be renewed (the refresh token was refused), and
+  /// the local tokens have already been cleared. Returns the app to the
+  /// signed-out state so the router sends the user to sign in again. Does
+  /// nothing unless a session was active.
+  void sessionExpired() {
+    if (_state is AuthAuthenticated) {
+      _setState(const AuthUnauthenticated());
+    }
+  }
+
   Future<void> logout() async {
     try {
       await _repository.logout();

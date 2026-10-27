@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../config/app_config.dart';
 import '../errors/app_exception.dart';
 import '../logging/app_logger.dart';
+import 'session_refresh.dart';
 
 /// Thin abstraction over the HTTP client used to talk to the PlayLe API.
 ///
@@ -15,16 +16,20 @@ import '../logging/app_logger.dart';
 /// need to know anything about how/where tokens are persisted — see
 /// `core/di/service_locator.dart` for the wiring.
 class ApiClient {
-  ApiClient({required AppConfig config, this.getAccessToken, Dio? dio})
-    : _dio =
-          dio ??
-          Dio(
-            BaseOptions(
-              baseUrl: config.apiBaseUrl,
-              connectTimeout: const Duration(seconds: 10),
-              receiveTimeout: const Duration(seconds: 10),
-            ),
-          ) {
+  ApiClient({
+    required AppConfig config,
+    this.getAccessToken,
+    this.refreshSession,
+    Dio? dio,
+  }) : _dio =
+           dio ??
+           Dio(
+             BaseOptions(
+               baseUrl: config.apiBaseUrl,
+               connectTimeout: const Duration(seconds: 10),
+               receiveTimeout: const Duration(seconds: 10),
+             ),
+           ) {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
@@ -37,12 +42,12 @@ class ApiClient {
           AppLogger.instance.debug('-> ${options.method} ${options.path}');
           handler.next(options);
         },
-        onError: (error, handler) {
+        onError: (error, handler) async {
           AppLogger.instance.warning(
             'API error: ${error.requestOptions.method} ${error.requestOptions.path} '
             '(${error.response?.statusCode})',
           );
-          handler.next(error);
+          await _onError(error, handler);
         },
       ),
     );
@@ -50,6 +55,68 @@ class ApiClient {
 
   final Dio _dio;
   final Future<String?> Function()? getAccessToken;
+
+  /// Renews an expired session (see `SessionRefresher`). When set, a request
+  /// that fails with 401 triggers one refresh and is retried exactly once with
+  /// the new token; if the refresh fails, the original failure is reported.
+  final SessionRefreshCallback? refreshSession;
+
+  static const String _retriedKey = 'playle.retried_after_refresh';
+
+  /// Whether a 401 on [path] could be an expired access token. The auth
+  /// endpoints (login, register, refresh, MFA, password reset, logout, ...)
+  /// answer 401 for *credential* problems, which a refresh cannot fix; only
+  /// `/auth/me` is an ordinary authenticated call among them.
+  static bool _canRefreshFor(String path) =>
+      !path.startsWith('/auth/') || path == '/auth/me';
+
+  Future<void> _onError(
+    DioException error,
+    ErrorInterceptorHandler handler,
+  ) async {
+    final refresh = refreshSession;
+    final request = error.requestOptions;
+    if (refresh == null ||
+        error.response?.statusCode != 401 ||
+        request.extra[_retriedKey] == true ||
+        !_canRefreshFor(request.path)) {
+      handler.next(error);
+      return;
+    }
+
+    // Another request may already have renewed the session while this one was
+    // in flight; then the stored token differs from the one this request used
+    // and it only needs retrying, not another refresh.
+    final used = request.headers['Authorization'];
+    final current = await getAccessToken?.call();
+    final alreadyRenewed = current != null && 'Bearer $current' != used;
+
+    if (!alreadyRenewed) {
+      switch (await refresh()) {
+        case SessionRefreshResult.refreshed:
+          break;
+        case SessionRefreshResult.rejected:
+          handler.next(error);
+          return;
+        case SessionRefreshResult.unavailable:
+          handler.next(
+            DioException(
+              requestOptions: request,
+              type: DioExceptionType.connectionError,
+              message: 'Could not renew the session',
+            ),
+          );
+          return;
+      }
+    }
+
+    request.extra[_retriedKey] = true;
+    try {
+      handler.resolve(await _dio.fetch<dynamic>(request));
+    } on DioException catch (retryError) {
+      handler.next(retryError);
+    }
+  }
 
   Future<Response<T>> get<T>(
     String path, {
