@@ -118,3 +118,44 @@ Database-backed: three new cases in `test/payments-phase6.e2e-spec.ts`
 (deposit and payout recovery after an injected ledger failure; concurrent
 `payout.completed`/`payout.failed`). **Those run only in CI** - there is no
 local Postgres - and are unverified until CI runs them.
+
+## PR 3 - Stale provider-event visibility
+
+### Gap
+PR 2 recovers an unfinished (`RECEIVED`) event when the provider redelivers the
+same content. Nothing reported one that is never redelivered, or redelivered
+with different content (acknowledged, never processed, left `RECEIVED`).
+
+### Change (detection only)
+- `PaymentReconciliationService.findStaleReceivedEvents`, part of `runOnce`:
+  selects `status = RECEIVED AND createdAt < now - threshold` (strict, so an
+  event exactly at the threshold is not yet reported). Recent and final-status
+  events are never selected.
+- Threshold `PROVIDER_EVENT_STALE_AFTER_MS`: default 15 min, validated
+  5 min .. 45 min (`payments/reconciliation.constants.ts`). The floor is 20x the
+  longest a money transaction can run (maxWait 5 s + timeout 10 s), so an event
+  still being processed is not reported; the ceiling is under the 60-minute
+  stuck-withdrawal threshold.
+- New anomaly type `STALE_PROVIDER_EVENT` (one additive enum migration, no new
+  table). Related deposit/withdrawal is derived from the stored payload's
+  `providerReference` (payout events look at withdrawals, others at deposits).
+- Dedupe (existing rule: an OPEN anomaly with the same type and related ids).
+  That rule alone would fold every unmatched event into one anomaly, because
+  their related ids are both null, so unmatched events also carry
+  `details.eventKey = provider/providerEventId` and the lookup adds a Prisma JSON
+  path filter on it. Events that match a record are one anomaly per record,
+  naming every stale event.
+- A conflicting redelivery needs nothing extra: it leaves the event `RECEIVED`
+  with its original payload, so it is reported like any stale event.
+- Nothing is credited, refunded, completed, failed or reprocessed. No scheduler,
+  no admin UI (the existing payment-reconciliation API surfaces the anomalies).
+
+### Verification
+Unit: `payment-reconciliation.stale-events.spec.ts` (selection, exact boundary,
+related-record matching, unmatched dedupe, repeat runs, resolved-then-still-stale,
+finished events), `env.validation.spec.ts` (default and bounds), the existing
+reconciliation spec. Database-backed (`test/payments-phase6.e2e-spec.ts`, **CI
+only**): injected failure, back-dated event, reported once, no money or status
+change, recovery stops the reporting, recent events not reported, resolved
+anomaly re-raised, conflicting redelivery visible with payload unchanged,
+unmatched events tracked independently via the JSON-path lookup, non-admin 403.

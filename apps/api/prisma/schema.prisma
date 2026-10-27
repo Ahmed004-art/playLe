@@ -960,6 +960,10 @@ enum PaymentAnomalyType {
   ORPHAN_PROVIDER_EVENT
   UNKNOWN_PAYOUT_OUTCOME
   LEDGER_PROVIDER_DRIFT
+  /// A verified provider event still RECEIVED long after it arrived - its
+  /// processing failed part-way and the provider has not (or cannot)
+  /// redeliver it. Detection only (Phase 13).
+  STALE_PROVIDER_EVENT
 }
 
 enum PaymentAnomalyStatus {

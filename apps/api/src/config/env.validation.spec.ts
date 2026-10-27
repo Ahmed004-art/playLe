@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import buildConfiguration from './configuration.js';
 import { validate } from './env.validation.js';
 
 describe('validate (environment variables)', () => {
@@ -97,5 +98,45 @@ describe('validate (environment variables)', () => {
     expect(() =>
       validate({ ...validEnv, PAYMENTS_PROVIDER: 'monime' }),
     ).not.toThrow();
+  });
+
+  describe('PROVIDER_EVENT_STALE_AFTER_MS', () => {
+    it('defaults to 15 minutes, in the configuration as well', () => {
+      expect(validate(validEnv).PROVIDER_EVENT_STALE_AFTER_MS).toBe(900_000);
+
+      const saved = process.env.PROVIDER_EVENT_STALE_AFTER_MS;
+      delete process.env.PROVIDER_EVENT_STALE_AFTER_MS;
+      try {
+        expect(buildConfiguration().payments.providerEventStaleAfterMs).toBe(
+          900_000,
+        );
+      } finally {
+        if (saved !== undefined)
+          process.env.PROVIDER_EVENT_STALE_AFTER_MS = saved;
+      }
+    });
+
+    it.each(['300000', '900000', '2700000'])('accepts %s', (value) => {
+      const result = validate({
+        ...validEnv,
+        PROVIDER_EVENT_STALE_AFTER_MS: value,
+      });
+      expect(result.PROVIDER_EVENT_STALE_AFTER_MS).toBe(Number(value));
+    });
+
+    it.each([
+      ['below the 5-minute minimum', '299999'],
+      ['a value that could flag an event still being processed', '15000'],
+      ['zero', '0'],
+      ['negative', '-1'],
+      ['above the 45-minute maximum', '2700001'],
+      ['the 60-minute stuck-withdrawal threshold', '3600000'],
+      ['not a number', 'soon'],
+      ['fractional', '900000.5'],
+    ])('rejects %s', (_name, value) => {
+      expect(() =>
+        validate({ ...validEnv, PROVIDER_EVENT_STALE_AFTER_MS: value }),
+      ).toThrow(/Environment validation failed/);
+    });
   });
 });

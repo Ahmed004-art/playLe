@@ -12,6 +12,11 @@ import {
   validateSync,
 } from 'class-validator';
 import { MONIME_SUPPORTED_API_VERSIONS } from '../payments/providers/monime.constants.js';
+import {
+  PROVIDER_EVENT_STALE_DEFAULT_MS,
+  PROVIDER_EVENT_STALE_MAX_MS,
+  PROVIDER_EVENT_STALE_MIN_MS,
+} from '../payments/reconciliation.constants.js';
 
 /**
  * Declares every environment variable the API requires and its shape. The
@@ -127,6 +132,13 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1)
   PAYMENTS_THROTTLE_TTL_MS: number = 60000;
+
+  // How long a provider event may stay RECEIVED before reconciliation reports
+  // it as stale; bounds and reasoning in `reconciliation.constants.ts`.
+  @IsInt()
+  @Min(PROVIDER_EVENT_STALE_MIN_MS)
+  @Max(PROVIDER_EVENT_STALE_MAX_MS)
+  PROVIDER_EVENT_STALE_AFTER_MS: number = PROVIDER_EVENT_STALE_DEFAULT_MS;
 
   @IsInt()
   @Min(1)
