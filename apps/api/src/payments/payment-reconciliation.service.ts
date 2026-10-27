@@ -1,17 +1,28 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type {
   PaymentAnomalyStatus,
   PaymentAnomalyType,
   PaymentReconciliationAnomaly,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
+import type { AppConfiguration } from '../config/configuration.js';
+import { STUCK_PROCESSING_THRESHOLD_MS } from './reconciliation.constants.js';
 
 export interface DetectedAnomaly {
   type: PaymentAnomalyType;
   relatedDepositId?: string;
   relatedWithdrawalId?: string;
   detail: string;
+  /**
+   * Identifies one specific provider event, for an anomaly that has no deposit
+   * or withdrawal to be keyed on (so different events stay independently
+   * tracked). Stored in `details.eventKey` and matched with a JSON path filter
+   * when looking for an already-open anomaly.
+   */
+  eventKey?: string;
 }
 
 export interface PaymentReconciliationReport {
@@ -21,9 +32,6 @@ export interface PaymentReconciliationReport {
   /** How many of the above were newly written to `PaymentReconciliationAnomaly`. */
   newlyRecorded: number;
 }
-
-/** How long a withdrawal may sit in PROCESSING before it's flagged as stuck. */
-const STUCK_PROCESSING_THRESHOLD_MS = 60 * 60 * 1000;
 
 /**
  * On-demand (admin-triggered, never scheduled) anomaly detection for
@@ -40,7 +48,10 @@ const STUCK_PROCESSING_THRESHOLD_MS = 60 * 60 * 1000;
  */
 @Injectable()
 export class PaymentReconciliationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService<AppConfiguration, true>,
+  ) {}
 
   async runOnce(): Promise<PaymentReconciliationReport> {
     const anomalies: DetectedAnomaly[] = [
@@ -53,11 +64,17 @@ export class PaymentReconciliationService {
       ...(await this.findStuckProcessing()),
       ...(await this.findUnknownPayoutOutcomes()),
       ...(await this.findOrphanProviderEvents()),
+      ...(await this.findStaleReceivedEvents()),
       ...(await this.findLedgerProviderDrift()),
     ];
 
     let newlyRecorded = 0;
     for (const anomaly of anomalies) {
+      // An anomaly is "already recorded" only while an OPEN one for the same
+      // subject exists, so resolving it and still being stale raises a new
+      // one. The subject is the related deposit/withdrawal, and - for an
+      // anomaly with neither - the specific provider event, so unrelated
+      // events are never folded into one another.
       const existing = await this.prisma.paymentReconciliationAnomaly.findFirst(
         {
           where: {
@@ -65,6 +82,9 @@ export class PaymentReconciliationService {
             status: 'OPEN',
             relatedDepositId: anomaly.relatedDepositId ?? null,
             relatedWithdrawalId: anomaly.relatedWithdrawalId ?? null,
+            ...(anomaly.eventKey
+              ? { details: { path: ['eventKey'], equals: anomaly.eventKey } }
+              : {}),
           },
         },
       );
@@ -74,7 +94,10 @@ export class PaymentReconciliationService {
             type: anomaly.type,
             relatedDepositId: anomaly.relatedDepositId,
             relatedWithdrawalId: anomaly.relatedWithdrawalId,
-            details: { detail: anomaly.detail },
+            details: {
+              detail: anomaly.detail,
+              ...(anomaly.eventKey ? { eventKey: anomaly.eventKey } : {}),
+            } satisfies Prisma.InputJsonObject,
           },
         });
         newlyRecorded += 1;
@@ -307,6 +330,133 @@ export class PaymentReconciliationService {
       type: 'ORPHAN_PROVIDER_EVENT' as const,
       detail: `Provider event ${e.providerEventId} (${e.eventType}) looked like a deposit/payout event but matched no record`,
     }));
+  }
+
+  /**
+   * A verified provider event still `RECEIVED` longer than
+   * `payments.providerEventStaleAfterMs`: its processing failed part-way (the
+   * event is stored before any money moves) and the provider has not
+   * redelivered it, or redelivered it with different content, which is never
+   * processed. A redelivery of the same content recovers it (see
+   * `provider-events.ts`); this only makes the ones that never are visible.
+   *
+   * Read-only: nothing is reprocessed and no deposit, withdrawal, wallet or
+   * ledger row is touched. An event older than the threshold *strictly* (an
+   * event exactly that old is not yet reported) is selected; recent events and
+   * events in any final status are not. One anomaly per related deposit or
+   * withdrawal (found through the stored payload's provider reference, however
+   * many events concern it), and one per event when nothing matches, keyed on
+   * the event so unrelated events stay independent.
+   */
+  private async findStaleReceivedEvents(): Promise<DetectedAnomaly[]> {
+    const staleAfterMs = this.configService.get(
+      'payments.providerEventStaleAfterMs',
+      { infer: true },
+    );
+    const now = Date.now();
+    const events = await this.prisma.providerEvent.findMany({
+      where: {
+        status: 'RECEIVED',
+        createdAt: { lt: new Date(now - staleAfterMs) },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        provider: true,
+        providerEventId: true,
+        eventType: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+    if (events.length === 0) return [];
+
+    const referenceOf = (payload: unknown): string | null => {
+      const ref =
+        payload && typeof payload === 'object'
+          ? (payload as { providerReference?: unknown }).providerReference
+          : undefined;
+      return typeof ref === 'string' && ref.length > 0 ? ref : null;
+    };
+    const isPayout = (eventType: string) => eventType.startsWith('payout.');
+
+    const references = (payout: boolean) => [
+      ...new Set(
+        events
+          .filter((e) => isPayout(e.eventType) === payout)
+          .map((e) => referenceOf(e.payload))
+          .filter((r): r is string => r !== null),
+      ),
+    ];
+    const depositRefs = references(false);
+    const withdrawalRefs = references(true);
+    const deposits = depositRefs.length
+      ? await this.prisma.deposit.findMany({
+          where: { providerReference: { in: depositRefs } },
+          select: { id: true, providerReference: true },
+        })
+      : [];
+    const withdrawals = withdrawalRefs.length
+      ? await this.prisma.withdrawal.findMany({
+          where: { providerReference: { in: withdrawalRefs } },
+          select: { id: true, providerReference: true },
+        })
+      : [];
+    const depositByRef = new Map(deposits.map((d) => [d.providerReference, d]));
+    const withdrawalByRef = new Map(
+      withdrawals.map((w) => [w.providerReference, w]),
+    );
+
+    const describe = (e: (typeof events)[number]): string => {
+      const minutes = Math.floor((now - e.createdAt.getTime()) / 60_000);
+      return `${e.provider}/${e.providerEventId} (${e.eventType}, received ${minutes} min ago)`;
+    };
+
+    const byDeposit = new Map<string, string[]>();
+    const byWithdrawal = new Map<string, string[]>();
+    const anomalies: DetectedAnomaly[] = [];
+    for (const event of events) {
+      const ref = referenceOf(event.payload);
+      const deposit =
+        ref && !isPayout(event.eventType) ? depositByRef.get(ref) : undefined;
+      const withdrawal =
+        ref && isPayout(event.eventType) ? withdrawalByRef.get(ref) : undefined;
+
+      if (deposit) {
+        byDeposit.set(deposit.id, [
+          ...(byDeposit.get(deposit.id) ?? []),
+          describe(event),
+        ]);
+      } else if (withdrawal) {
+        byWithdrawal.set(withdrawal.id, [
+          ...(byWithdrawal.get(withdrawal.id) ?? []),
+          describe(event),
+        ]);
+      } else {
+        anomalies.push({
+          type: 'STALE_PROVIDER_EVENT',
+          eventKey: `${event.provider}/${event.providerEventId}`,
+          detail: `Provider event ${describe(event)} is still RECEIVED and matches no deposit or withdrawal; it was not processed. Review it; a redelivery of the same content would recover it, one with different content is never processed.`,
+        });
+      }
+    }
+
+    const detail = (kind: string, described: string[]) =>
+      `${described.length} provider event(s) for this ${kind} still RECEIVED, so any money effect may not have been applied: ${described.join('; ')}. Nothing was reprocessed; a redelivery of the same content would recover it, one with different content is never processed. Check the ${kind}'s status and the provider.`;
+    for (const [id, described] of byDeposit) {
+      anomalies.push({
+        type: 'STALE_PROVIDER_EVENT',
+        relatedDepositId: id,
+        detail: detail('deposit', described),
+      });
+    }
+    for (const [id, described] of byWithdrawal) {
+      anomalies.push({
+        type: 'STALE_PROVIDER_EVENT',
+        relatedWithdrawalId: id,
+        detail: detail('withdrawal', described),
+      });
+    }
+    return anomalies;
   }
 
   /** Per-record check: a terminal deposit/withdrawal's own ledger entries don't sum to its amount. */

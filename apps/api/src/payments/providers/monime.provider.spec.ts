@@ -16,6 +16,7 @@ function fakeConfigService(
     provider: 'monime',
     monimeBaseUrl: 'https://api.monime.io',
     monimeHttpTimeoutMs: 5000,
+    providerEventStaleAfterMs: 900_000,
     monimeLivePaymentsEnabled: false,
     minDepositMinor: 500n,
     minWithdrawalMinor: 500n,

@@ -16,7 +16,10 @@ function build(events: Rejected[]) {
   const prisma = {
     providerEvent: { findMany: vi.fn(() => Promise.resolve(events)) },
   };
-  const service = new PaymentReconciliationService(prisma as never);
+  const service = new PaymentReconciliationService(
+    prisma as never,
+    {} as never,
+  );
   const find = () =>
     (
       service as unknown as {

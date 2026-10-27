@@ -680,6 +680,320 @@ describe('Phase 6 payments (e2e)', () => {
     });
   });
 
+  describe('stale RECEIVED provider events (Phase 13)', () => {
+    const THIRTY_MINUTES_MS = 30 * 60_000;
+
+    const postWebhook = (body: string) =>
+      request(app.getHttpServer())
+        .post('/api/v1/payments/webhooks/monime')
+        .set('x-fake-signature', fakeProvider.signatureHeader())
+        .set('Content-Type', 'application/json')
+        .send(body);
+
+    const runReconciliation = async (adminToken: string) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/admin/payment-reconciliation/run')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      return res.body as {
+        anomalies: Array<{
+          type: string;
+          relatedDepositId?: string;
+          eventKey?: string;
+          detail: string;
+        }>;
+        newlyRecorded: number;
+      };
+    };
+
+    const staleFor = (
+      report: Awaited<ReturnType<typeof runReconciliation>>,
+      depositId: string,
+    ) =>
+      report.anomalies.filter(
+        (a) =>
+          a.type === 'STALE_PROVIDER_EVENT' && a.relatedDepositId === depositId,
+      );
+
+    const openStaleRows = (depositId: string) =>
+      prisma.paymentReconciliationAnomaly.findMany({
+        where: {
+          type: 'STALE_PROVIDER_EVENT',
+          status: 'OPEN',
+          relatedDepositId: depositId,
+        },
+      });
+
+    const eventRow = (eventId: string) =>
+      prisma.providerEvent.findUnique({
+        where: {
+          provider_providerEventId: {
+            provider: 'FAKE',
+            providerEventId: eventId,
+          },
+        },
+      });
+
+    const backdate = (eventId: string, ageMs: number) =>
+      prisma.providerEvent.update({
+        where: {
+          provider_providerEventId: {
+            provider: 'FAKE',
+            providerEventId: eventId,
+          },
+        },
+        data: { createdAt: new Date(Date.now() - ageMs) },
+      });
+
+    /** A pending deposit, plus the completion webhook body for it. */
+    async function depositWithCompletion(label: string, eventId: string) {
+      const { accessToken, userId, adminToken } = await setupFundedUser(
+        label,
+        '1000',
+      );
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const completion = (amountMinor?: string) =>
+        fakeProvider.buildWebhookBody({
+          eventId,
+          eventType: 'deposit.completed',
+          providerReference: created.body.providerReference,
+          ...(amountMinor ? { amountMinor, currency: 'SLE' } : {}),
+        });
+      return {
+        userId,
+        adminToken,
+        accessToken,
+        depositId: created.body.id as string,
+        completion,
+      };
+    }
+
+    /** First delivery of `body` fails in the ledger, leaving the event RECEIVED. */
+    async function failFirstDelivery(body: string) {
+      const spy = vi
+        .spyOn(app.get(LedgerService), 'applyEntry')
+        .mockRejectedValueOnce(new Error('injected transient failure'));
+      try {
+        await postWebhook(body).expect(500);
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it('reports a stuck event once, never changes money, and stops reporting it after the redelivery recovers it', async () => {
+      const eventId = `stale-dep-${runId}`;
+      const { userId, adminToken, depositId, completion } =
+        await depositWithCompletion('stalerecover', eventId);
+      const body = completion();
+      await failFirstDelivery(body);
+      const storedPayload = (await eventRow(eventId))?.payload;
+      await backdate(eventId, THIRTY_MINUTES_MS);
+
+      const first = await runReconciliation(adminToken);
+      const found = staleFor(first, depositId);
+      expect(found).toHaveLength(1);
+      expect(found[0].detail).toContain(eventId);
+      expect(await openStaleRows(depositId)).toHaveLength(1);
+
+      // Detection is read-only: no money, no status, no event change.
+      expect(
+        (await prisma.deposit.findUnique({ where: { id: depositId } }))?.status,
+      ).toBe('PENDING');
+      expect(
+        (await prisma.wallet.findUnique({ where: { userId } }))
+          ?.availableBalanceMinor,
+      ).toBe(1000n);
+      const stuck = await eventRow(eventId);
+      expect(stuck?.status).toBe('RECEIVED');
+      expect(stuck?.payload).toEqual(storedPayload);
+
+      // A second run reports it again but records nothing new.
+      const second = await runReconciliation(adminToken);
+      expect(staleFor(second, depositId)).toHaveLength(1);
+      expect(await openStaleRows(depositId)).toHaveLength(1);
+
+      // The provider's retry recovers the event and credits exactly once.
+      await postWebhook(body).expect(200);
+      expect(
+        (await prisma.deposit.findUnique({ where: { id: depositId } }))?.status,
+      ).toBe('COMPLETED');
+      expect(
+        (await prisma.wallet.findUnique({ where: { userId } }))
+          ?.availableBalanceMinor,
+      ).toBe(6000n);
+      expect((await eventRow(eventId))?.status).toBe('PROCESSED');
+
+      // No longer reported, and nothing new recorded; the earlier anomaly is
+      // left for an admin to resolve.
+      const third = await runReconciliation(adminToken);
+      expect(staleFor(third, depositId)).toHaveLength(0);
+      expect(await openStaleRows(depositId)).toHaveLength(1);
+    });
+
+    it('does not report a recent RECEIVED event', async () => {
+      const eventId = `stale-recent-${runId}`;
+      const { adminToken, depositId, completion } = await depositWithCompletion(
+        'stalerecent',
+        eventId,
+      );
+      await failFirstDelivery(completion());
+      await backdate(eventId, 60_000);
+
+      const report = await runReconciliation(adminToken);
+
+      expect(staleFor(report, depositId)).toHaveLength(0);
+      expect(await openStaleRows(depositId)).toHaveLength(0);
+    });
+
+    it('raises a new anomaly after an admin resolved the old one while the event is still stale', async () => {
+      const eventId = `stale-resolved-${runId}`;
+      const { adminToken, depositId, completion } = await depositWithCompletion(
+        'staleresolved',
+        eventId,
+      );
+      await failFirstDelivery(completion());
+      await backdate(eventId, THIRTY_MINUTES_MS);
+
+      await runReconciliation(adminToken);
+      const [open] = await openStaleRows(depositId);
+      await request(app.getHttpServer())
+        .post(
+          `/api/v1/admin/payment-reconciliation/anomalies/${open.id}/resolve`,
+        )
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ resolutionNote: 'Reviewed; waiting for the provider to retry' })
+        .expect(200);
+      expect(await openStaleRows(depositId)).toHaveLength(0);
+
+      await runReconciliation(adminToken);
+
+      expect(await openStaleRows(depositId)).toHaveLength(1);
+      expect(
+        await prisma.paymentReconciliationAnomaly.count({
+          where: { type: 'STALE_PROVIDER_EVENT', relatedDepositId: depositId },
+        }),
+      ).toBe(2);
+    });
+
+    it('keeps a conflicting redelivery visible without processing it or changing the stored payload', async () => {
+      const eventId = `stale-conflict-${runId}`;
+      const { userId, adminToken, depositId, completion } =
+        await depositWithCompletion('staleconflict', eventId);
+      await failFirstDelivery(completion());
+      const storedPayload = (await eventRow(eventId))?.payload;
+
+      // Same provider event id, different reported amount: acknowledged, never
+      // acted on.
+      await postWebhook(completion('999999')).expect(200);
+
+      const after = await eventRow(eventId);
+      expect(after?.status).toBe('RECEIVED');
+      expect(after?.payload).toEqual(storedPayload);
+      expect(
+        (await prisma.deposit.findUnique({ where: { id: depositId } }))?.status,
+      ).toBe('PENDING');
+
+      await backdate(eventId, THIRTY_MINUTES_MS);
+      const report = await runReconciliation(adminToken);
+
+      expect(staleFor(report, depositId)).toHaveLength(1);
+      expect(
+        (await prisma.wallet.findUnique({ where: { userId } }))
+          ?.availableBalanceMinor,
+      ).toBe(1000n);
+    });
+
+    it('tracks stale events that match no record independently, once each', async () => {
+      const { adminToken } = await setupFundedUser('staleorphan', '1000');
+      const ids = [`stale-orphan-a-${runId}`, `stale-orphan-b-${runId}`];
+      for (const id of ids) {
+        await prisma.providerEvent.create({
+          data: {
+            provider: 'FAKE',
+            providerEventId: id,
+            eventType: 'deposit.completed',
+            payload: {
+              eventType: 'deposit.completed',
+              providerReference: `no-such-deposit-${id}`,
+            },
+            status: 'RECEIVED',
+            createdAt: new Date(Date.now() - THIRTY_MINUTES_MS),
+          },
+        });
+      }
+      const keys = ids.map((id) => `FAKE/${id}`);
+      const mine = (r: Awaited<ReturnType<typeof runReconciliation>>) =>
+        r.anomalies.filter(
+          (a) =>
+            a.type === 'STALE_PROVIDER_EVENT' &&
+            a.eventKey !== undefined &&
+            keys.includes(a.eventKey),
+        );
+      const openFor = () =>
+        prisma.paymentReconciliationAnomaly.findMany({
+          where: {
+            type: 'STALE_PROVIDER_EVENT',
+            status: 'OPEN',
+            relatedDepositId: null,
+            relatedWithdrawalId: null,
+            details: {
+              path: ['eventKey'],
+              string_starts_with: `FAKE/stale-orphan-`,
+            },
+          },
+        });
+
+      try {
+        const first = await runReconciliation(adminToken);
+        expect(
+          mine(first)
+            .map((a) => a.eventKey)
+            .sort(),
+        ).toEqual(keys);
+        const opened = (await openFor()).filter((a) =>
+          keys.includes((a.details as { eventKey: string }).eventKey),
+        );
+        expect(opened).toHaveLength(2);
+
+        // Repeat runs do not duplicate either one.
+        await runReconciliation(adminToken);
+        await runReconciliation(adminToken);
+        expect(
+          (await openFor()).filter((a) =>
+            keys.includes((a.details as { eventKey: string }).eventKey),
+          ),
+        ).toHaveLength(2);
+      } finally {
+        await prisma.paymentReconciliationAnomaly.deleteMany({
+          where: {
+            type: 'STALE_PROVIDER_EVENT',
+            details: {
+              path: ['eventKey'],
+              string_starts_with: `FAKE/stale-orphan-`,
+            },
+          },
+        });
+        await prisma.providerEvent.deleteMany({
+          where: { providerEventId: { in: ids } },
+        });
+      }
+    });
+
+    it('rejects a non-admin from running reconciliation', async () => {
+      const { accessToken } = await registerUser('stalenonadmin');
+
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/payment-reconciliation/run')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(403);
+    });
+  });
+
   describe('payment reconciliation', () => {
     it('detects and persists an UNKNOWN_PAYOUT_OUTCOME anomaly for a withdrawal stuck after a network error', async () => {
       fakeProvider.payoutScenario = 'network_error';

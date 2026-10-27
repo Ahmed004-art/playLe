@@ -1,3 +1,5 @@
+import { PROVIDER_EVENT_STALE_DEFAULT_MS } from '../payments/reconciliation.constants.js';
+
 /**
  * Typed configuration factory consumed via `ConfigService.get<T>(...)`.
  * Keep this the single place that reads `process.env` — everything else
@@ -56,6 +58,13 @@ export interface AppConfiguration {
      */
     monimeApiVersion?: string;
     monimeHttpTimeoutMs: number;
+    /**
+     * How long a verified provider event may stay RECEIVED before payment
+     * reconciliation reports it as a STALE_PROVIDER_EVENT anomaly (Phase 13).
+     * Bounded in env.validation.ts: above any processing timeout, below the
+     * 60-minute stuck-withdrawal threshold.
+     */
+    providerEventStaleAfterMs: number;
     /**
      * Separate from merely selecting `provider: 'monime'` or having an
      * API key configured — a *live* (non-`mon_test_`) Monime token is
@@ -183,6 +192,11 @@ export default (): AppConfiguration => ({
     monimeApiVersion: process.env.MONIME_API_VERSION || undefined,
     monimeHttpTimeoutMs: parseInt(
       process.env.MONIME_HTTP_TIMEOUT_MS ?? '10000',
+      10,
+    ),
+    providerEventStaleAfterMs: parseInt(
+      process.env.PROVIDER_EVENT_STALE_AFTER_MS ??
+        String(PROVIDER_EVENT_STALE_DEFAULT_MS),
       10,
     ),
     monimeLivePaymentsEnabled:

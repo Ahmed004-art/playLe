@@ -700,3 +700,33 @@ This file is updated whenever a phase's audit or implementation work
 surfaces a new durable item, or resolves an existing one with evidence.
 See the current phase's own report for what that phase specifically
 did; this file is the accumulated cross-phase picture.
+
+### 28. Provider events that stay `RECEIVED` — recovered on redelivery (Phase 13 PR 2), now reported (PR 3)
+**Status**: closed in code on `feat/phase-13-reconciliation-monitoring`; the
+database-backed e2e cases are **not CI-verified until that branch's CI run is
+recorded here**. **The gap**: a webhook's `ProviderEvent` is stored `RECEIVED`
+before any money moves. PR 2 made a redelivery of an unfinished event with the
+same type and payload process it again, but an event whose provider never
+retries — or retries with different content, which is never processed — stayed
+`RECEIVED` forever with nothing reporting it.
+**The fix** (detection only): `PaymentReconciliationService.runOnce` now also
+runs `findStaleReceivedEvents`, which reports every event still `RECEIVED` and
+*strictly* older than `PROVIDER_EVENT_STALE_AFTER_MS` (default 15 minutes;
+validated 5–45 minutes — far above the 15 s a money transaction can run, below
+the 60-minute stuck-withdrawal threshold) as a `STALE_PROVIDER_EVENT` anomaly.
+It never reprocesses an event or touches a deposit, withdrawal, wallet or
+ledger row. One anomaly per related deposit/withdrawal (found through the
+payload's provider reference), and one per event when nothing matches, keyed on
+`details.eventKey` (`provider/providerEventId`) with a JSON-path lookup so
+unrelated events are never folded together. Dedupe is against OPEN anomalies
+only: resolving one while the event is still stale raises a new one on the next
+run. Visible through the existing `/admin/payment-reconciliation` API; one
+additive enum migration (`20261027160000_phase13_stale_provider_event_anomaly`),
+no new table.
+**Still open**: reconciliation is on-demand (nobody is paged — an admin has to
+run it); there is no admin UI for payment anomalies (API only); an anomaly
+stays OPEN after its event is later recovered until an admin resolves it; an
+anomaly grouped on a deposit/withdrawal does not distinguish a second stale
+event that appears after the first was resolved from one already counted;
+nothing automatically re-drives or fails a stale event — that needs the
+provider's redelivery or an operator.
