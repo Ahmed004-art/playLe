@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ConflictException,
   INestApplication,
   ValidationPipe,
   VersioningType,
@@ -9,6 +10,7 @@ import request from 'supertest';
 import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { LedgerService } from '../src/ledger/ledger.service.js';
+import { WithdrawalsService } from '../src/withdrawals/withdrawals.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
@@ -677,6 +679,364 @@ describe('Phase 6 payments (e2e)', () => {
       expect(wallet?.availableBalanceMinor).toBe(
         outcomes[0].type === 'WITHDRAWAL' ? 2000n : 6000n,
       );
+    });
+  });
+
+  describe('withdrawal review decisions racing each other (Phase 13)', () => {
+    /**
+     * Holds the first read of a withdrawal by `approve`/`reject` (findByIdAdmin)
+     * or `cancel` (findById): the caller has seen PENDING_REVIEW and is parked
+     * before it writes anything, while the test runs the rival decision to
+     * completion, then releases it. No sleeps: the interleaving is forced.
+     */
+    function parkAfterRead(method: 'findByIdAdmin' | 'findById') {
+      const service = app.get(WithdrawalsService);
+      type Reader = (...args: string[]) => Promise<unknown>;
+      const original = (service[method] as Reader).bind(service);
+      let reached!: () => void;
+      let release!: () => void;
+      const reachedPromise = new Promise<void>((r) => (reached = r));
+      const released = new Promise<void>((r) => (release = r));
+      const spy = vi.spyOn(service, method).mockImplementationOnce((async (
+        ...args: string[]
+      ) => {
+        const row = await original(...args);
+        reached();
+        await released;
+        return row;
+      }) as never);
+      return {
+        reached: reachedPromise,
+        release,
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    /** Records the committed status of every withdrawal a payout is submitted for. */
+    function watchPayouts() {
+      const submittedWhile: string[] = [];
+      const original = fakeProvider.initiatePayout.bind(fakeProvider);
+      const spy = vi
+        .spyOn(fakeProvider, 'initiatePayout')
+        .mockImplementation(async (params) => {
+          // A separate query: it sees only committed state, so this is what a
+          // payout provider's callback could rely on at this moment.
+          const row = await prisma.withdrawal.findUnique({
+            where: { id: params.withdrawalId },
+          });
+          submittedWhile.push(row?.status ?? 'missing');
+          return original(params);
+        });
+      return { submittedWhile, restore: () => spy.mockRestore() };
+    }
+
+    /** A funded user with the withdrawal under test and a larger, unrelated hold. */
+    async function userWithPendingWithdrawal(label: string) {
+      const { accessToken, userId } = await setupFundedUser(label, '10000');
+      const admin = await prisma.user.findUniqueOrThrow({
+        where: { email: email(`${label}adm`) },
+      });
+      const { id } = await createWithdrawal(accessToken, '4000');
+      // 5000 of this wallet's funds are held for another withdrawal, so a hold
+      // released twice would take that money rather than fail.
+      await createWithdrawal(accessToken, '5000');
+      return { userId, adminId: admin.id, id };
+    }
+
+    const entryTypes = async (withdrawalId: string) =>
+      (
+        await prisma.ledgerEntry.findMany({
+          where: { relatedWithdrawalId: withdrawalId },
+          orderBy: { createdAt: 'asc' },
+        })
+      ).map((e) => e.type);
+
+    const walletOf = async (userId: string) => {
+      const w = await prisma.wallet.findUniqueOrThrow({ where: { userId } });
+      return { available: w.availableBalanceMinor, held: w.heldBalanceMinor };
+    };
+
+    const settle = (promise: Promise<unknown>) =>
+      promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+
+    type Decision = 'approve' | 'cancel' | 'reject';
+    type Ids = { userId: string; adminId: string; id: string };
+    const run = (decision: Decision, ids: Ids) => {
+      const service = app.get(WithdrawalsService);
+      switch (decision) {
+        case 'approve':
+          return service.approve(ids.adminId, ids.id, 'Verified identity');
+        case 'cancel':
+          return service.cancel(ids.userId, ids.id);
+        case 'reject':
+          return service.reject(ids.adminId, ids.id, 'Not eligible');
+      }
+    };
+
+    /** `stale` has already read PENDING_REVIEW; `winner` completes first. */
+    async function race(stale: Decision, winner: Decision, ids: Ids) {
+      const parked = parkAfterRead(
+        stale === 'cancel' ? 'findById' : 'findByIdAdmin',
+      );
+      try {
+        const stalePromise = settle(run(stale, ids));
+        await parked.reached;
+        const winnerOutcome = await settle(run(winner, ids));
+        parked.release();
+        return { stale: await stalePromise, winner: winnerOutcome };
+      } finally {
+        parked.restore();
+      }
+    }
+
+    const expectConflict = (outcome: { ok: boolean; error?: unknown }) => {
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error).toBeInstanceOf(ConflictException);
+    };
+
+    const statusOf = async (id: string) =>
+      (await prisma.withdrawal.findUnique({ where: { id } }))?.status;
+
+    it('cancel wins, then a stale approval submits no payout and does not resurrect the withdrawal', async () => {
+      const ids = await userWithPendingWithdrawal('racecanc1');
+      const payouts = watchPayouts();
+      try {
+        const result = await race('approve', 'cancel', ids);
+
+        expect(result.winner.ok).toBe(true);
+        expect(payouts.submittedWhile).toEqual([]);
+        expect(await statusOf(ids.id)).toBe('CANCELLED');
+        expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 5000n,
+          held: 5000n,
+        });
+        expectConflict(result.stale);
+      } finally {
+        payouts.restore();
+      }
+    });
+
+    it('approval wins and pays out, then a stale cancel does not release the hold', async () => {
+      const ids = await userWithPendingWithdrawal('racecanc2');
+      const payouts = watchPayouts();
+      try {
+        const result = await race('cancel', 'approve', ids);
+
+        expect(result.winner.ok).toBe(true);
+        // One payout, submitted only once the approval was committed.
+        expect(payouts.submittedWhile).toEqual(['APPROVED']);
+        expect(await statusOf(ids.id)).toBe('PROCESSING');
+        expect(await entryTypes(ids.id)).toEqual(['HOLD']);
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 1000n,
+          held: 9000n,
+        });
+        expectConflict(result.stale);
+      } finally {
+        payouts.restore();
+      }
+    });
+
+    it('reject wins, then a stale approval submits no payout and does not resurrect the withdrawal', async () => {
+      const ids = await userWithPendingWithdrawal('racerej1');
+      const payouts = watchPayouts();
+      try {
+        const result = await race('approve', 'reject', ids);
+
+        expect(result.winner.ok).toBe(true);
+        expect(payouts.submittedWhile).toEqual([]);
+        expect(await statusOf(ids.id)).toBe('REJECTED');
+        expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 5000n,
+          held: 5000n,
+        });
+        expectConflict(result.stale);
+      } finally {
+        payouts.restore();
+      }
+    });
+
+    it('approval wins and pays out, then a stale rejection does not release the hold', async () => {
+      const ids = await userWithPendingWithdrawal('racerej2');
+      const payouts = watchPayouts();
+      try {
+        const result = await race('reject', 'approve', ids);
+
+        expect(result.winner.ok).toBe(true);
+        expect(payouts.submittedWhile).toEqual(['APPROVED']);
+        expect(await statusOf(ids.id)).toBe('PROCESSING');
+        expect(await entryTypes(ids.id)).toEqual(['HOLD']);
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 1000n,
+          held: 9000n,
+        });
+        expectConflict(result.stale);
+      } finally {
+        payouts.restore();
+      }
+    });
+
+    it.each([
+      ['reject', 'cancel'],
+      ['cancel', 'reject'],
+    ] as const)(
+      'a stale %s after a winning %s releases the hold only once',
+      async (stale, winner) => {
+        const ids = await userWithPendingWithdrawal(`racerel${stale}`);
+
+        const result = await race(stale, winner, ids);
+
+        expect(result.winner.ok).toBe(true);
+        expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+        // The unrelated 5000 hold is intact: a second release would have
+        // returned 4000 of it to the available balance.
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 5000n,
+          held: 5000n,
+        });
+        expectConflict(result.stale);
+      },
+    );
+
+    /**
+     * `approve` has committed and its payout request is in flight (parked in the
+     * fake provider, the withdrawal still APPROVED in the database); `finalise`
+     * then runs to completion; only then does the provider's answer return.
+     */
+    async function finaliseWhilePayoutInFlight(
+      ids: Ids,
+      finalise: () => Promise<unknown>,
+    ) {
+      const original = fakeProvider.initiatePayout.bind(fakeProvider);
+      let reached!: () => void;
+      let release!: () => void;
+      const reachedPromise = new Promise<void>((r) => (reached = r));
+      const released = new Promise<void>((r) => (release = r));
+      const spy = vi
+        .spyOn(fakeProvider, 'initiatePayout')
+        .mockImplementationOnce(async (params) => {
+          reached();
+          await released;
+          return original(params);
+        });
+      try {
+        const approval = settle(run('approve', ids));
+        await reachedPromise;
+        expect(await statusOf(ids.id)).toBe('APPROVED');
+        const admin = await settle(finalise());
+        release();
+        return { approval: await approval, admin };
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it('an admin completion while the payout request is in flight is not overwritten, and the payout event debits nothing more', async () => {
+      const ids = await userWithPendingWithdrawal('payinflight1');
+      const reference = `fake_payout_${ids.id}`;
+
+      const result = await finaliseWhilePayoutInFlight(ids, () =>
+        app
+          .get(WithdrawalsService)
+          .complete(ids.adminId, ids.id, 'Paid by hand', reference),
+      );
+
+      expect(result.admin.ok).toBe(true);
+      expect(result.approval.ok).toBe(true);
+      expect(await statusOf(ids.id)).toBe('COMPLETED');
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+
+      // The provider's own completion event for that reference then arrives.
+      await request(app.getHttpServer())
+        .post('/api/v1/payments/webhooks/monime')
+        .set('x-fake-signature', fakeProvider.signatureHeader())
+        .set('Content-Type', 'application/json')
+        .send(
+          fakeProvider.buildPayoutWebhookBody({
+            eventType: 'payout.completed',
+            providerReference: reference,
+          }),
+        )
+        .expect(200);
+
+      expect(await statusOf(ids.id)).toBe('COMPLETED');
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+      // Only this withdrawal's 4000 left the held balance; the other 5000 hold
+      // is untouched.
+      expect(await walletOf(ids.userId)).toEqual({
+        available: 1000n,
+        held: 5000n,
+      });
+    });
+
+    it('an admin failure while the payout request is in flight is not overwritten when the provider then answers SUCCEEDED', async () => {
+      const ids = await userWithPendingWithdrawal('payinflight2');
+      fakeProvider.payoutScenario = 'succeeded';
+
+      const result = await finaliseWhilePayoutInFlight(ids, () =>
+        app.get(WithdrawalsService).fail(ids.adminId, ids.id, 'Could not pay'),
+      );
+
+      expect(result.admin.ok).toBe(true);
+      expect(await statusOf(ids.id)).toBe('FAILED');
+      // Released once, never also debited.
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+      expect(await walletOf(ids.userId)).toEqual({
+        available: 5000n,
+        held: 5000n,
+      });
+      // The attempt is still on record as what the provider answered.
+      const operations = await prisma.providerOperation.findMany({
+        where: { relatedWithdrawalId: ids.id },
+      });
+      expect(operations.map((o) => o.status)).toEqual(['SUCCEEDED']);
+    });
+
+    it('unsynchronised approve and cancel, repeated, always end in exactly one consistent outcome', async () => {
+      const { accessToken, userId } = await setupFundedUser(
+        'racerepeat',
+        '10000',
+      );
+      const admin = await prisma.user.findUniqueOrThrow({
+        where: { email: email('racerepeatadm') },
+      });
+      const service = app.get(WithdrawalsService);
+      const payouts = watchPayouts();
+      try {
+        for (let round = 0; round < 6; round += 1) {
+          const { id } = await createWithdrawal(accessToken, '1000');
+          payouts.submittedWhile.length = 0;
+
+          const [approval, cancellation] = await Promise.all([
+            settle(service.approve(admin.id, id, 'ok')),
+            settle(service.cancel(userId, id)),
+          ]);
+
+          const status = await statusOf(id);
+          const entries = await entryTypes(id);
+          if (approval.ok) {
+            // Approval won: the hold stays, one payout, cancel refused.
+            expectConflict(cancellation);
+            expect(status).toBe('PROCESSING');
+            expect(entries).toEqual(['HOLD']);
+            expect(payouts.submittedWhile).toEqual(['APPROVED']);
+          } else {
+            // Cancellation won: hold released once, no payout, approve refused.
+            expectConflict(approval);
+            expect(cancellation.ok).toBe(true);
+            expect(status).toBe('CANCELLED');
+            expect(entries).toEqual(['HOLD', 'RELEASE']);
+            expect(payouts.submittedWhile).toEqual([]);
+          }
+        }
+      } finally {
+        payouts.restore();
+      }
     });
   });
 

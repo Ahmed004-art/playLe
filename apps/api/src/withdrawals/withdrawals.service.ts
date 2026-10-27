@@ -31,6 +31,9 @@ import {
 /** The statuses a withdrawal can be finalized (completed or failed) from. */
 const FINALIZABLE: WithdrawalStatus[] = ['APPROVED', 'PROCESSING'];
 
+/** The only status a review decision (approve, cancel, reject) can start from. */
+const PENDING: WithdrawalStatus[] = ['PENDING_REVIEW'];
+
 @Injectable()
 export class WithdrawalsService {
   private readonly logger = new Logger(WithdrawalsService.name);
@@ -163,12 +166,25 @@ export class WithdrawalsService {
     return { items, nextCursor: hasMore ? items[items.length - 1].id : null };
   }
 
-  /** A user may cancel their own request only while it's still awaiting review. */
+  /**
+   * A user may cancel their own request only while it's still awaiting review.
+   *
+   * The status check is a fast path only: approve, cancel and reject each
+   * decide from a status read outside any transaction, so the transaction
+   * claims the withdrawal conditionally (`PENDING_REVIEW` only) before it
+   * releases the hold. If an approval or rejection won meanwhile, this is the
+   * usual 409 and nothing is released.
+   */
   async cancel(userId: string, id: string): Promise<Withdrawal> {
     const withdrawal = await this.findById(userId, id);
-    this.assertTransition(withdrawal.status, ['PENDING_REVIEW']);
+    this.assertTransition(withdrawal.status, PENDING);
 
     return this.prisma.$transaction(async (tx) => {
+      await this.claimOrThrow(tx, withdrawal, PENDING, {
+        status: 'CANCELLED',
+        cancelledAt: new Date(),
+      });
+
       await this.ledgerService.applyEntry(tx, withdrawal.walletId, {
         type: 'RELEASE',
         availableDeltaMinor: withdrawal.amountMinor,
@@ -176,10 +192,7 @@ export class WithdrawalsService {
         relatedWithdrawalId: withdrawal.id,
       });
 
-      return tx.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: { status: 'CANCELLED', cancelledAt: new Date() },
-      });
+      return tx.withdrawal.findUniqueOrThrow({ where: { id: withdrawal.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
@@ -190,6 +203,15 @@ export class WithdrawalsService {
    * `DepositsService.create` already uses. If no live provider is
    * configured/enabled, `submitPayout` is a safe no-op and the
    * withdrawal simply stays `APPROVED`, exactly as in Phase 3.
+   *
+   * Approval is a single conditional claim (`PENDING_REVIEW` -> `APPROVED`
+   * only), committed before any payout is attempted. The status read above it
+   * is a fast path: a cancellation or rejection may have won since, and it has
+   * released the hold - approving then would pay out money the user already has
+   * back. The claim is one statement on the withdrawal row, so it needs no
+   * wallet lock (cancel/reject lock the wallet first, then claim the row;
+   * nothing here waits for the wallet, so the two cannot deadlock). The
+   * provider is only ever called by `submitPayout`, after this has returned.
    */
   async approve(
     adminId: string,
@@ -197,10 +219,10 @@ export class WithdrawalsService {
     reason: string,
   ): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
-    this.assertTransition(withdrawal.status, ['PENDING_REVIEW']);
+    this.assertTransition(withdrawal.status, PENDING);
 
-    const approved = await this.prisma.withdrawal.update({
-      where: { id: withdrawal.id },
+    const { count } = await this.prisma.withdrawal.updateMany({
+      where: { id: withdrawal.id, status: { in: PENDING } },
       data: {
         status: 'APPROVED',
         approvedAt: new Date(),
@@ -209,8 +231,14 @@ export class WithdrawalsService {
         reviewReason: reason,
       },
     });
+    if (count !== 1) {
+      const current = await this.findByIdAdmin(withdrawal.id);
+      throw new ConflictException(
+        `Cannot perform this action on a withdrawal in status ${current.status}`,
+      );
+    }
 
-    return this.submitPayout(approved.id);
+    return this.submitPayout(withdrawal.id);
   }
 
   /**
@@ -278,10 +306,8 @@ export class WithdrawalsService {
             error instanceof Error ? error.message : 'Unknown error',
         },
       });
-      return this.prisma.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: { status: 'PROCESSING' },
-      });
+      await this.markProcessing(withdrawal, operation.id);
+      return this.findByIdAdmin(withdrawal.id);
     }
 
     if (result.outcome === 'UNAVAILABLE') {
@@ -313,14 +339,19 @@ export class WithdrawalsService {
       },
     });
 
-    const processing = await this.prisma.withdrawal.update({
-      where: { id: withdrawal.id },
-      data: {
-        status: 'PROCESSING',
-        providerReference:
-          result.providerReference ?? withdrawal.providerReference,
-      },
-    });
+    const submitted = await this.markProcessing(
+      withdrawal,
+      operation.id,
+      result.providerReference ?? withdrawal.providerReference,
+    );
+    if (!submitted) {
+      // Finalised by someone else while the request was in flight (see
+      // `markProcessing`): their outcome stands, so neither announce a
+      // submission nor act on the provider's answer. The attempt itself is
+      // already recorded on the ProviderOperation row.
+      return this.findByIdAdmin(withdrawal.id);
+    }
+    const processing = await this.findByIdAdmin(withdrawal.id);
 
     await this.notificationOutbox.enqueueStandalone({
       userId: withdrawal.userId,
@@ -353,15 +384,59 @@ export class WithdrawalsService {
     return processing;
   }
 
+  /**
+   * Moves a withdrawal to `PROCESSING` once its payout request has been sent,
+   * but only if it is *still* `APPROVED`. The request is in flight for as long
+   * as the provider takes to answer, and the withdrawal stays `APPROVED` and
+   * finalisable throughout, so an admin `complete`/`fail` (or any other
+   * finaliser) can win before the answer returns. An unconditional write here
+   * would then drag a COMPLETED/FAILED withdrawal back to `PROCESSING`, and the
+   * next payout event would find it finalisable again and debit or release a
+   * hold a second time. A lost claim writes nothing and is logged loudly: the
+   * payout may really have been sent, so a person has to reconcile it with the
+   * provider (the ProviderOperation row records what was sent and answered).
+   * Payout idempotency and the UNKNOWN-outcome record are untouched: they are
+   * written on the ProviderOperation before this runs.
+   */
+  private async markProcessing(
+    withdrawal: Pick<Withdrawal, 'id'>,
+    operationId: string,
+    providerReference?: string | null,
+  ): Promise<boolean> {
+    const { count } = await this.prisma.withdrawal.updateMany({
+      where: { id: withdrawal.id, status: 'APPROVED' },
+      data: {
+        status: 'PROCESSING',
+        ...(providerReference !== undefined ? { providerReference } : {}),
+      },
+    });
+    if (count !== 1) {
+      this.logger.error(
+        `Withdrawal ${withdrawal.id} was finalised while its payout request (provider operation ${operationId}) was in flight; left unchanged. The provider may have been paid - reconcile with the provider.`,
+      );
+    }
+    return count === 1;
+  }
+
   async reject(
     adminId: string,
     id: string,
     reason: string,
   ): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
-    this.assertTransition(withdrawal.status, ['PENDING_REVIEW']);
+    this.assertTransition(withdrawal.status, PENDING);
 
     return this.prisma.$transaction(async (tx) => {
+      // Same claim as `cancel`: only a still-PENDING_REVIEW withdrawal's hold
+      // may be released, and only by the decision that wins it.
+      await this.claimOrThrow(tx, withdrawal, PENDING, {
+        status: 'REJECTED',
+        rejectedAt: new Date(),
+        reviewedByAdminId: adminId,
+        reviewedAt: new Date(),
+        reviewReason: reason,
+      });
+
       await this.ledgerService.applyEntry(tx, withdrawal.walletId, {
         type: 'RELEASE',
         availableDeltaMinor: withdrawal.amountMinor,
@@ -369,16 +444,7 @@ export class WithdrawalsService {
         relatedWithdrawalId: withdrawal.id,
       });
 
-      return tx.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: {
-          status: 'REJECTED',
-          rejectedAt: new Date(),
-          reviewedByAdminId: adminId,
-          reviewedAt: new Date(),
-          reviewReason: reason,
-        },
-      });
+      return tx.withdrawal.findUniqueOrThrow({ where: { id: withdrawal.id } });
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
@@ -560,10 +626,13 @@ export class WithdrawalsService {
   }
 
   /**
-   * Claims a withdrawal for a terminal outcome inside the caller's
-   * transaction: moves it to `data.status` only if it is *still* `APPROVED`
-   * or `PROCESSING`, and reports whether this transaction won.
+   * Claims a withdrawal for a decision inside the caller's transaction: moves
+   * it to `data.status` only if it is *still* in one of the `from` statuses,
+   * and reports whether this transaction won.
    *
+   * Used for every decision made from a status read outside the transaction:
+   * the terminal outcomes (`from` = `FINALIZABLE`: provider and admin complete
+   * and fail) and the review decisions (`from` = `PENDING`: cancel, reject).
    * The wallet row is locked first, keeping the lock order every other
    * withdrawal transaction uses (wallet, then withdrawal - see
    * `LedgerService.lockWallet`). The conditional update then takes the
@@ -572,26 +641,28 @@ export class WithdrawalsService {
    * row. Only the winner goes on to write the ledger, all in one transaction,
    * so a later failure rolls the claim back too.
    */
-  private async claimFinal(
+  private async claim(
     tx: Prisma.TransactionClient,
     withdrawal: Pick<Withdrawal, 'id' | 'walletId'>,
+    from: WithdrawalStatus[],
     data: Prisma.WithdrawalUncheckedUpdateManyInput,
   ): Promise<boolean> {
     await this.ledgerService.lockWallet(tx, withdrawal.walletId);
     const { count } = await tx.withdrawal.updateMany({
-      where: { id: withdrawal.id, status: { in: FINALIZABLE } },
+      where: { id: withdrawal.id, status: { in: from } },
       data,
     });
     return count === 1;
   }
 
-  /** `claimFinal` for admin actions: a lost claim is the usual 409. */
-  private async claimFinalOrThrow(
+  /** `claim` for admin and user actions: a lost claim is the usual 409. */
+  private async claimOrThrow(
     tx: Prisma.TransactionClient,
     withdrawal: Pick<Withdrawal, 'id' | 'walletId'>,
+    from: WithdrawalStatus[],
     data: Prisma.WithdrawalUncheckedUpdateManyInput,
   ): Promise<void> {
-    if (!(await this.claimFinal(tx, withdrawal, data))) {
+    if (!(await this.claim(tx, withdrawal, from, data))) {
       const current = await tx.withdrawal.findUniqueOrThrow({
         where: { id: withdrawal.id },
       });
@@ -601,6 +672,22 @@ export class WithdrawalsService {
     }
   }
 
+  /** `claim` from `APPROVED`/`PROCESSING`: a terminal outcome. */
+  private claimFinal(
+    tx: Prisma.TransactionClient,
+    withdrawal: Pick<Withdrawal, 'id' | 'walletId'>,
+    data: Prisma.WithdrawalUncheckedUpdateManyInput,
+  ): Promise<boolean> {
+    return this.claim(tx, withdrawal, FINALIZABLE, data);
+  }
+
+  private claimFinalOrThrow(
+    tx: Prisma.TransactionClient,
+    withdrawal: Pick<Withdrawal, 'id' | 'walletId'>,
+    data: Prisma.WithdrawalUncheckedUpdateManyInput,
+  ): Promise<void> {
+    return this.claimOrThrow(tx, withdrawal, FINALIZABLE, data);
+  }
   getProvider(): PaymentProviderPort {
     return this.provider;
   }
