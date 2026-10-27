@@ -34,6 +34,7 @@ import { EligibilityModule } from './eligibility/eligibility.module.js';
 import { NotificationOutboxModule } from './notification-outbox/notification-outbox.module.js';
 import { BlocksModule } from './blocks/blocks.module.js';
 import { FriendsModule } from './friends/friends.module.js';
+import { optInThrottleSkipIf } from './common/opt-in-throttle.js';
 import { socialThrottleSkipIf } from './common/social-throttle.js';
 
 @Module({
@@ -58,6 +59,7 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
             name: 'auth',
             ttl: configService.get('auth.throttleTtlMs', { infer: true }),
             limit: configService.get('auth.throttleLimit', { infer: true }),
+            skipIf: optInThrottleSkipIf('auth'),
           },
           {
             // Separately-configurable limit for deposit/withdrawal creation —
@@ -65,6 +67,7 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
             name: 'payments',
             ttl: configService.get('payments.throttleTtlMs', { infer: true }),
             limit: configService.get('payments.throttleLimit', { infer: true }),
+            skipIf: optInThrottleSkipIf('payments'),
           },
           {
             // Separately-configurable limit for matchmaking/challenge/
@@ -73,6 +76,7 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
             name: 'matches',
             ttl: configService.get('matches.throttleTtlMs', { infer: true }),
             limit: configService.get('matches.throttleLimit', { infer: true }),
+            skipIf: optInThrottleSkipIf('matches'),
           },
           {
             // Limit for block/unblock (and later friend-request) endpoints
@@ -91,6 +95,7 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
             name: 'stakes',
             ttl: configService.get('stakes.throttleTtlMs', { infer: true }),
             limit: configService.get('stakes.throttleLimit', { infer: true }),
+            skipIf: optInThrottleSkipIf('stakes'),
           },
         ],
       }),

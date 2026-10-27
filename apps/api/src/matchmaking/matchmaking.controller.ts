@@ -53,6 +53,7 @@ export class MatchmakingController {
   }
 
   @Post('leave')
+  @Throttle(MATCHES_THROTTLE)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Leave the matchmaking queue (idempotent).' })
   @ApiResponse({ status: 204 })

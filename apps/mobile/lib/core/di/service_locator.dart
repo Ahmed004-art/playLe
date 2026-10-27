@@ -2,6 +2,7 @@ import 'package:get_it/get_it.dart';
 
 import '../auth/auth_controller.dart';
 import '../auth/auth_repository.dart';
+import '../auth/session_refresher.dart';
 import '../config/app_config.dart';
 import '../network/api_client.dart';
 import '../network/websocket_client.dart';
@@ -54,6 +55,15 @@ Future<void> setupServiceLocator() async {
       config: config,
       getAccessToken: () =>
           sl<SecureStorage>().read(AuthStorageKeys.accessToken),
+      // Resolved lazily at call time: the refresher itself uses this client.
+      refreshSession: () => sl<SessionRefresher>().refresh(),
+    ),
+  );
+  sl.registerLazySingleton<SessionRefresher>(
+    () => SessionRefresher(
+      apiClient: sl<ApiClient>(),
+      secureStorage: sl<SecureStorage>(),
+      onSessionLost: () => sl<AuthController>().sessionExpired(),
     ),
   );
   sl.registerLazySingleton<WebSocketClient>(

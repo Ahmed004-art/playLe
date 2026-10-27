@@ -103,6 +103,7 @@ export class WithdrawalsController {
   }
 
   @Post(':id/cancel')
+  @Throttle(PAYMENTS_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Cancel your own withdrawal while it is still awaiting review.',
