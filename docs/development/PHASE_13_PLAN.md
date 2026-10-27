@@ -159,3 +159,51 @@ only**): injected failure, back-dated event, reported once, no money or status
 change, recovery stops the reporting, recent events not reported, resolved
 anomaly re-raised, conflicting redelivery visible with payload unchanged,
 unmatched events tracked independently via the JSON-path lookup, non-admin 403.
+
+## PR 4 - Withdrawal review-decision race
+
+### Gap
+`approve`, `cancel` and `reject` of a `PENDING_REVIEW` withdrawal each decided
+from a status read outside any transaction and then wrote unconditionally
+(`approve` with a bare `update`, `cancel`/`reject` with a ledger release then an
+`update`). Two overlapping decisions could therefore both win:
+- cancel/reject commits (hold released, status `CANCELLED`/`REJECTED`), then a
+  stale approve overwrites the status to `APPROVED` and submits a payout for a
+  withdrawal whose hold the user already has back;
+- approve commits and submits a payout, then a stale cancel/reject releases the
+  hold and overwrites the status;
+- cancel and reject both release the same hold (a second release takes funds
+  held for another withdrawal).
+
+### Evidence (baseline, before the fix)
+`withdrawals.decision-race.spec.ts` forces each interleaving with a one-shot
+gate (the stale actor has read `PENDING_REVIEW` and is parked before its first
+lock or write; the rival runs to completion; then the stale actor is released).
+Against the unchanged service 6 of its 13 tests failed: a payout was submitted
+after a cancel and after a reject won; the status was overwritten to
+`CANCELLED`/`REJECTED` after an approval won; cancel+reject produced two
+`RELEASE` entries. The remaining 7 (uncontended behaviour, payout-after-commit)
+passed. The harness is an in-memory model of the relevant Postgres semantics,
+not Postgres: the real-database cases are in `test/payments-phase6.e2e-spec.ts`
+and were not run locally.
+
+### Change
+- `cancel` and `reject`: inside their transaction, lock the wallet, claim the
+  withdrawal with `updateMany ... WHERE status = PENDING_REVIEW`, and only the
+  winner writes the `RELEASE` entry. A lost claim is the usual 409 and rolls
+  back with no ledger entry. (`claim`/`claimOrThrow` generalise the PR 2 helper
+  with a `from` set; the terminal-outcome paths are unchanged.)
+- `approve`: one conditional `updateMany ... WHERE status = PENDING_REVIEW`,
+  committed on return, then `submitPayout`. A lost claim is the usual 409 and no
+  provider call is made. The provider is only ever called after the claim has
+  committed (`submitPayout` is unchanged and runs outside any transaction).
+- Lock order: cancel/reject take the wallet lock then the withdrawal row, like
+  every other withdrawal transaction; approve takes only the withdrawal row, so
+  it cannot form a cycle with them.
+- No schema change, no migration, no new status.
+
+### Not changed (observed)
+- `submitPayout` writes `PROCESSING` unconditionally after the provider call, so
+  a payout webhook that finalises the withdrawal while that call is in flight
+  could be overwritten back to `PROCESSING`. Same family, different path;
+  recorded here rather than widened into this PR.
