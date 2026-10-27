@@ -382,3 +382,200 @@ const List<String> _monthNames = [
 String formatShortDate(DateTime date) {
   return '${date.day} ${_monthNames[date.month - 1]} ${date.year}';
 }
+
+// ---------------------------------------------------------------------------
+// Friends, friend requests and blocks (Phase 12 PR 5). Mirrors the DTOs in
+// apps/api/src/friends/dto/friends.dto.ts and apps/api/src/blocks/dto.
+// ---------------------------------------------------------------------------
+
+Map<String, dynamic> _requireObject(Map<String, dynamic> json, String key) {
+  final value = json[key];
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  throw FormatException('Expected an object for "$key"');
+}
+
+/// One page of any cursor-paged list: `{ items, nextCursor }`. `nextCursor` is
+/// `null` on the last page.
+class SocialPage<T> {
+  const SocialPage({required this.items, required this.nextCursor});
+
+  /// Parses a page, parsing every item with [parseItem].
+  static SocialPage<T> parse<T>(
+    Map<String, dynamic> json,
+    T Function(Map<String, dynamic> item) parseItem,
+  ) {
+    return SocialPage<T>(
+      items: _requireObjectList(json, 'items').map(parseItem).toList(),
+      nextCursor: _optionalString(json, 'nextCursor'),
+    );
+  }
+
+  final List<T> items;
+  final String? nextCursor;
+}
+
+/// A friend's best-effort presence. The server only reports presence for a
+/// player's own friends, and reports `OFFLINE` when it does not know. An
+/// unrecognised value is treated as offline rather than shown as online.
+enum FriendPresence {
+  online,
+  inMatch,
+  searching,
+  offline;
+
+  static FriendPresence parse(String? value) {
+    switch (value) {
+      case 'ONLINE':
+        return FriendPresence.online;
+      case 'IN_MATCH':
+        return FriendPresence.inMatch;
+      case 'SEARCHING':
+        return FriendPresence.searching;
+      default:
+        return FriendPresence.offline;
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case FriendPresence.online:
+        return 'Online';
+      case FriendPresence.inMatch:
+        return 'In a match';
+      case FriendPresence.searching:
+        return 'Looking for a match';
+      case FriendPresence.offline:
+        return 'Offline';
+    }
+  }
+}
+
+/// Mirrors `FriendResponseDto`: a friend and their presence.
+class FriendInfo {
+  const FriendInfo({
+    required this.userId,
+    required this.username,
+    required this.displayName,
+    required this.presence,
+    required this.friendsSince,
+  });
+
+  factory FriendInfo.fromJson(Map<String, dynamic> json) {
+    return FriendInfo(
+      userId: _requireString(json, 'userId'),
+      username: _requireString(json, 'username'),
+      displayName: _optionalString(json, 'displayName'),
+      // Best-effort: a missing or oddly-typed presence is offline, and never
+      // fails the whole friend.
+      presence: FriendPresence.parse(
+        json['presence'] is String ? json['presence'] as String : null,
+      ),
+      friendsSince: _requireDate(json, 'friendsSince'),
+    );
+  }
+
+  final String userId;
+  final String username;
+  final String? displayName;
+  final FriendPresence presence;
+  final DateTime friendsSince;
+
+  String get displayLabel => playerDisplayLabel(displayName, username);
+}
+
+enum FriendRequestDirection {
+  incoming,
+  outgoing;
+
+  /// The value of the API's `direction` query parameter.
+  String get apiValue => name;
+}
+
+/// Mirrors `FriendRequestResponseDto`. [direction] is relative to the signed-in
+/// player and [player] is the *other* player in the request.
+class FriendRequestInfo {
+  const FriendRequestInfo({
+    required this.id,
+    required this.status,
+    required this.direction,
+    required this.player,
+    required this.createdAt,
+    required this.respondedAt,
+  });
+
+  factory FriendRequestInfo.fromJson(Map<String, dynamic> json) {
+    final direction = _requireString(json, 'direction');
+    return FriendRequestInfo(
+      id: _requireString(json, 'id'),
+      status: _requireString(json, 'status'),
+      direction: switch (direction) {
+        'INCOMING' => FriendRequestDirection.incoming,
+        'OUTGOING' => FriendRequestDirection.outgoing,
+        _ => throw FormatException('Unknown request direction "$direction"'),
+      },
+      player: PlayerSummary.fromJson(_requireObject(json, 'player')),
+      createdAt: _requireDate(json, 'createdAt'),
+      respondedAt: _optionalDate(json, 'respondedAt'),
+    );
+  }
+
+  final String id;
+
+  /// `PENDING`, `ACCEPTED`, `DECLINED` or `CANCELLED`. Sending a request to
+  /// someone who had already asked you accepts theirs instead, so a freshly
+  /// sent request can come back `ACCEPTED`.
+  final String status;
+  final FriendRequestDirection direction;
+  final PlayerSummary player;
+  final DateTime createdAt;
+  final DateTime? respondedAt;
+
+  bool get isPending => status == 'PENDING';
+  bool get isAccepted => status == 'ACCEPTED';
+}
+
+/// Mirrors the blocks API's `BlockResponseDto`: a player the signed-in player
+/// has blocked. The API never reveals who has blocked *them*.
+class BlockedPlayer {
+  const BlockedPlayer({
+    required this.userId,
+    required this.username,
+    required this.displayName,
+    required this.blockedAt,
+  });
+
+  factory BlockedPlayer.fromJson(Map<String, dynamic> json) {
+    return BlockedPlayer(
+      userId: _requireString(json, 'userId'),
+      username: _requireString(json, 'username'),
+      displayName: _optionalString(json, 'displayName'),
+      blockedAt: _requireDate(json, 'blockedAt'),
+    );
+  }
+
+  final String userId;
+  final String username;
+  final String? displayName;
+  final DateTime blockedAt;
+
+  String get displayLabel => playerDisplayLabel(displayName, username);
+}
+
+/// Mirrors `UserLookupResponseDto`: `GET /users/lookup?username=`. A player who
+/// does not exist and one who has blocked the caller are indistinguishable
+/// (both 404), by design.
+class PlayerLookupResult {
+  const PlayerLookupResult({required this.id, required this.username});
+
+  factory PlayerLookupResult.fromJson(Map<String, dynamic> json) {
+    return PlayerLookupResult(
+      id: _requireString(json, 'id'),
+      username: _requireString(json, 'username'),
+    );
+  }
+
+  final String id;
+  final String username;
+}

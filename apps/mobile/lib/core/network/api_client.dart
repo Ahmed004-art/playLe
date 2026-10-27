@@ -78,6 +78,16 @@ class ApiClient {
     }
   }
 
+  /// `DELETE path`. Used by the Phase 12 social endpoints (remove a friend,
+  /// unblock a player), which answer `204 No Content`.
+  Future<Response<T>> delete<T>(String path) async {
+    try {
+      return await _dio.delete<T>(path);
+    } on DioException catch (e) {
+      throw _toNetworkException(e);
+    }
+  }
+
   NetworkException _toNetworkException(DioException e) {
     final body = e.response?.data;
     String message = e.message ?? 'Network request failed';

@@ -32,8 +32,8 @@ before implementation; this file tracks it PR by PR. Anything not listed under
 | 1 | Blocking foundation: `user_blocks` migration, `match_players(userId)` index, block/unblock/list API, block checks in challenge create and accept, pair lock, opt-in `social` throttler, ADR-026 | **Merged** (PR #15, `462bc6b`; CI green) |
 | 2 | Profiles and stats: `GET users/:id/profile`, `GET users/summaries`, block-aware `GET users/lookup`, `BlocksService.relationsBetween`, one shared visibility policy | **Merged** (PR #16, `7098c2b`) |
 | 3 | Friends: `FriendRequest`/`Friendship` (+ migration with CHECK constraints), request lifecycle and friends API, friends list with batch presence, block cascade to friendships and requests, per-player friend slots for the limits, `friend:request-received`/`friend:request-accepted` events | **Merged** (PR #17, `56d69c8`) |
-| 4 | Flutter part 1: player profile screen, match history screen, social data layer, Account entries and routes | Implemented locally on `feat/phase-12-mobile-profiles-history`, **not pushed**. **`flutter analyze`, `flutter test` and `dart format` were NOT RUN** (no Flutter SDK available here); CI's Mobile job is the first run. Not run on a device or emulator. |
-| 5 | Flutter part 2: friends/requests/blocked screens, challenge from friend | Not started |
+| 4 | Flutter part 1: player profile screen, match history screen, social data layer, Account entries and routes | **Merged** (PR #18, `3a3a1ff`; Backend, Admin and Mobile CI green) |
+| 5 | Flutter part 2: Friends screen (Friends / Requests / Blocked tabs), find a player, friend requests, remove friend, block / unblock, challenge a friend, realtime hints | Implemented locally on `feat/phase-12-mobile-friends`, **not pushed**. Locally: `dart format` clean, `dart analyze --fatal-infos` clean, `flutter test` **505 passed, 0 failed**. `flutter build apk --debug` NOT RUN (no Android SDK). Not run on a device or emulator. CI is not yet run on this branch. |
 
 ## PR 1 notes
 - **Block cascade to friendships and friend requests** could not exist before
@@ -150,6 +150,69 @@ exist on `main`.
   nothing was seen on a device or emulator (OUTSTANDING_WORK items 22 and 25
   still apply).
 
+## PR 5 notes
+Mobile only; no backend change. Everything uses endpoints that already exist on
+`main` (ADR-026, "Friends (PR 3)").
+- **Screen and route**: `/friends` (`FriendsScreen`), opened from a new
+  **Friends** button on the Account screen. Three tabs - **Friends**,
+  **Requests** (Incoming and Sent) and **Blocked** - plus a **Find a player**
+  action in the app bar (exact-username search).
+- **Endpoints used**: `GET /friends` (with presence), `GET /friends/requests?
+  direction=incoming|outgoing`, `POST /friends/requests`,
+  `POST /friends/requests/:id/accept|decline|cancel`, `DELETE /friends/:userId`,
+  `GET /blocks`, `POST /blocks`, `DELETE /blocks/:userId`,
+  `GET /users/lookup?username=` (block-aware), `GET /games`, and the existing
+  `POST /challenges` through `ChallengesController.challengeByUserId` (a small
+  additive method; no username lookup needed). `ApiClient` gained `delete`.
+- **Realtime**: `friend:request-received` and `friend:request-accepted`, via the
+  existing `WebSocketClient`. They are **hints only**: an event makes the app
+  re-fetch the affected lists, and the lists show what the server answers (an
+  event the server does not back up changes nothing). Listeners are added once
+  per screen and removed when it is disposed. Same limitation as the existing
+  challenge events: `WebSocketClient.on` attaches to the current socket, so a
+  later reconnect that replaces the socket drops them until the screen is
+  reopened.
+- **Confirmed responses only.** An action is sent; only after the server
+  accepts it does anything change, and the affected lists are then re-fetched. A
+  failure shows the server's own reason (e.g. "You have blocked this player",
+  "This friend request is no longer pending") and, for a request that has
+  already gone, re-fetches so the stale row disappears.
+- **No duplicate submissions.** An action on a request, or on a player, is
+  ignored while one is in flight for it (buttons are disabled and a spinner
+  shows); a search cannot be started twice.
+- **Blocking** follows the backend exactly: blocking asks for confirmation,
+  then re-fetches every list (the server removes the friendship and cancels
+  requests). **Unblocking restores nothing** - only the Blocked list is
+  refreshed, and the message says friendships and requests are not restored.
+- **Challenging** is offered only from the Friends tab (a friend can never be a
+  blocked player; a blocked player is not on that list), is **free play only**
+  (Plan decision 4: no stake UI), and picks a game from `GET /games`. The server
+  decides whether it is allowed and its reason is shown as it is (blocked,
+  already in a match, duplicate challenge); an unavailable player is "That
+  player is unavailable right now." After sending, the snackbar offers **Open
+  lobby**, since the opponent accepts from that game's lobby (existing flow).
+- **Find a player** uses the block-aware lookup, so a player who has blocked you
+  and one that does not exist both read "No player found with that username."
+  The result card hints at the relationship from the **pages loaded so far**
+  (friend / request sent / request received / blocked) and offers the matching
+  action; the server still has the last word.
+- **401** on a list shows "Your session has expired" with **Sign in again**
+  (the existing `AuthController.logout()`); on an action, a snackbar with the
+  same action. There is still no global refresh-on-401 (see PR 4 notes).
+- **Verification actually run (locally, Dart/Flutter 3.12.2 / 3.44.4)**:
+  `dart format --output=none --set-exit-if-changed .` clean;
+  `dart analyze --fatal-infos` no issues; `flutter test` (the whole suite)
+  **505 passed, 0 failed**, including 129 new tests for the models, the HTTP
+  repository over a stubbed adapter, the paged-list and hub controllers
+  (in-flight guards, block/unblock semantics, challenge errors, realtime
+  subscribe/unsubscribe), and the screen (every tab and flow, 401, pagination,
+  navigation, listener cleanup). **Not run**: `flutter build apk --debug` (no
+  Android SDK here) and anything on a device or emulator; CI's Mobile job is the
+  first Android build.
+- **Limitations**: the friends list shows presence as last reported (up to ~30 s
+  stale); lists are re-fetched rather than patched, so a very long list returns
+  to its first page after an action; there is no search by display name (the API
+  has none); no avatar images (the API has none).
 ## Verification standard
 Each PR: API unit tests, typecheck, lint, format; Flutter analyze/test for
 mobile PRs. Database-backed e2e suites run only in CI (no local database);

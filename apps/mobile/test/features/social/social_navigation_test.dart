@@ -69,6 +69,35 @@ void main() {
     );
 
     testWidgets(
+      '"Friends" opens the friends screen, and back returns to the hub',
+      (tester) async {
+        final social = FakeSocialRepository();
+        final auth = await signedIn();
+        useTallScreen(tester);
+        await tester.pumpWidget(
+          socialApp(buildSocialRouter(auth: auth.controller, social: social)),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.ensureVisible(find.text('Friends'));
+        await tester.tap(find.text('Friends'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Requests'),
+          findsOneWidget,
+        ); // a tab of the new screen
+        expect(find.text('Blocked'), findsOneWidget);
+        expect(social.callsTo('friends'), 1);
+
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+
+        expect(find.text('@playerone'), findsOneWidget);
+        expect(find.text('Requests'), findsNothing);
+      },
+    );
+    testWidgets(
       'both entries sit beside the existing ones, which are still there',
       (tester) async {
         final social = FakeSocialRepository();
@@ -82,6 +111,7 @@ void main() {
         for (final label in [
           'Games',
           'Wallet',
+          'Friends',
           'My profile',
           'Match history',
           'My Disputes',

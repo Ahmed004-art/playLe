@@ -5,12 +5,14 @@ import 'package:playle_mobile/core/auth/app_user.dart';
 import 'package:playle_mobile/core/auth/auth_controller.dart';
 import 'package:playle_mobile/core/theme/app_theme.dart';
 import 'package:playle_mobile/features/auth/account_screen.dart';
+import 'package:playle_mobile/features/social/friends_screen.dart';
 import 'package:playle_mobile/features/social/match_history_screen.dart';
 import 'package:playle_mobile/features/social/player_profile_screen.dart';
 
 import '../../core/auth/fake_auth_repository.dart';
 import '../../core/games/fake_games_repository.dart';
 import '../../core/social/fake_social_repository.dart';
+import '../../core/social/friends_harness.dart';
 
 /// The signed-in player used across the social widget tests. Its id is a
 /// real UUID (see `fake_social_repository.dart`), unlike `testUser`.
@@ -43,14 +45,23 @@ GoRouter buildSocialRouter({
   required AuthController auth,
   required FakeSocialRepository social,
   FakeGamesRepository? games,
+  FriendsHarness? friends,
   String initialLocation = '/account',
 }) {
+  final friendsHarness = friends ?? FriendsHarness(social: social);
   return GoRouter(
     initialLocation: initialLocation,
     routes: [
       GoRoute(
         path: '/account',
         builder: (context, state) => AccountScreen(authController: auth),
+      ),
+      GoRoute(
+        path: '/friends',
+        builder: (context, state) => FriendsScreen(
+          authController: auth,
+          createController: friendsHarness.create,
+        ),
       ),
       GoRoute(
         path: '/players/:userId',
