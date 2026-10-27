@@ -22,6 +22,7 @@ import '../match/match_controller.dart';
 import '../match/match_repository.dart';
 import '../mfa/mfa_controller.dart';
 import '../mfa/mfa_repository.dart';
+import '../social/social_repository.dart';
 import '../sessions/sessions_controller.dart';
 import '../sessions/sessions_repository.dart';
 import '../responsible_gaming/responsible_gaming_controller.dart';
@@ -120,6 +121,10 @@ Future<void> setupServiceLocator() async {
       sl<WebSocketClient>(),
       sl<RealtimeConnectionManager>(),
     ),
+  );
+
+  sl.registerLazySingleton<SocialRepository>(
+    () => HttpSocialRepository(apiClient: sl<ApiClient>()),
   );
 
   sl.registerLazySingleton<DisputesRepository>(

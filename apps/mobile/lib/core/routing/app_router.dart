@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart' show ValueKey;
 import 'package:go_router/go_router.dart';
 
 import '../auth/auth_controller.dart';
@@ -22,12 +23,16 @@ import '../../features/disputes/disputes_screen.dart';
 import '../../features/games/game_lobby_screen.dart';
 import '../../features/games/games_catalog_screen.dart';
 import '../../features/games/match_screen.dart';
+import '../../features/social/match_history_screen.dart';
+import '../../features/social/player_profile_screen.dart';
 import '../../features/wallet/deposit_screen.dart';
 import '../../features/wallet/wallet_screen.dart';
 import '../../features/wallet/withdraw_screen.dart';
 import '../mfa/mfa_controller.dart';
+import '../games/games_repository.dart';
 import '../responsible_gaming/responsible_gaming_controller.dart';
 import '../sessions/sessions_controller.dart';
+import '../social/social_repository.dart';
 
 const _publicRoutes = {'/', '/login', '/register', '/password-reset'};
 
@@ -173,6 +178,32 @@ GoRouter buildAppRouter(
             disputesController: disputesController,
           );
         },
+      ),
+      // Public player profiles (Phase 12). The id comes from the route, so a
+      // stale or hand-edited link is handled by the screen ("Player not
+      // found"), not trusted. `ValueKey(userId)` gives every profile its own
+      // screen state, so going from one profile to another never reuses the
+      // previous player's loaded data.
+      GoRoute(
+        path: '/players/:userId',
+        builder: (context, state) {
+          final userId = state.pathParameters['userId']!;
+          return PlayerProfileScreen(
+            key: ValueKey(userId),
+            userId: userId,
+            repository: sl<SocialRepository>(),
+            authController: authController,
+          );
+        },
+      ),
+      // `/history`, not `/matches/history`: `/matches/:matchId` would claim it.
+      GoRoute(
+        path: '/history',
+        builder: (context, state) => MatchHistoryScreen(
+          repository: sl<SocialRepository>(),
+          gamesRepository: sl<GamesRepository>(),
+          authController: authController,
+        ),
       ),
       GoRoute(
         path: '/disputes',

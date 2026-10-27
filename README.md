@@ -15,10 +15,11 @@ receives the remaining 90%.
 > behavior and adds no chat, feed, groups or followers. Design:
 > [ADR-026](docs/decisions/ADR-026-social-foundation.md); plan and PR-by-PR
 > status: [`PHASE_12_PLAN.md`](docs/development/PHASE_12_PLAN.md). PR 1
-> (blocking) and PR 2 (profiles, summaries, match statistics, block-aware
-> lookup) are merged; PR 3 (friends, friend requests, friend presence,
-> realtime events) is implemented and awaiting review; the Flutter screens
-> are not started.
+> (blocking), PR 2 (profiles, summaries, match statistics, block-aware
+> lookup) and PR 3 (friends, friend requests, friend presence, realtime
+> events) are merged; PR 4 (Flutter player profile and match history
+> screens) is implemented and awaiting review - its Flutter checks have not
+> been run; the friends/requests/blocked screens (PR 5) are not started.
 >
 > *Previous phase — Phase 11 (verification, security and engineering
 > hardening):*

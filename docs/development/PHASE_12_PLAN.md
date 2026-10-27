@@ -31,8 +31,8 @@ before implementation; this file tracks it PR by PR. Anything not listed under
 |---|---|---|
 | 1 | Blocking foundation: `user_blocks` migration, `match_players(userId)` index, block/unblock/list API, block checks in challenge create and accept, pair lock, opt-in `social` throttler, ADR-026 | **Merged** (PR #15, `462bc6b`; CI green) |
 | 2 | Profiles and stats: `GET users/:id/profile`, `GET users/summaries`, block-aware `GET users/lookup`, `BlocksService.relationsBetween`, one shared visibility policy | **Merged** (PR #16, `7098c2b`) |
-| 3 | Friends: `FriendRequest`/`Friendship` (+ migration with CHECK constraints), request lifecycle and friends API, friends list with batch presence, block cascade to friendships and requests, per-player friend slots for the limits, `friend:request-received`/`friend:request-accepted` events | Implemented locally on `feat/phase-12-friends-presence`, **not pushed**; database-backed tests unverified until CI |
-| 4 | Flutter part 1: social models/controller, match history, profile screen, navigation | Not started |
+| 3 | Friends: `FriendRequest`/`Friendship` (+ migration with CHECK constraints), request lifecycle and friends API, friends list with batch presence, block cascade to friendships and requests, per-player friend slots for the limits, `friend:request-received`/`friend:request-accepted` events | **Merged** (PR #17, `56d69c8`) |
+| 4 | Flutter part 1: player profile screen, match history screen, social data layer, Account entries and routes | Implemented locally on `feat/phase-12-mobile-profiles-history`, **not pushed**. **`flutter analyze`, `flutter test` and `dart format` were NOT RUN** (no Flutter SDK available here); CI's Mobile job is the first run. Not run on a device or emulator. |
 | 5 | Flutter part 2: friends/requests/blocked screens, challenge from friend | Not started |
 
 ## PR 1 notes
@@ -93,6 +93,62 @@ Full design, error semantics and limitations: ADR-026, "Friends (PR 3)".
   `RealtimeModule` directly (it is not part of the Users/Blocks/Auth/Realtime
   import cycle). Verified by composing `AppModule` in a throwaway test.
 - Not built: Flutter screens, any friends UI, challenge-from-friend (PRs 4-5).
+
+## PR 4 notes
+Mobile only; no backend change. Everything here uses endpoints that already
+exist on `main`.
+- **Screens and routes** (all behind the existing auth redirect):
+  `/players/:userId` (`PlayerProfileScreen`, any player, and the signed-in
+  player's own profile) and `/history` (`MatchHistoryScreen`). `/history`, not
+  `/matches/history`, because `/matches/:matchId` would claim it. The Account
+  screen gains **My profile** and **Match history** buttons.
+- **Profile** (`GET /users/:id/profile`): display name (falling back to the
+  username when unset), `@username`, games played, wins, draws, losses, a
+  proportional win/draw/loss bar and three stat tiles. There is no avatar image
+  (the API has none); the avatar is the player's initials. Loading, retryable
+  error, "Player not found" (404 and 400 look the same, as the API intends),
+  and "session expired" states. A route id that is not a UUID never reaches the
+  server.
+- **Match history** (`GET /matches`, cursor-paged, plus one
+  `GET /users/summaries` per page for opponent names and one `GET /games` for
+  game names): game, opponent, result, how it ended and the date. **No
+  backend dependency remains**: the endpoint existed from Phase 4 and already
+  returns what is needed. Loading, empty, populated, error, retry, "Load more"
+  and a retry for a failed next page. Tapping a row opens the opponent's profile
+  when the match had exactly one opponent.
+- **Result mapping** follows the stored result and the same rules as the
+  server's statistics: Won / Lost / Draw only for a `COMPLETED` match whose
+  stored result is consistent (a winner who is a player, or an explicit draw
+  with no winner); `ABANDONED` is shown as abandoned even if a winner is stored
+  (never inferred from a disconnect); `CANCELLED`/`EXPIRED` as cancelled;
+  `WAITING`/`READY`/`ACTIVE` as in progress; anything inconsistent as "Result
+  not recorded".
+- **Not shown, and not available from the API to show:** stakes, money,
+  settlement. The history contract carries none. There is no per-game or
+  per-date filter (the server has none yet).
+- **Names the API will not reveal** (a player with a block against the viewer
+  in either direction, or an inactive one) are absent from the summaries
+  response and are shown as "Player unavailable", never guessed.
+- **Unauthorized (401).** The app has no global token-refresh-on-401 (refresh
+  happens only when a saved session is restored at start-up), so a session that
+  expires mid-use surfaces as a 401 on every screen. These two screens show
+  "Your session has expired" with **Sign in again**, which calls the existing
+  `AuthController.logout()` (the router then returns to the welcome screen). A
+  global 401 handler would be a separate piece of work.
+- **Data layer** (`core/social/`): typed models with defensive parsing (a
+  missing statistic is an error, never `0`), `SocialRepository` (+ HTTP
+  implementation), two `ChangeNotifier` controllers following the existing
+  pattern. Controllers never double-fetch, drop replies that arrive after
+  dispose, and keep networking out of `build`.
+- **Verification.** Tests were written for models and parsing, the HTTP
+  repository over a stubbed Dio adapter (paths, query, chunking at 50 ids,
+  error mapping), both controllers, both screens (loading / error / retry / 404
+  / 401 / empty / populated / pagination / navigation / privacy) and a
+  320-390 px x 1.0-2.0x text layout matrix. **None of it has been run**: no
+  Flutter SDK is available in the environment this was written in, so
+  `flutter analyze`, `flutter test` and `dart format` are unverified, and
+  nothing was seen on a device or emulator (OUTSTANDING_WORK items 22 and 25
+  still apply).
 
 ## Verification standard
 Each PR: API unit tests, typecheck, lint, format; Flutter analyze/test for
