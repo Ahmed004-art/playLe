@@ -63,6 +63,20 @@ class ChallengesController extends ChangeNotifier {
     return challenge;
   }
 
+  /// Creates a free-play challenge to a player whose id is already known
+  /// (e.g. a friend picked from the Friends screen), so no username lookup is
+  /// needed. The server enforces every rule - blocks, an unavailable player, a
+  /// match already in progress, a duplicate challenge - and its
+  /// [NetworkException] (with the reason) propagates to the caller.
+  Future<ChallengeInfo> challengeByUserId(
+    String gameId,
+    String opponentUserId,
+  ) async {
+    final challenge = await _repository.create(gameId, opponentUserId);
+    await refresh();
+    return challenge;
+  }
+
   Future<void> accept(String challengeId) async {
     await _repository.accept(challengeId);
     await refresh();

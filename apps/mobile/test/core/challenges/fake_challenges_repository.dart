@@ -16,6 +16,10 @@ class FakeChallengesRepository implements ChallengesRepository {
   List<ChallengeInfo> challengesToReturn = [];
   String userIdToReturn = 'user-2';
   MatchStakeRequest? lastStakeRequested;
+  String? lastCreatedGameId;
+  String? lastCreatedOpponentId;
+  int lookupCalls = 0;
+  Object? createError;
 
   @override
   Future<ChallengeInfo> create(
@@ -24,6 +28,12 @@ class FakeChallengesRepository implements ChallengesRepository {
     MatchStakeRequest? stake,
   }) async {
     lastStakeRequested = stake;
+    lastCreatedGameId = gameId;
+    lastCreatedOpponentId = opponentUserId;
+    final error = createError;
+    if (error != null) {
+      throw error;
+    }
     return testChallenge;
   }
 
@@ -43,8 +53,10 @@ class FakeChallengesRepository implements ChallengesRepository {
       _withStatus('CANCELLED');
 
   @override
-  Future<String> lookupUserIdByUsername(String username) async =>
-      userIdToReturn;
+  Future<String> lookupUserIdByUsername(String username) async {
+    lookupCalls++;
+    return userIdToReturn;
+  }
 
   ChallengeInfo _withStatus(String status) => ChallengeInfo(
     id: testChallenge.id,

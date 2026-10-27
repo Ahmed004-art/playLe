@@ -23,6 +23,7 @@ import '../../features/disputes/disputes_screen.dart';
 import '../../features/games/game_lobby_screen.dart';
 import '../../features/games/games_catalog_screen.dart';
 import '../../features/games/match_screen.dart';
+import '../../features/social/friends_screen.dart';
 import '../../features/social/match_history_screen.dart';
 import '../../features/social/player_profile_screen.dart';
 import '../../features/wallet/deposit_screen.dart';
@@ -32,6 +33,9 @@ import '../mfa/mfa_controller.dart';
 import '../games/games_repository.dart';
 import '../responsible_gaming/responsible_gaming_controller.dart';
 import '../sessions/sessions_controller.dart';
+import '../network/websocket_client.dart';
+import '../realtime/realtime_connection_manager.dart';
+import '../social/friends_hub_controller.dart';
 import '../social/social_repository.dart';
 
 const _publicRoutes = {'/', '/login', '/register', '/password-reset'};
@@ -178,6 +182,23 @@ GoRouter buildAppRouter(
             disputesController: disputesController,
           );
         },
+      ),
+      // Friends, friend requests and blocked players (Phase 12 PR 5). The
+      // screen builds its own controller once, for the signed-in player, and
+      // disposes it (and its realtime listeners) with the screen.
+      GoRoute(
+        path: '/friends',
+        builder: (context, state) => FriendsScreen(
+          authController: authController,
+          createController: (myUserId) => FriendsHubController(
+            social: sl<SocialRepository>(),
+            games: sl<GamesRepository>(),
+            createChallenge: challengesController.challengeByUserId,
+            webSocketClient: sl<WebSocketClient>(),
+            realtimeConnectionManager: sl<RealtimeConnectionManager>(),
+            myUserId: myUserId,
+          ),
+        ),
       ),
       // Public player profiles (Phase 12). The id comes from the route, so a
       // stale or hand-edited link is handled by the screen ("Player not

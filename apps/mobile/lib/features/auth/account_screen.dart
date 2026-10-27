@@ -7,8 +7,8 @@ import '../../core/theme/app_colors.dart';
 import 'verification_dialog.dart';
 
 /// The authenticated landing screen — a minimal hub linking out to
-/// Games, Wallet, the player's own profile and match history (Phase 12).
-/// Friends and blocking screens arrive in a later Phase 12 PR.
+/// Games, Wallet, Friends, the player's own profile and match history
+/// (Phase 12).
 ///
 /// Takes [authController] explicitly (rather than pulling it from the
 /// global service locator itself) so it always renders the same
@@ -98,6 +98,11 @@ class AccountScreen extends StatelessWidget {
                   FilledButton(
                     onPressed: () => context.push('/wallet'),
                     child: const Text('Wallet'),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: () => context.push('/friends'),
+                    child: const Text('Friends'),
                   ),
                   const SizedBox(height: 12),
                   OutlinedButton(

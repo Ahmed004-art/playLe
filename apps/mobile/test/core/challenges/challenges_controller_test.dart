@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:playle_mobile/core/challenges/challenges_controller.dart';
 import 'package:playle_mobile/core/challenges/challenges_state.dart';
 import 'package:playle_mobile/core/config/app_config.dart';
+import 'package:playle_mobile/core/errors/app_exception.dart';
 import 'package:playle_mobile/core/match_stakes/match_stake_models.dart';
 import 'package:playle_mobile/core/network/websocket_client.dart';
 import 'package:playle_mobile/core/realtime/realtime_connection_manager.dart';
@@ -34,6 +35,48 @@ void main() {
       expect(controller.state, isA<ChallengesLoading>());
     });
 
+    test(
+      'challengeByUserId creates a free-play challenge without a lookup',
+      () async {
+        final repo = FakeChallengesRepository();
+        final controller = _buildController(repo);
+
+        final result = await controller.challengeByUserId(
+          'tic_tac_toe',
+          'user-77',
+        );
+
+        expect(result.id, testChallenge.id);
+        expect(repo.lastCreatedGameId, 'tic_tac_toe');
+        expect(repo.lastCreatedOpponentId, 'user-77');
+        expect(repo.lastStakeRequested, isNull); // free play, never a stake
+        expect(repo.lookupCalls, 0);
+        expect(controller.state, isA<ChallengesLoaded>()); // refreshed
+      },
+    );
+
+    test(
+      'challengeByUserId lets the server\'s refusal reach the caller',
+      () async {
+        final repo = FakeChallengesRepository()
+          ..createError = const NetworkException(
+            'You have blocked this player',
+            statusCode: 409,
+          );
+        final controller = _buildController(repo);
+
+        await expectLater(
+          controller.challengeByUserId('tic_tac_toe', 'user-77'),
+          throwsA(
+            isA<NetworkException>().having(
+              (e) => e.message,
+              'message',
+              'You have blocked this player',
+            ),
+          ),
+        );
+      },
+    );
     test('refresh loads the challenge list', () async {
       final repo = FakeChallengesRepository()
         ..challengesToReturn = [testChallenge];

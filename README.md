@@ -16,10 +16,10 @@ receives the remaining 90%.
 > [ADR-026](docs/decisions/ADR-026-social-foundation.md); plan and PR-by-PR
 > status: [`PHASE_12_PLAN.md`](docs/development/PHASE_12_PLAN.md). PR 1
 > (blocking), PR 2 (profiles, summaries, match statistics, block-aware
-> lookup) and PR 3 (friends, friend requests, friend presence, realtime
-> events) are merged; PR 4 (Flutter player profile and match history
-> screens) is implemented and awaiting review - its Flutter checks have not
-> been run; the friends/requests/blocked screens (PR 5) are not started.
+> lookup), PR 3 (friends, friend requests, friend presence, realtime
+> events) and PR 4 (Flutter player profile and match history screens) are
+> merged; PR 5 (Flutter Friends screen: friends, requests, blocks, challenge
+> a friend, realtime hints) is implemented and awaiting review.
 >
 > *Previous phase — Phase 11 (verification, security and engineering
 > hardening):*
