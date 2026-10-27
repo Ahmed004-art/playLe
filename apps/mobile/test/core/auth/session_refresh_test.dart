@@ -119,7 +119,43 @@ class _Harness {
 Matcher _status(int code) =>
     isA<NetworkException>().having((e) => e.statusCode, 'statusCode', code);
 
+class _RecordingStorage extends FakeSecureStorage {
+  final List<String> writes = [];
+
+  @override
+  Future<void> write(String key, String value) {
+    writes.add(key);
+    return super.write(key, value);
+  }
+}
+
 void main() {
+  test('stores the rotated refresh token before the access token', () async {
+    final storage = _RecordingStorage();
+    await storage.write(AuthStorageKeys.refreshToken, 'refresh-1');
+    storage.writes.clear();
+    final server = _FakeServer();
+    final refresher = SessionRefresher(
+      apiClient: ApiClient(
+        config: _Harness._config,
+        dio: Dio(BaseOptions(baseUrl: 'http://test.invalid/api/v1'))
+          ..httpClientAdapter = server,
+      ),
+      secureStorage: storage,
+      onSessionLost: () {},
+    );
+
+    await refresher.refresh();
+
+    // If the app dies between the two writes, the surviving refresh token must
+    // be the new one: the old one was just rotated out and reusing it would
+    // revoke the whole session.
+    expect(storage.writes, [
+      AuthStorageKeys.refreshToken,
+      AuthStorageKeys.accessToken,
+    ]);
+  });
+
   test('a 401 is renewed once and the request is retried', () async {
     final h = _Harness();
 

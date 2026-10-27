@@ -71,8 +71,13 @@ class SessionRefresher {
         );
         return SessionRefreshResult.unavailable;
       }
-      await secureStorage.write(AuthStorageKeys.accessToken, access);
+      // Two writes cannot be made atomic, so order them for the failure that
+      // matters: the server has already rotated the refresh token, and the old
+      // one is now a reuse trap. Store the new refresh token first; if the app
+      // dies before the access token is stored, the stale access token just
+      // 401s and the next refresh uses the valid new refresh token.
       await secureStorage.write(AuthStorageKeys.refreshToken, refresh);
+      await secureStorage.write(AuthStorageKeys.accessToken, access);
       return SessionRefreshResult.refreshed;
     } on NetworkException catch (e) {
       final code = e.statusCode;

@@ -43,6 +43,19 @@ previously limited only by the accidental global application.
 Mobile start-up no longer has its own refresh: `HttpAuthRepository.loadSession`
 relies on the single-flight `SessionRefresher` via `ApiClient`.
 
+### Decisions (owner, Phase 13 PR 1 review)
+- The Monime webhook stays on the **default** limit; it is not exempt. It
+  verifies the signature first (401 and nothing processed if it fails), records
+  each delivery in `ProviderEvent` (unique provider + event id, so a duplicate
+  is ignored by the database constraint) and answers 200 to every authenticated
+  delivery.
+- Admin finance mutations stay on the default limit in this PR.
+- **Follow-up (not in this PR):** stricter, operation-specific throttling for
+  admin finance mutations (wallet adjustments, withdrawal approve/reject/
+  complete/fail) and a deliberate policy for webhook bursts.
+- Phase 12 PR 5 (#19) was still open: this branch does not include the mobile
+  friends screens or `ApiClient.delete`.
+
 ### Not changed / open
 - Webhook, admin finance and other previously accidentally-throttled routes are
   now governed by the default limit only.
