@@ -119,8 +119,13 @@ class HttpAuthRepository implements AuthRepository {
       final response = await apiClient.get<Map<String, dynamic>>('/auth/me');
       return AppUser.fromJson(response.data!);
     } on NetworkException catch (e) {
+      // `ApiClient` has already renewed an expired access token and retried
+      // (see `SessionRefresher`), so a 401 that gets here means the session is
+      // really over. Refreshing again here would race that single-flight
+      // refresh and present an already-rotated token.
       if (e.statusCode == 401) {
-        return _tryRefresh();
+        await _clearSession();
+        return null;
       }
       rethrow;
     }
@@ -130,25 +135,6 @@ class HttpAuthRepository implements AuthRepository {
   Future<AppUser> fetchCurrentUser() async {
     final response = await apiClient.get<Map<String, dynamic>>('/auth/me');
     return AppUser.fromJson(response.data!);
-  }
-
-  Future<AppUser?> _tryRefresh() async {
-    final refreshToken = await secureStorage.read(AuthStorageKeys.refreshToken);
-    if (refreshToken == null) {
-      await _clearSession();
-      return null;
-    }
-
-    try {
-      final response = await apiClient.post<Map<String, dynamic>>(
-        '/auth/refresh',
-        data: {'refreshToken': refreshToken},
-      );
-      return _persistAuthResponse(response.data!);
-    } on NetworkException {
-      await _clearSession();
-      return null;
-    }
   }
 
   @override

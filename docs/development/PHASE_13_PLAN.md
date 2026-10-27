@@ -26,6 +26,23 @@ was still an open PR (#19) at the time, so this branch does not contain it.
    withdrawal cancel, challenge decline/cancel, matchmaking leave) now carry an
    explicit decorator. Test: `src/common/opt-in-throttle.spec.ts` (real guard).
 
+### Throttle policy (reviewed)
+`src/common/throttle-policy.spec.ts` reads the real controllers and pins which
+routes carry which opt-in limit. Sensitive routes keep an explicit limit:
+`auth` for register/login/MFA verify/refresh/change-password/MFA enroll,
+confirm and disable/admin login, MFA verify and refresh; `matches` for
+challenge create/accept/decline/cancel, matchmaking join/leave, match command
+and stake confirm; `payments` for deposit and withdrawal creation and
+withdrawal cancel. Reads, `logout` and the Monime webhook intentionally use the
+default limit only (the webhook contract says a valid sender must not be pushed
+into a retry storm; a stricter or exempt policy for it is a decision not made
+here). Admin finance mutations, session revoke and responsible-gaming limit
+routes are authenticated and also on the default limit only; they were
+previously limited only by the accidental global application.
+`auth/me` is the one `/auth/*` route the mobile client refreshes on 401.
+Mobile start-up no longer has its own refresh: `HttpAuthRepository.loadSession`
+relies on the single-flight `SessionRefresher` via `ApiClient`.
+
 ### Not changed / open
 - Webhook, admin finance and other previously accidentally-throttled routes are
   now governed by the default limit only.

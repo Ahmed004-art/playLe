@@ -51,6 +51,15 @@ class _FakeServer implements HttpClientAdapter {
       }, 200);
     }
     if (options.headers['Authorization'] == 'Bearer $validAccess') {
+      if (options.path == '/auth/me') {
+        return _reply({
+          'id': 'u1',
+          'email': 'a@b.co',
+          'username': 'ada',
+          'role': 'USER',
+          'status': 'ACTIVE',
+        }, 200);
+      }
       return _reply({'ok': true}, 200);
     }
     return _reply({'message': 'expired'}, 401);
@@ -231,4 +240,43 @@ void main() {
       expect(controller.state, isA<AuthUnauthenticated>());
     },
   );
+
+  group('HttpAuthRepository.loadSession', () {
+    test('restores an expired session with exactly one refresh', () async {
+      final h = _Harness();
+      final repo = HttpAuthRepository(
+        apiClient: h.api,
+        secureStorage: h.storage,
+      );
+
+      final user = await repo.loadSession();
+
+      expect(user?.username, 'ada');
+      expect(h.server.refreshCalls, 1);
+      expect(await h.storage.read(AuthStorageKeys.refreshToken), 'refresh-2');
+    });
+
+    test('a refused refresh token ends with no session', () async {
+      final h = _Harness()..server.refreshStatus = 401;
+      final repo = HttpAuthRepository(
+        apiClient: h.api,
+        secureStorage: h.storage,
+      );
+
+      expect(await repo.loadSession(), isNull);
+      expect(await h.storage.read(AuthStorageKeys.refreshToken), isNull);
+      expect(h.server.refreshCalls, 1);
+    });
+
+    test('a transient failure keeps the saved session', () async {
+      final h = _Harness()..server.refreshStatus = 503;
+      final repo = HttpAuthRepository(
+        apiClient: h.api,
+        secureStorage: h.storage,
+      );
+
+      await expectLater(repo.loadSession(), throwsA(isA<NetworkException>()));
+      expect(await h.storage.read(AuthStorageKeys.refreshToken), 'refresh-1');
+    });
+  });
 }
