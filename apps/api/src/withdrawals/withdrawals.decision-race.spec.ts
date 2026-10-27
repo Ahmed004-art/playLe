@@ -46,6 +46,7 @@ function build() {
     entries: [] as string[],
     openTransactions: 0,
     payouts: [] as Array<{ statusWhenSubmitted: string; openTx: number }>,
+    operations: [] as Array<{ status: string }>,
   };
 
   type Undo = Array<() => void>;
@@ -113,8 +114,14 @@ function build() {
       ...prismaWrites,
     },
     providerOperation: {
-      create: vi.fn(() => Promise.resolve({ id: 'op-1' })),
-      update: vi.fn(() => Promise.resolve({})),
+      create: vi.fn(() => {
+        db.operations.push({ status: 'PENDING' });
+        return Promise.resolve({ id: 'op-1' });
+      }),
+      update: vi.fn((args: { data: { status?: string } }) => {
+        Object.assign(db.operations[db.operations.length - 1], args.data);
+        return Promise.resolve({});
+      }),
     },
     $transaction: vi.fn(async (fn: (c: unknown) => Promise<unknown>) => {
       const undo: Undo = [];
@@ -167,19 +174,47 @@ function build() {
     ),
   };
 
+  // What the payout provider answers, and an optional park while its call is
+  // "in flight" (the request has been sent; the reply has not come back).
+  let providerAnswer: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'NETWORK_ERROR' =
+    'PENDING';
+  const setProviderAnswer = (answer: typeof providerAnswer) => {
+    providerAnswer = answer;
+  };
+  let inFlight: { reached: () => void; released: Promise<void> } | null = null;
+  const armInFlight = () => {
+    let reached!: () => void;
+    let release!: () => void;
+    const reachedPromise = new Promise<void>((r) => (reached = r));
+    const released = new Promise<void>((r) => (release = r));
+    inFlight = { reached, released };
+    return { reached: reachedPromise, release };
+  };
   const provider = {
     name: 'FAKE',
-    initiatePayout: vi.fn(() => {
+    initiatePayout: vi.fn(async () => {
       // What a separate connection would see at this instant: only committed
       // state, and no transaction still open.
       db.payouts.push({
         statusWhenSubmitted: db.withdrawal.status,
         openTx: db.openTransactions,
       });
-      return Promise.resolve({
-        providerReference: 'po-1',
-        outcome: 'PENDING' as const,
-      });
+      const parked = inFlight;
+      if (parked) {
+        inFlight = null;
+        parked.reached();
+        await parked.released;
+      }
+      if (providerAnswer === 'NETWORK_ERROR') {
+        throw new Error('fake network error');
+      }
+      return providerAnswer === 'FAILED'
+        ? {
+            providerReference: 'po-1',
+            outcome: 'FAILED' as const,
+            failureReason: 'rejected',
+          }
+        : { providerReference: 'po-1', outcome: providerAnswer };
     }),
   };
   const notificationOutbox = {
@@ -194,7 +229,17 @@ function build() {
     provider as never,
     notificationOutbox as never,
   );
-  return { db, prisma, ledgerService, provider, service, armGate };
+  return {
+    db,
+    prisma,
+    ledgerService,
+    notificationOutbox,
+    provider,
+    service,
+    armGate,
+    armInFlight,
+    setProviderAnswer,
+  };
 }
 
 type Harness = ReturnType<typeof build>;
@@ -396,4 +441,138 @@ describe('uncontended decisions are unchanged', () => {
       expect(h.provider.initiatePayout).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('a payout submission racing a terminal outcome', () => {
+  /**
+   * `approve` has committed its claim and `submitPayout` has sent the request:
+   * the provider call is in flight and the withdrawal is still APPROVED. An
+   * admin finalises it by hand (`complete`/`fail` are allowed from APPROVED)
+   * before the reply returns. The reply must not drag the withdrawal back to
+   * PROCESSING: that would let a later payout event debit or release the hold
+   * a second time.
+   */
+  async function adminFinalisesWhileInFlight(
+    h: Harness,
+    finalise: () => Promise<unknown>,
+  ) {
+    const call = h.armInFlight();
+    const approval = settle(h.service.approve('admin-1', 'wd-1', 'ok'));
+    await call.reached;
+    expect(h.db.withdrawal.status).toBe('APPROVED');
+    const adminOutcome = await settle(finalise());
+    call.release();
+    return { approval: await approval, admin: adminOutcome };
+  }
+
+  const complete = (h: Harness) => () =>
+    h.service.complete('admin-1', 'wd-1', 'paid by hand');
+  const fail = (h: Harness) => () =>
+    h.service.fail('admin-1', 'wd-1', 'could not pay');
+
+  it('an admin completion during the call is not overwritten, and a later payout event debits nothing more', async () => {
+    const h = build();
+
+    const result = await adminFinalisesWhileInFlight(h, complete(h));
+
+    expect(result.admin.ok).toBe(true);
+    expect(result.approval.ok).toBe(true);
+    expect(h.db.withdrawal.status).toBe('COMPLETED');
+    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+    // The provider's own completion event then arrives for the reference.
+    await h.service.completeFromProviderEvent('wd-1', 'po-1');
+    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+    expect(h.db.held).toBe(OTHER_HOLD);
+    expect(h.notificationOutbox.enqueueStandalone).not.toHaveBeenCalled();
+  });
+
+  it('an admin failure during the call is not overwritten, and the provider answering SUCCEEDED debits a hold already released', async () => {
+    const h = build();
+    h.setProviderAnswer('SUCCEEDED');
+
+    const result = await adminFinalisesWhileInFlight(h, fail(h));
+
+    expect(result.admin.ok).toBe(true);
+    expect(h.db.withdrawal.status).toBe('FAILED');
+    expect(h.db.entries).toEqual(['RELEASE']);
+    expect(h.db.available).toBe(10_000n);
+    expect(h.db.held).toBe(OTHER_HOLD);
+  });
+
+  it('an admin completion during the call is not overwritten when the call ends in an unknown outcome, which is still recorded', async () => {
+    const h = build();
+    h.setProviderAnswer('NETWORK_ERROR');
+
+    const result = await adminFinalisesWhileInFlight(h, complete(h));
+
+    expect(result.admin.ok).toBe(true);
+    expect(h.db.withdrawal.status).toBe('COMPLETED');
+    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+    // The safeguard is intact: the attempt is on record as UNKNOWN, never retried.
+    expect(h.db.operations).toEqual([
+      expect.objectContaining({ status: 'UNKNOWN' }),
+    ]);
+    expect(h.provider.initiatePayout).toHaveBeenCalledTimes(1);
+  });
+
+  it('the provider operation still records what the provider answered', async () => {
+    const h = build();
+    h.setProviderAnswer('SUCCEEDED');
+
+    await adminFinalisesWhileInFlight(h, complete(h));
+
+    expect(h.db.operations).toEqual([
+      expect.objectContaining({ status: 'SUCCEEDED' }),
+    ]);
+    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+  });
+});
+
+describe('an uncontended payout submission is unchanged', () => {
+  it('a pending answer leaves the withdrawal PROCESSING with the provider reference and announces it', async () => {
+    const h = build();
+
+    const result = await h.service.approve('admin-1', 'wd-1', 'ok');
+
+    expect(result.status).toBe('PROCESSING');
+    expect(h.db.withdrawal.providerReference).toBe('po-1');
+    expect(h.db.operations).toEqual([
+      expect.objectContaining({ status: 'PENDING' }),
+    ]);
+    expect(h.notificationOutbox.enqueueStandalone).toHaveBeenCalledTimes(1);
+  });
+
+  it('a synchronous SUCCEEDED answer completes the withdrawal once', async () => {
+    const h = build();
+    h.setProviderAnswer('SUCCEEDED');
+
+    const result = await h.service.approve('admin-1', 'wd-1', 'ok');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+  });
+
+  it('a synchronous FAILED answer fails the withdrawal and releases the hold once', async () => {
+    const h = build();
+    h.setProviderAnswer('FAILED');
+
+    const result = await h.service.approve('admin-1', 'wd-1', 'ok');
+
+    expect(result.status).toBe('FAILED');
+    expect(h.db.entries).toEqual(['RELEASE']);
+  });
+
+  it('an unknown outcome leaves the withdrawal PROCESSING, the hold in place and the attempt UNKNOWN', async () => {
+    const h = build();
+    h.setProviderAnswer('NETWORK_ERROR');
+
+    const result = await h.service.approve('admin-1', 'wd-1', 'ok');
+
+    expect(result.status).toBe('PROCESSING');
+    expect(h.db.entries).toEqual([]);
+    expect(h.db.operations).toEqual([
+      expect.objectContaining({ status: 'UNKNOWN' }),
+    ]);
+    expect(h.provider.initiatePayout).toHaveBeenCalledTimes(1);
+  });
 });

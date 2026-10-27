@@ -903,6 +903,100 @@ describe('Phase 6 payments (e2e)', () => {
       },
     );
 
+    /**
+     * `approve` has committed and its payout request is in flight (parked in the
+     * fake provider, the withdrawal still APPROVED in the database); `finalise`
+     * then runs to completion; only then does the provider's answer return.
+     */
+    async function finaliseWhilePayoutInFlight(
+      ids: Ids,
+      finalise: () => Promise<unknown>,
+    ) {
+      const original = fakeProvider.initiatePayout.bind(fakeProvider);
+      let reached!: () => void;
+      let release!: () => void;
+      const reachedPromise = new Promise<void>((r) => (reached = r));
+      const released = new Promise<void>((r) => (release = r));
+      const spy = vi
+        .spyOn(fakeProvider, 'initiatePayout')
+        .mockImplementationOnce(async (params) => {
+          reached();
+          await released;
+          return original(params);
+        });
+      try {
+        const approval = settle(run('approve', ids));
+        await reachedPromise;
+        expect(await statusOf(ids.id)).toBe('APPROVED');
+        const admin = await settle(finalise());
+        release();
+        return { approval: await approval, admin };
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it('an admin completion while the payout request is in flight is not overwritten, and the payout event debits nothing more', async () => {
+      const ids = await userWithPendingWithdrawal('payinflight1');
+      const reference = `fake_payout_${ids.id}`;
+
+      const result = await finaliseWhilePayoutInFlight(ids, () =>
+        app
+          .get(WithdrawalsService)
+          .complete(ids.adminId, ids.id, 'Paid by hand', reference),
+      );
+
+      expect(result.admin.ok).toBe(true);
+      expect(result.approval.ok).toBe(true);
+      expect(await statusOf(ids.id)).toBe('COMPLETED');
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+
+      // The provider's own completion event for that reference then arrives.
+      await request(app.getHttpServer())
+        .post('/api/v1/payments/webhooks/monime')
+        .set('x-fake-signature', fakeProvider.signatureHeader())
+        .set('Content-Type', 'application/json')
+        .send(
+          fakeProvider.buildPayoutWebhookBody({
+            eventType: 'payout.completed',
+            providerReference: reference,
+          }),
+        )
+        .expect(200);
+
+      expect(await statusOf(ids.id)).toBe('COMPLETED');
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+      // Only this withdrawal's 4000 left the held balance; the other 5000 hold
+      // is untouched.
+      expect(await walletOf(ids.userId)).toEqual({
+        available: 1000n,
+        held: 5000n,
+      });
+    });
+
+    it('an admin failure while the payout request is in flight is not overwritten when the provider then answers SUCCEEDED', async () => {
+      const ids = await userWithPendingWithdrawal('payinflight2');
+      fakeProvider.payoutScenario = 'succeeded';
+
+      const result = await finaliseWhilePayoutInFlight(ids, () =>
+        app.get(WithdrawalsService).fail(ids.adminId, ids.id, 'Could not pay'),
+      );
+
+      expect(result.admin.ok).toBe(true);
+      expect(await statusOf(ids.id)).toBe('FAILED');
+      // Released once, never also debited.
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+      expect(await walletOf(ids.userId)).toEqual({
+        available: 5000n,
+        held: 5000n,
+      });
+      // The attempt is still on record as what the provider answered.
+      const operations = await prisma.providerOperation.findMany({
+        where: { relatedWithdrawalId: ids.id },
+      });
+      expect(operations.map((o) => o.status)).toEqual(['SUCCEEDED']);
+    });
+
     it('unsynchronised approve and cancel, repeated, always end in exactly one consistent outcome', async () => {
       const { accessToken, userId } = await setupFundedUser(
         'racerepeat',

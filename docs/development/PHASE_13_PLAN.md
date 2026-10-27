@@ -202,8 +202,45 @@ and were not run locally.
   it cannot form a cycle with them.
 - No schema change, no migration, no new status.
 
+### Follow-up: the payout request in flight
+`submitPayout` reads `APPROVED`, records a `ProviderOperation`, calls the
+provider, then wrote `PROCESSING` (and the provider reference) unconditionally.
+The withdrawal stays `APPROVED` - and finalisable - for as long as the provider
+takes to answer, so an admin `complete`/`fail` could finish it in that window;
+the late write then dragged it back to `PROCESSING`, and the next payout event
+(or the provider's own synchronous `SUCCEEDED`/`FAILED` answer) found it
+finalisable again and debited or released the hold a second time.
+
+- **Real, but not through a webhook.** A payout webhook cannot finalise the
+  withdrawal in that window: it is matched by `providerReference`, which is only
+  stored by that same late write, so an event arriving earlier matches nothing
+  and is recorded `IGNORED`. The overwrite needs an admin (or another)
+  finaliser.
+- **Baseline** (`withdrawals.decision-race.spec.ts`, "a payout submission racing
+  a terminal outcome", model-based): against the unchanged service 4 tests
+  failed - an admin completion ended `PROCESSING`, an admin failure ended
+  `COMPLETED` after the provider's synchronous `SUCCEEDED` (a `RELEASE` *and* a
+  `WITHDRAWAL` entry), and a completion followed by the provider's event wrote
+  two `WITHDRAWAL` entries.
+- **Fix:** the post-call write is `markProcessing`, a conditional claim
+  (`updateMany ... WHERE status = APPROVED`), in both the normal and the
+  unknown-outcome path. A lost claim writes nothing, announces no submission,
+  does not act on the provider's answer, and logs an error: the payout may have
+  been sent, so someone must reconcile it with the provider. The
+  `ProviderOperation` (idempotency key, `UNKNOWN`/`SUCCEEDED`/`FAILED` record)
+  is written before and is unchanged, so no payout is retried under a new key.
+  Reconciliation already surfaces a `SUCCEEDED` operation on a non-completed
+  withdrawal.
+- **Database-backed** (`test/payments-phase6.e2e-spec.ts`, CI only): an admin
+  completion, and an admin failure with a `SUCCEEDED` answer, while the request is
+  parked in flight; each asserts status, ledger entries and balances.
+
 ### Not changed (observed)
-- `submitPayout` writes `PROCESSING` unconditionally after the provider call, so
-  a payout webhook that finalises the withdrawal while that call is in flight
-  could be overwritten back to `PROCESSING`. Same family, different path;
-  recorded here rather than widened into this PR.
+- A payout webhook that arrives before the provider's answer has been stored
+  matches no withdrawal and is recorded `IGNORED` (an
+  `ORPHAN_PROVIDER_EVENT` anomaly), with nothing to recover it. Fixing that
+  depends on how the provider assigns the payout reference, which is not
+  verified; no change was made.
+- `submitPayout` has one caller (`approve`); the comment mentioning a recovery
+  sweep describes something that does not exist, so two concurrent submissions
+  for one withdrawal are not possible today.

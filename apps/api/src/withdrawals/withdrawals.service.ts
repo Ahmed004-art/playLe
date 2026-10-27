@@ -306,10 +306,8 @@ export class WithdrawalsService {
             error instanceof Error ? error.message : 'Unknown error',
         },
       });
-      return this.prisma.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: { status: 'PROCESSING' },
-      });
+      await this.markProcessing(withdrawal, operation.id);
+      return this.findByIdAdmin(withdrawal.id);
     }
 
     if (result.outcome === 'UNAVAILABLE') {
@@ -341,14 +339,19 @@ export class WithdrawalsService {
       },
     });
 
-    const processing = await this.prisma.withdrawal.update({
-      where: { id: withdrawal.id },
-      data: {
-        status: 'PROCESSING',
-        providerReference:
-          result.providerReference ?? withdrawal.providerReference,
-      },
-    });
+    const submitted = await this.markProcessing(
+      withdrawal,
+      operation.id,
+      result.providerReference ?? withdrawal.providerReference,
+    );
+    if (!submitted) {
+      // Finalised by someone else while the request was in flight (see
+      // `markProcessing`): their outcome stands, so neither announce a
+      // submission nor act on the provider's answer. The attempt itself is
+      // already recorded on the ProviderOperation row.
+      return this.findByIdAdmin(withdrawal.id);
+    }
+    const processing = await this.findByIdAdmin(withdrawal.id);
 
     await this.notificationOutbox.enqueueStandalone({
       userId: withdrawal.userId,
@@ -379,6 +382,40 @@ export class WithdrawalsService {
     // PENDING or UNKNOWN: await a webhook delivery or a later
     // reconciliation/status-check sweep.
     return processing;
+  }
+
+  /**
+   * Moves a withdrawal to `PROCESSING` once its payout request has been sent,
+   * but only if it is *still* `APPROVED`. The request is in flight for as long
+   * as the provider takes to answer, and the withdrawal stays `APPROVED` and
+   * finalisable throughout, so an admin `complete`/`fail` (or any other
+   * finaliser) can win before the answer returns. An unconditional write here
+   * would then drag a COMPLETED/FAILED withdrawal back to `PROCESSING`, and the
+   * next payout event would find it finalisable again and debit or release a
+   * hold a second time. A lost claim writes nothing and is logged loudly: the
+   * payout may really have been sent, so a person has to reconcile it with the
+   * provider (the ProviderOperation row records what was sent and answered).
+   * Payout idempotency and the UNKNOWN-outcome record are untouched: they are
+   * written on the ProviderOperation before this runs.
+   */
+  private async markProcessing(
+    withdrawal: Pick<Withdrawal, 'id'>,
+    operationId: string,
+    providerReference?: string | null,
+  ): Promise<boolean> {
+    const { count } = await this.prisma.withdrawal.updateMany({
+      where: { id: withdrawal.id, status: 'APPROVED' },
+      data: {
+        status: 'PROCESSING',
+        ...(providerReference !== undefined ? { providerReference } : {}),
+      },
+    });
+    if (count !== 1) {
+      this.logger.error(
+        `Withdrawal ${withdrawal.id} was finalised while its payout request (provider operation ${operationId}) was in flight; left unchanged. The provider may have been paid - reconcile with the provider.`,
+      );
+    }
+    return count === 1;
   }
 
   async reject(
