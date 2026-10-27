@@ -79,7 +79,7 @@ class HttpSocialRepository implements SocialRepository {
   }) async {
     final response = await apiClient.get<Map<String, dynamic>>(
       '/matches',
-      queryParameters: {'limit': limit, if (cursor != null) 'cursor': cursor},
+      queryParameters: {'limit': limit, 'cursor': ?cursor},
     );
     return _parse(() => MatchHistoryPage.fromJson(_asObject(response.data)));
   }
