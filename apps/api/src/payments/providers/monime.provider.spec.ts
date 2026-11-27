@@ -1,6 +1,7 @@
+import { createHmac } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MonimeProvider } from './monime.provider.js';
 import {
   MONIME_DEFAULT_API_VERSION,
@@ -225,7 +226,7 @@ describe('MonimeProvider — readiness / production activation guardrails', () =
     fetchSpy.mockRestore();
   });
 
-  it('fails closed on webhook signature verification regardless of configuration', () => {
+  it('rejects every webhook while no webhook secret is configured', () => {
     const provider = new MonimeProvider(
       fakeConfigService({
         monimeApiKey: 'mon_test_abc',
@@ -746,79 +747,177 @@ describe('MonimeProvider - API release pinning on requests', () => {
   });
 });
 
-describe('MonimeProvider - webhook signature verification (fail-closed)', () => {
+describe('MonimeProvider - webhook signature verification', () => {
+  const SECRET = 'whsec_test_0123456789abcdef0123456789abcdef';
+  const T = 1773386779;
+  // Known answer, computed independently (Python hmac, as in Monime's
+  // MonimeGateway_odoo utils/webhook_validation.py) for exactly these bytes.
+  const KNOWN_BODY =
+    '{"apiVersion":"caph.2025-08-23","event":{"id":"wke-1","name":"payout.completed","timestamp":"1773386779"},"object":{"id":"pyt-1","type":"payout"},"data":{}}';
+  const KNOWN_SIGNATURE = 'zKL0gDhNP7CSHMnbIrnyxFDbFYClx7HrEe3GKoI6JSo=';
+
+  const sign = (body: string, t = T, secret = SECRET, separator = '_') =>
+    createHmac('sha256', secret)
+      .update(`${t}${separator}${body}`)
+      .digest('base64');
+  const header = (body: string, t = T, signature = sign(body, t)) => ({
+    'monime-signature': `t=${t},v1=${signature}`,
+  });
+  const provider = (secret: string | undefined = SECRET) =>
+    new MonimeProvider(fakeConfigService({ monimeWebhookSecret: secret }));
+  const at = (seconds: number) => vi.setSystemTime(seconds * 1000);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    at(T + 10);
+  });
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  const body = JSON.stringify({
-    event: { id: 'evt-1', name: 'payment_code.completed', timestamp: 1 },
-    object: { id: 'pmc-1', type: 'payment_code' },
-    data: { progress: { totalPaymentSum: { currency: 'SLE', value: 4000 } } },
+  it('accepts the known-answer signature', () => {
+    const result = provider().verifyWebhookSignature(KNOWN_BODY, {
+      'monime-signature': `t=${T},v1=${KNOWN_SIGNATURE}`,
+    });
+
+    expect(result).toMatchObject({
+      valid: true,
+      providerEventId: 'wke-1',
+      eventType: 'payout.completed',
+      parsedPayload: {
+        eventType: 'payout.completed',
+        providerReference: 'pyt-1',
+      },
+    });
+  });
+
+  it('matches the header name case-insensitively and accepts any matching v1 entry', () => {
+    expect(
+      provider().verifyWebhookSignature(KNOWN_BODY, {
+        'Monime-Signature': `t=${T}, v1=AAAA, v1=${KNOWN_SIGNATURE}`,
+      }).valid,
+    ).toBe(true);
   });
 
   it.each([
-    ['no signature header at all', {}],
-    ['a Monime-Signature header', { 'monime-signature': 'SECRET-SIG-VALUE' }],
     [
-      'an X-Monime-Signature header',
-      { 'x-monime-signature': 'SECRET-SIG-VALUE' },
+      'a different secret',
+      { ...header(KNOWN_BODY, T, sign(KNOWN_BODY, T, 'y'.repeat(40))) },
     ],
-    ['an Authorization header', { authorization: 'Bearer SECRET-SIG-VALUE' }],
-    ['a plausible t=,v1= value', { 'monime-signature': 't=1,v1=abcdef' }],
-  ])('rejects a delivery with %s', (_name, headers) => {
-    const provider = new MonimeProvider(fakeConfigService());
-
-    expect(provider.verifyWebhookSignature(body, headers)).toEqual({
+    [
+      'a period separator',
+      header(KNOWN_BODY, T, sign(KNOWN_BODY, T, SECRET, '.')),
+    ],
+    [
+      'a hex signature',
+      {
+        'monime-signature': `t=${T},v1=${createHmac('sha256', SECRET).update(`${T}_${KNOWN_BODY}`).digest('hex')}`,
+      },
+    ],
+    [
+      'a different timestamp in the header',
+      { 'monime-signature': `t=${T + 1},v1=${KNOWN_SIGNATURE}` },
+    ],
+    ['no header', {}],
+    [
+      'two headers',
+      { 'monime-signature': [`t=${T},v1=${KNOWN_SIGNATURE}`, 'x'] },
+    ],
+    ['no timestamp', { 'monime-signature': `v1=${KNOWN_SIGNATURE}` }],
+    [
+      'a non-numeric timestamp',
+      { 'monime-signature': `t=abc,v1=${KNOWN_SIGNATURE}` },
+    ],
+    ['no v1 entry', { 'monime-signature': `t=${T}` }],
+    ['an empty value', { 'monime-signature': '' }],
+  ])('rejects %s', (_name, headers) => {
+    expect(provider().verifyWebhookSignature(KNOWN_BODY, headers)).toEqual({
       valid: false,
     });
   });
 
-  it('rejects even when the configured webhook secret could be used', () => {
-    const provider = new MonimeProvider(
-      fakeConfigService({ monimeWebhookSecret: 'x'.repeat(40) }),
-    );
-
+  it('rejects a body changed after signing', () => {
+    const tampered = KNOWN_BODY.replace('pyt-1', 'pyt-2');
     expect(
-      provider.verifyWebhookSignature(body, { 'monime-signature': 'anything' }),
-    ).toEqual({ valid: false });
+      provider().verifyWebhookSignature(tampered, {
+        'monime-signature': `t=${T},v1=${KNOWN_SIGNATURE}`,
+      }).valid,
+    ).toBe(false);
   });
 
-  it('logs which header NAMES arrived, the body size and the claimed event - never a header value or the body', () => {
+  it('rejects a correct signature when no secret is configured', () => {
+    expect(
+      provider('').verifyWebhookSignature(KNOWN_BODY, header(KNOWN_BODY)).valid,
+    ).toBe(false);
+  });
+
+  it.each([
+    ['exactly 300 s old', T + 300, true],
+    ['301 s old (a replay outside the window)', T + 301, false],
+    ['60 s in the future', T - 60, true],
+    ['61 s in the future', T - 61, false],
+  ])('a signature %s is accepted: %s', (_name, now, accepted) => {
+    at(now);
+    expect(
+      provider().verifyWebhookSignature(KNOWN_BODY, header(KNOWN_BODY)).valid,
+    ).toBe(accepted);
+  });
+
+  it('rejects a correctly signed body that is not a Monime event', () => {
+    for (const body of ['not json', '{}', '{"event":{"id":"e"}}']) {
+      expect(provider().verifyWebhookSignature(body, header(body)).valid).toBe(
+        false,
+      );
+    }
+  });
+
+  it('keeps an authenticated event it does not act on as delivered, so it can never move money', () => {
+    const body = JSON.stringify({
+      apiVersion: 'caph.2025-08-23',
+      event: { id: 'wke-2', name: 'payment_code.completed', timestamp: `${T}` },
+      object: { id: 'pmc-9xY7r1', type: 'payment_code' },
+      data: {
+        id: 'pmc-9xY7r1',
+        status: 'completed',
+        amount: { currency: 'SLE', value: 10000 },
+      },
+    });
+
+    const result = provider().verifyWebhookSignature(body, header(body));
+
+    expect(result).toEqual({
+      valid: true,
+      providerEventId: 'wke-2',
+      eventType: 'payment_code.completed',
+      parsedPayload: { unmappedMonimeEvent: JSON.parse(body) },
+    });
+  });
+
+  it('logs why, the header NAMES, the body size and the claimed event - never a header value or the body', () => {
     const warn = vi
       .spyOn(Logger.prototype, 'warn')
       .mockImplementation(() => {});
-    const provider = new MonimeProvider(fakeConfigService());
+    const body = JSON.stringify({
+      event: { id: 'evt-1', name: 'payment_code.completed', timestamp: 1 },
+      object: { id: 'pmc-1', type: 'payment_code' },
+      data: { progress: { totalPaymentSum: { currency: 'SLE', value: 4000 } } },
+    });
 
-    provider.verifyWebhookSignature(body, {
-      'Monime-Signature': 'SECRET-SIG-VALUE',
+    provider().verifyWebhookSignature(body, {
+      'Monime-Signature': `t=${T},v1=SECRET-SIG-VALUE`,
       'Content-Type': 'application/json',
       'X-Other': ['SECRET-SIG-VALUE', 'SECOND-SECRET'],
     });
 
     expect(warn).toHaveBeenCalledTimes(1);
     const message = String(warn.mock.calls[0][0]);
+    expect(message).toContain('the signature does not match');
     expect(message).toContain('content-type, monime-signature, x-other');
-    expect(message).toContain('Monime-Signature header present: true');
     expect(message).toContain(`Body bytes: ${Buffer.byteLength(body)}`);
     expect(message).toContain('payment_code.completed (evt-1)');
     expect(message).not.toContain('SECRET-SIG-VALUE');
     expect(message).not.toContain('SECOND-SECRET');
     expect(message).not.toContain('totalPaymentSum');
-  });
-
-  it('copes with an unparseable body in the diagnostic', () => {
-    const warn = vi
-      .spyOn(Logger.prototype, 'warn')
-      .mockImplementation(() => {});
-    const provider = new MonimeProvider(fakeConfigService());
-
-    expect(provider.verifyWebhookSignature('not json', {})).toEqual({
-      valid: false,
-    });
-    expect(String(warn.mock.calls[0][0])).toContain('unparseable');
-    expect(String(warn.mock.calls[0][0])).toContain(
-      'Monime-Signature header present: false',
-    );
   });
 });

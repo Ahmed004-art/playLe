@@ -15,24 +15,20 @@ phase/owner responsible for resolving it.
 
 ## Payments / Monime (from Phase 6)
 
-### 1. Webhook signature verification — blocked
-**Status**: Blocked (external). **Evidence**:
-`MonimeProvider.verifyWebhookSignature` (`apps/api/src/payments/providers/monime.provider.ts`)
-always returns invalid; `monime.provider.spec.ts` asserts this
-explicitly. The algorithm (HMAC-SHA256) is confirmed via the official
-OpenAPI schema's `verificationMethod.hmac256` field, but the exact
-canonical string it signs is not independently verifiable from any
-source reached during Phase 6 or Phase 7. **Dependency**: owner action 3
-in `docs/development/MONIME_SETUP.md` (capture a real webhook delivery
-or the rendered HMAC-verification guide page). **Severity**: High for
-production (blocks any automatic live deposit/payout confirmation); zero
-impact on test-mode/local behavior, which is intentionally fail-closed.
-**Owner**: project owner, pre-launch.
+### 1. Webhook signature verification — implemented; Monime side unconfirmed
+**Status**: Implemented on `feat/monime-webhook-signature` (ADR-019, "Webhook
+signatures are verified"), from Monime's now-published scheme
+(docs.monime.io "Webhooks > HMAC verification") and Monime's own
+`monimesl/MonimeGateway_odoo`. Unit known-answer vector and signed-delivery
+e2e tests pass. **Still open**: no real Monime Test delivery has been verified
+yet (needs the Test webhook and `MONIME_WEBHOOK_SECRET` configured — MONIME_SETUP.md
+action 3). ECDSA (`ES256`) webhooks are not supported. **Severity**: High until
+one real Test delivery verifies. **Owner**: project owner (configuration),
+then payments.
 
-### 2. Webhooks must stay fail-closed until #1 is resolved
-**Status**: Enforced, by design — not a gap to close on its own, a
-constraint on closing #1 correctly. **Evidence**: same as #1.
-**Severity**: N/A (this is the safe-default policy itself).
+### 2. Webhooks stay fail-closed without a secret
+**Status**: Enforced: with no `MONIME_WEBHOOK_SECRET`, or any signature that
+does not verify, every delivery is answered 401 and nothing is stored.
 
 ### 3. Monime business-model eligibility — unconfirmed
 **Status**: Blocked (external/legal). **Evidence**:

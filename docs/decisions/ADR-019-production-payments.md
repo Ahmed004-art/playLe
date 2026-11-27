@@ -123,6 +123,23 @@ a manual payment alongside the original request could pay twice.
   neither completed nor failed in-app. Its funds stay held until the provider
   can be asked about it (item 29, "Still open").
 
+### Webhook signatures are verified (amendment, 2026-11-27)
+
+Monime now documents its scheme, and its own open-source integration
+(`monimesl/MonimeGateway_odoo`) implements it identically:
+`Monime-Signature: t=<unix seconds>,v1=<base64>`, the value being
+HMAC-SHA256 with the webhook's secret over `<t>_<raw body>`.
+`MonimeProvider.verifyWebhookSignature` checks it with a constant-time
+comparison, accepts any matching `v1`, and rejects a missing or second
+header, a malformed value, a `t` over 300 s old or over 60 s ahead, or no
+`MONIME_WEBHOOK_SECRET` (validated 32-100 characters). Only HMAC (`HS256`)
+webhooks are supported. Replays inside the window are stopped by the unique
+`(provider, providerEventId)` index and the conditional claims already in
+place. An authenticated event PlayLe does not act on is stored as delivered
+(`{ unmappedMonimeEvent: ... }`, IGNORED) so an operator can see it; it
+cannot match a deposit or payout. The paid-amount location is still
+unconfirmed against a real delivery (see MONIME_SETUP.md action 3).
+
 ### Webhook routing without a double-insert race
 A single endpoint (`POST /payments/webhooks/monime`) receives both
 deposit and payout events. The controller calls

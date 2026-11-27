@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfiguration } from '../../config/configuration.js';
@@ -20,6 +21,8 @@ import {
   MONIME_DEFAULT_API_VERSION,
   MONIME_PAYMENT_CODE_MODE,
   MONIME_SIGNATURE_HEADER,
+  MONIME_SIGNATURE_MAX_AGE_SECONDS,
+  MONIME_SIGNATURE_MAX_FUTURE_SECONDS,
 } from './monime.constants.js';
 
 /** The largest minor-unit amount that round-trips exactly through a JSON number. */
@@ -51,14 +54,12 @@ type Readiness =
  * their sources). Deposits use Payment Codes (USSD/MoMo, no redirect —
  * the right fit for a native mobile app); payouts use the Payouts API.
  *
- * The webhook signature procedure is not established by any public source:
- * which header carries it, its value format, the exact bytes it covers and its
- * encoding are all undocumented (the method is only known to be `HS256` or
- * `ES256`). `verifyWebhookSignature` therefore still **always returns
- * invalid** — extending, never weakening, the fail-closed stance Phase 3
- * shipped. Outbound calls and response parsing are implemented against the
- * documentation; the webhook *payload* parsing (event names, paid-amount
- * location) is provisional until a real Test-mode delivery is captured.
+ * Webhooks are authenticated with Monime's documented HMAC-SHA256 signature
+ * (`verifyWebhookSignature`; the Space's webhook must use the HMAC/`HS256`
+ * method and its secret is `MONIME_WEBHOOK_SECRET`). Outbound calls and
+ * response parsing are implemented against the documentation; the webhook
+ * *payload* parsing (paid-amount location) is provisional until a real
+ * Test-mode delivery is captured.
  */
 @Injectable()
 export class MonimeProvider implements PaymentProviderPort {
@@ -292,39 +293,102 @@ export class MonimeProvider implements PaymentProviderPort {
     rawBody: string,
     headers: Record<string, string | string[] | undefined>,
   ): WebhookVerificationResult {
-    // Fail closed. Monime's public sources establish only that a webhook is
-    // verified by `verificationMethod.type` `HS256` (an HMAC over a
-    // caller-supplied secret, 32-256 characters) or `ES256` (ECDSA, P-256).
-    // They do NOT establish the header the signature arrives in, its value
-    // format, the exact bytes it covers, its encoding, or any timestamp
-    // tolerance: the HMAC-verification guide is an empty placeholder and no
-    // official SDK implements it. Guessing any of those would risk crediting a
-    // wallet on a forgeable request, so every delivery is rejected until a
-    // documented procedure or a verified test vector exists - see
-    // docs/decisions/ADR-019-production-payments.md. This only ever extends
-    // (never weakens) the stance MonimeProvider has shipped with since Phase 3.
-    //
-    // What a rejected delivery DOES tell an operator, safely: which header
-    // NAMES arrived (the names are not secret; the values are never logged),
-    // the body size, and the event the body claims to be. That is what is needed
-    // to find the signature header on a real Test-mode delivery without
-    // recording the signature itself.
     const parsed = this.parseMonimeWebhookPayload(rawBody);
-    const names = Object.keys(headers).map((name) => name.toLowerCase());
-    const headerNames = [...names].sort().join(', ');
-    // The header NAME is documented (docs.monime.io standard headers:
-    // "Monime-Signature - Cryptographic signature with timestamp"); its value
-    // format and the bytes it covers are not.
-    const signatureHeaderPresent = names.includes(MONIME_SIGNATURE_HEADER);
-    this.logger.warn(
-      'Rejected a Monime webhook: signature verification is not implemented ' +
-        '(fail-closed). ' +
-        `Monime-Signature header present: ${signatureHeaderPresent}. ` +
-        `Header names received: [${headerNames}]. ` +
-        `Body bytes: ${Buffer.byteLength(rawBody, 'utf-8')}. ` +
-        `Claimed event: ${parsed ? `${parsed.eventType} (${parsed.providerEventId})` : 'unparseable'}.`,
-    );
-    return { valid: false };
+    const failure =
+      this.signatureFailure(rawBody, headers) ??
+      (parsed ? null : 'the signed body is not a Monime event');
+    if (failure) {
+      // What a rejected delivery tells an operator, safely: why, which header
+      // NAMES arrived (never their values), the body size and the event the
+      // body claims to be.
+      const headerNames = Object.keys(headers)
+        .map((name) => name.toLowerCase())
+        .sort()
+        .join(', ');
+      this.logger.warn(
+        `Rejected a Monime webhook: ${failure}. ` +
+          `Header names received: [${headerNames}]. ` +
+          `Body bytes: ${Buffer.byteLength(rawBody, 'utf-8')}. ` +
+          `Claimed event: ${parsed ? `${parsed.eventType} (${parsed.providerEventId})` : 'unparseable'}.`,
+      );
+      return { valid: false };
+    }
+
+    const event = parsed!;
+    return {
+      valid: true,
+      providerEventId: event.providerEventId,
+      eventType: event.eventType,
+      // An authenticated event PlayLe does not act on is stored as delivered,
+      // so an operator can see exactly what Monime sent (it is recorded as
+      // IGNORED and reported by payment reconciliation). It never matches a
+      // deposit or payout payload, so it can never move money.
+      parsedPayload: event.parsedPayload ?? {
+        unmappedMonimeEvent: JSON.parse(rawBody) as unknown,
+      },
+    };
+  }
+
+  /**
+   * Why a delivery's `Monime-Signature` does not authenticate it, or `null` if
+   * it does. See `MONIME_SIGNATURE_HEADER` for the scheme. Every check fails
+   * closed: no secret, no single header, a malformed value, a timestamp
+   * outside the accepted window, or no `v1` entry matching the expected HMAC.
+   */
+  private signatureFailure(
+    rawBody: string,
+    headers: Record<string, string | string[] | undefined>,
+  ): string | null {
+    const secret = this.config.monimeWebhookSecret;
+    if (!secret) return 'MONIME_WEBHOOK_SECRET is not set';
+
+    const values = Object.entries(headers)
+      .filter(([name]) => name.toLowerCase() === MONIME_SIGNATURE_HEADER)
+      .map(([, value]) => value);
+    const value = values.length === 1 ? values[0] : undefined;
+    if (typeof value !== 'string') {
+      return 'no single Monime-Signature header';
+    }
+
+    let timestamp: string | undefined;
+    const signatures: string[] = [];
+    for (const part of value.split(',')) {
+      const at = part.indexOf('=');
+      if (at < 0) continue;
+      const key = part.slice(0, at).trim();
+      const entry = part.slice(at + 1).trim();
+      if (key === 't') timestamp = entry;
+      if (key === 'v1') signatures.push(entry);
+    }
+    if (!timestamp || !/^[0-9]{1,12}$/.test(timestamp)) {
+      return 'the signature timestamp is missing or malformed';
+    }
+    if (signatures.length === 0) return 'no v1 signature';
+
+    const age = Math.floor(Date.now() / 1000) - Number(timestamp);
+    if (age > MONIME_SIGNATURE_MAX_AGE_SECONDS) {
+      return 'the signature timestamp is too old';
+    }
+    if (age < -MONIME_SIGNATURE_MAX_FUTURE_SECONDS) {
+      return 'the signature timestamp is in the future';
+    }
+
+    const expected = createHmac('sha256', secret)
+      .update(
+        Buffer.concat([
+          Buffer.from(`${timestamp}_`, 'utf-8'),
+          Buffer.from(rawBody, 'utf-8'),
+        ]),
+      )
+      .digest();
+    const matches = signatures.some((signature) => {
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(signature)) return false;
+      const given = Buffer.from(signature, 'base64');
+      return (
+        given.length === expected.length && timingSafeEqual(given, expected)
+      );
+    });
+    return matches ? null : 'the signature does not match';
   }
 
   /**
