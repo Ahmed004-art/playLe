@@ -1122,11 +1122,24 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
         .send({ reason: 'Verified identity via support ticket #100' })
         .expect(200);
 
-      const failed = await request(app.getHttpServer())
-        .post(`/api/v1/admin/withdrawals/${created.body.id}/fail`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ reason: 'Mobile money payout attempt did not go through' })
-        .expect(200);
+      const adminFail = () =>
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/withdrawals/${created.body.id}/fail`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ reason: 'Mobile money payout attempt did not go through' });
+
+      // The provider accepted this payout: the admin's word alone no longer
+      // releases it (OUTSTANDING_WORK item 29).
+      await adminFail().expect(409);
+      const stillHeld = await prisma.wallet.findUnique({ where: { userId } });
+      expect(stillHeld?.availableBalanceMinor).toBe(6000n);
+      expect(stillHeld?.heldBalanceMinor).toBe(4000n);
+
+      const check = vi
+        .spyOn(fakeProvider, 'checkPayoutStatus')
+        .mockResolvedValueOnce({ outcome: 'FAILED' });
+      const failed = await adminFail().expect(200);
+      check.mockRestore();
 
       expect(failed.body.status).toBe('FAILED');
       expect(failed.body.failureReason).toMatch(/did not go through/i);

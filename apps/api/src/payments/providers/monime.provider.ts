@@ -224,10 +224,17 @@ export class MonimeProvider implements PaymentProviderPort {
     }
 
     if (result.kind === 'http_error') {
+      // An error status does not establish that no payout was created, and a
+      // definite failure releases the user's hold (OUTSTANDING_WORK item 29).
+      // Monime's docs tell a caller unsure whether a create succeeded to look
+      // the object up, say to retry a 5xx under the same key, and give 422 no
+      // payout meaning. Only the 429 row of their errors table says "Nothing
+      // happened"; it is not relied on, because a wrong release cannot be
+      // undone and a wrong hold can.
       return {
         providerReference: null,
-        outcome: 'FAILED',
-        failureReason: `Monime rejected the payout (HTTP ${result.status})`,
+        outcome: 'UNKNOWN',
+        failureReason: `Monime answered HTTP ${result.status}; whether a payout was created is unknown`,
         raw: result.json,
       };
     }
@@ -237,8 +244,18 @@ export class MonimeProvider implements PaymentProviderPort {
       unknown
     > | null;
     const id = payout?.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      // A success response that does not identify a payout proves nothing,
+      // whatever else it says.
+      return {
+        providerReference: null,
+        outcome: 'UNKNOWN',
+        failureReason: 'Monime success response did not identify a payout',
+        raw: result.json,
+      };
+    }
     return {
-      providerReference: typeof id === 'string' ? id : null,
+      providerReference: id,
       outcome: this.mapPayoutStatus(payout?.status),
       raw: result.json,
     };
@@ -264,7 +281,11 @@ export class MonimeProvider implements PaymentProviderPort {
       string,
       unknown
     > | null;
-    return { outcome: this.mapPayoutStatus(payout?.status), raw: result.json };
+    // An answer about any other payout (or none) says nothing about this one.
+    if (payout?.id !== params.providerReference) {
+      return { outcome: 'UNKNOWN', raw: result.json };
+    }
+    return { outcome: this.mapPayoutStatus(payout.status), raw: result.json };
   }
 
   verifyWebhookSignature(

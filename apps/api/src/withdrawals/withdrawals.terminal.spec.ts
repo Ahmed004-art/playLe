@@ -73,7 +73,12 @@ function build(initial: { held?: bigint } = {}) {
     },
   };
 
+  // No payout attempt is on record in this model, so an admin `fail` is the
+  // manual path (see withdrawals.payout-ambiguity.spec.ts for the gate itself).
+  const providerOperation = { findMany: vi.fn(() => Promise.resolve([])) };
+
   const prisma = {
+    providerOperation,
     withdrawal: {
       findUnique: vi.fn(() => Promise.resolve({ ...db.withdrawal })),
       findFirst: vi.fn(() => Promise.resolve({ ...db.withdrawal })),
@@ -131,6 +136,7 @@ function build(initial: { held?: bigint } = {}) {
     $transaction: vi.fn(async (fn: (c: typeof tx) => Promise<unknown>) => {
       const undo: Undo = [];
       const own = {
+        providerOperation,
         withdrawal: {
           updateMany: (args: Parameters<typeof tx.withdrawal.updateMany>[0]) =>
             tx.withdrawal.updateMany(args, undo),

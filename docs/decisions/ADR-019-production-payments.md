@@ -59,6 +59,37 @@ hand after reconciling out-of-band — `WithdrawalsService.complete`/`fail`
 now also accept the `PROCESSING` state for exactly this case, still
 mandatory-reason, still audited, never a "just mark it paid" shortcut.
 
+### Only an established failure releases a payout hold (amendment, item 29)
+
+Phase 6 treated every non-2xx answer to `POST /v1/payouts` as a failure and
+released the hold, although an error status does not show that no payout was
+created. This amendment replaces that.
+
+- **Submission outcome.** Any non-2xx status, a timeout or dropped connection,
+  an unreadable body, or a success body that names no payout id is `UNKNOWN`:
+  `PROCESSING`, funds held. `FAILED` comes only from a success response that
+  names the payout and reports it `failed`. Monime's errors table says of 429
+  "Nothing happened"; it is deliberately not relied on yet. `UNAVAILABLE`
+  (no request sent) is unchanged.
+- **One attempt.** The `PAYOUT_SUBMIT` row is created under the wallet lock,
+  only for an `APPROVED` withdrawal with no attempt other than `FAILED` ones.
+  `FAILED` on that row means no request was sent, or the provider established
+  the payout will not be made.
+- **Admin `fail`.** Allowed when there is no non-`FAILED` attempt. With one, it
+  needs the stored payout reference and a status check, from the same
+  provider, answering `FAILED` for that id; each check is recorded as a
+  `PAYOUT_STATUS_CHECK` with the admin and reason. It re-checks under the
+  wallet lock. This narrows resolution path (c) below: reconciling by hand no
+  longer releases a hold on the admin's word. `complete` is unchanged.
+- **Reconciliation** also reports, as `UNKNOWN_PAYOUT_OUTCOME`, an attempt left
+  `PENDING` for over five minutes on an `APPROVED` withdrawal.
+- **Known limit.** With no payout reference there is nothing to check, and no
+  lookup by PlayLe's metadata or idempotency key is documented. Such a hold can
+  be completed, or released by a provider event only once it can be matched,
+  which today it cannot. It stays held until Monime supplies a reliable way to
+  establish the outcome. Whether Monime's `failed` status is final is also not
+  documented.
+
 ### Webhook routing without a double-insert race
 A single endpoint (`POST /payments/webhooks/monime`) receives both
 deposit and payout events. The controller calls

@@ -730,3 +730,32 @@ anomaly grouped on a deposit/withdrawal does not distinguish a second stale
 event that appears after the first was resolved from one already counted;
 nothing automatically re-drives or fails a stale event — that needs the
 provider's redelivery or an operator.
+
+### 29. A payout HTTP error of any status was treated as a definite failure
+**Status**: Fixed in code on `fix/item-29-ambiguous-payout` (ADR-019, "Only an
+established failure releases a payout hold"); not merged and not CI-verified
+until recorded here. **The defect**: `MonimeProvider.initiatePayout` mapped
+every non-2xx answer to `FAILED`, which released the hold although a payout
+might have been created. Fixing it also closed: success responses naming no
+payout being trusted; an admin releasing a hold while a request was in flight,
+interrupted or unresolved; and `submitPayout` being able to send a second
+request under a new idempotency key.
+**Still open (Monime)**:
+- A payout with no stored reference cannot be checked or matched to a webhook.
+  Its funds stay held with no in-app way to release them. Needed: a documented
+  lookup by our metadata or idempotency key, or confirmation of same-key replay
+  (including after 24 h).
+- Whether `failed` is final, and whether any error status guarantees no payout
+  (429 is documented as "Nothing happened" but is not relied on), are
+  unconfirmed. The response and status shapes are from documentation, never
+  from a real payout.
+- No automatic status polling: an admin's `fail` is the only caller of
+  `checkPayoutStatus`.
+**Before deploying to any database that has run Monime payouts**: attempts
+written by the old code as `FAILED` after an HTTP error look like proven
+failures. Review `PAYOUT_SUBMIT` rows with status `FAILED` whose
+`failureReason` starts "Monime rejected the payout": any on an `APPROVED` or
+`PROCESSING` withdrawal, and any on a `FAILED` one (that hold was already
+released and the payout may have been made). No database was checked.
+**Severity**: High before any live payout until merged. **Owner**: project
+owner (Monime questions, database check).

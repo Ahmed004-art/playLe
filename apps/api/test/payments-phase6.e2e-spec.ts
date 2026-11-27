@@ -13,6 +13,7 @@ import { LedgerService } from '../src/ledger/ledger.service.js';
 import { WithdrawalsService } from '../src/withdrawals/withdrawals.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
+import { PaymentReconciliationService } from '../src/payments/payment-reconciliation.service.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
 
 /**
@@ -974,7 +975,7 @@ describe('Phase 6 payments (e2e)', () => {
       });
     });
 
-    it('an admin failure while the payout request is in flight is not overwritten when the provider then answers SUCCEEDED', async () => {
+    it('an admin failure while the payout request is in flight is refused, and the provider answering SUCCEEDED debits the hold once', async () => {
       const ids = await userWithPendingWithdrawal('payinflight2');
       fakeProvider.payoutScenario = 'succeeded';
 
@@ -982,12 +983,12 @@ describe('Phase 6 payments (e2e)', () => {
         app.get(WithdrawalsService).fail(ids.adminId, ids.id, 'Could not pay'),
       );
 
-      expect(result.admin.ok).toBe(true);
-      expect(await statusOf(ids.id)).toBe('FAILED');
-      // Released once, never also debited.
-      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+      // The provider may still pay, so nothing is released (item 29).
+      expectConflict(result.admin);
+      expect(await statusOf(ids.id)).toBe('COMPLETED');
+      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
       expect(await walletOf(ids.userId)).toEqual({
-        available: 5000n,
+        available: 1000n,
         held: 5000n,
       });
       // The attempt is still on record as what the provider answered.
@@ -995,6 +996,214 @@ describe('Phase 6 payments (e2e)', () => {
         where: { relatedWithdrawalId: ids.id },
       });
       expect(operations.map((o) => o.status)).toEqual(['SUCCEEDED']);
+    });
+
+    describe('unresolved payout outcomes (item 29)', () => {
+      const submissions = (withdrawalId: string) =>
+        prisma.providerOperation.findMany({
+          where: { relatedWithdrawalId: withdrawalId, kind: 'PAYOUT_SUBMIT' },
+        });
+
+      const adminFail = (ids: Ids) =>
+        app
+          .get(WithdrawalsService)
+          .fail(ids.adminId, ids.id, 'Payout did not arrive');
+
+      async function expectStillHeld(ids: Ids, status = 'PROCESSING') {
+        expect(await statusOf(ids.id)).toBe(status);
+        expect(await entryTypes(ids.id)).toEqual(['HOLD']);
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 1000n,
+          held: 9000n,
+        });
+      }
+
+      /** Approved, with the attempt that `approve` would go on to make not yet begun. */
+      async function approvedWithoutAttempt(ids: Ids) {
+        await prisma.withdrawal.update({
+          where: { id: ids.id },
+          data: { status: 'APPROVED' },
+        });
+      }
+
+      it('an UNKNOWN answer with no body is persisted, holds the funds and cannot be released by an admin', async () => {
+        const ids = await userWithPendingWithdrawal('amb1');
+        const spy = vi
+          .spyOn(fakeProvider, 'initiatePayout')
+          .mockResolvedValueOnce({
+            providerReference: null,
+            outcome: 'UNKNOWN',
+            failureReason: 'HTTP 504',
+            raw: null,
+          });
+        try {
+          await run('approve', ids);
+
+          const admin = await prisma.user.findUniqueOrThrow({
+            where: { email: email('amb1adm') },
+          });
+          expect(admin.id).toBe(ids.adminId);
+          await expect(adminFail(ids)).rejects.toBeInstanceOf(
+            ConflictException,
+          );
+          // A second submission is not made under a new key.
+          await app.get(WithdrawalsService).submitPayout(ids.id);
+
+          expect(spy).toHaveBeenCalledTimes(1);
+          await expectStillHeld(ids);
+          const attempts = await submissions(ids.id);
+          expect(attempts.map((o) => o.status)).toEqual(['UNKNOWN']);
+          expect(attempts[0].providerIdempotencyKey).toBe(
+            spy.mock.calls[0][0].providerIdempotencyKey,
+          );
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('releases only once the provider confirms the failure, once, however many admins ask', async () => {
+        const ids = await userWithPendingWithdrawal('amb2');
+        await run('approve', ids);
+
+        // The fake answers PENDING to a status check by default.
+        await expect(adminFail(ids)).rejects.toBeInstanceOf(ConflictException);
+        await expectStillHeld(ids);
+
+        const spy = vi
+          .spyOn(fakeProvider, 'checkPayoutStatus')
+          .mockResolvedValue({ outcome: 'FAILED' });
+        try {
+          const results = await Promise.all([
+            settle(adminFail(ids)),
+            settle(adminFail(ids)),
+          ]);
+          expect(results.filter((r) => r.ok)).toHaveLength(1);
+        } finally {
+          spy.mockRestore();
+        }
+
+        await request(app.getHttpServer())
+          .post('/api/v1/payments/webhooks/monime')
+          .set('x-fake-signature', fakeProvider.signatureHeader())
+          .set('Content-Type', 'application/json')
+          .send(
+            fakeProvider.buildPayoutWebhookBody({
+              eventType: 'payout.failed',
+              providerReference: `fake_payout_${ids.id}`,
+            }),
+          )
+          .expect(200);
+
+        expect(await statusOf(ids.id)).toBe('FAILED');
+        expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+        expect(await walletOf(ids.userId)).toEqual({
+          available: 5000n,
+          held: 5000n,
+        });
+        expect((await submissions(ids.id)).map((o) => o.status)).toEqual([
+          'FAILED',
+        ]);
+        const checks = await prisma.providerOperation.findMany({
+          where: {
+            relatedWithdrawalId: ids.id,
+            kind: 'PAYOUT_STATUS_CHECK',
+          },
+        });
+        expect(checks.length).toBeGreaterThanOrEqual(2);
+        expect(checks[0].requestSnapshot).toMatchObject({
+          adminId: ids.adminId,
+          reason: 'Payout did not arrive',
+        });
+      });
+
+      it('an admin failure that checked before a submission began does not release under it', async () => {
+        const ids = await userWithPendingWithdrawal('amb3');
+        await approvedWithoutAttempt(ids);
+        const resolved: unknown = app.get(WithdrawalsService);
+        const service = resolved as {
+          confirmNoPayoutWillBeMade: (...a: string[]) => Promise<unknown>;
+        };
+        const original = service.confirmNoPayoutWillBeMade.bind(service);
+        let reached!: () => void;
+        let release!: () => void;
+        const reachedPromise = new Promise<void>((r) => (reached = r));
+        const released = new Promise<void>((r) => (release = r));
+        const spy = vi
+          .spyOn(service, 'confirmNoPayoutWillBeMade')
+          .mockImplementationOnce(async (...args) => {
+            const result = await original(...args);
+            reached();
+            await released;
+            return result;
+          });
+        try {
+          const failing = settle(adminFail(ids));
+          await reachedPromise;
+          await app.get(WithdrawalsService).submitPayout(ids.id);
+          release();
+
+          expectConflict(await failing);
+          await expectStillHeld(ids);
+        } finally {
+          release();
+          spy.mockRestore();
+        }
+      });
+
+      it('concurrent submissions of one approved withdrawal record and send one attempt', async () => {
+        const ids = await userWithPendingWithdrawal('amb4');
+        await approvedWithoutAttempt(ids);
+        const spy = vi.spyOn(fakeProvider, 'initiatePayout');
+        try {
+          const service = app.get(WithdrawalsService);
+          await Promise.all([
+            service.submitPayout(ids.id),
+            service.submitPayout(ids.id),
+            service.submitPayout(ids.id),
+          ]);
+
+          expect(spy).toHaveBeenCalledTimes(1);
+          expect(await submissions(ids.id)).toHaveLength(1);
+          await expectStillHeld(ids);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('an interrupted attempt is neither resubmitted nor released, and reconciliation reports it', async () => {
+        const ids = await userWithPendingWithdrawal('amb5');
+        await approvedWithoutAttempt(ids);
+        const attempt = await prisma.providerOperation.create({
+          data: {
+            provider: fakeProvider.name,
+            kind: 'PAYOUT_SUBMIT',
+            relatedWithdrawalId: ids.id,
+            providerIdempotencyKey: randomUUID(),
+            status: 'PENDING',
+          },
+        });
+        const reported = async () => {
+          const report = await app.get(PaymentReconciliationService).runOnce();
+          return report.anomalies.some(
+            (a) =>
+              a.type === 'UNKNOWN_PAYOUT_OUTCOME' &&
+              a.relatedWithdrawalId === ids.id,
+          );
+        };
+
+        // Recent: it may simply still be in flight.
+        expect(await reported()).toBe(false);
+        await prisma.providerOperation.update({
+          where: { id: attempt.id },
+          data: { createdAt: new Date(Date.now() - 60 * 60 * 1000) },
+        });
+        expect(await reported()).toBe(true);
+
+        await app.get(WithdrawalsService).submitPayout(ids.id);
+        await expect(adminFail(ids)).rejects.toBeInstanceOf(ConflictException);
+        expect(await submissions(ids.id)).toHaveLength(1);
+        await expectStillHeld(ids, 'APPROVED');
+      });
     });
 
     it('unsynchronised approve and cancel, repeated, always end in exactly one consistent outcome', async () => {

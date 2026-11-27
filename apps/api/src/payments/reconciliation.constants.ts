@@ -1,5 +1,12 @@
 import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 
+/**
+ * How long a payout attempt may stay PENDING on a still-APPROVED withdrawal
+ * before it is reported as interrupted. Far above the provider HTTP timeout
+ * (10 s by default), so a request still in flight is not reported.
+ */
+export const INTERRUPTED_PAYOUT_THRESHOLD_MS = 5 * 60 * 1000;
+
 /** How long a withdrawal may sit in PROCESSING before it's flagged as stuck. */
 export const STUCK_PROCESSING_THRESHOLD_MS = 60 * 60 * 1000;
 
