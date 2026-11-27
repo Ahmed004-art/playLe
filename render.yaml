@@ -1,0 +1,100 @@
+# PlayLe production on Render (https://render.com/docs/blueprint-spec).
+# Import this Blueprint in the Render dashboard (New > Blueprint). Every value
+# marked `sync: false` is a secret or a per-deployment setting that Render asks
+# for in the dashboard: it is never stored in this file. Paid plans are used on
+# purpose: free web services sleep, free Postgres is deleted after 30 days and
+# free Key Value loses its data on restart, and the pre-deploy migration step
+# needs a paid instance. See docs/deployment/PRODUCTION.md.
+#
+# Real money stays OFF until the owner authorizes Live activation:
+# MONIME_LIVE_PAYMENTS_ENABLED, REAL_MONEY_GAMING_ENABLED and
+# ELIGIBILITY_POLICY_CONFIGURED are all "false" here.
+
+services:
+  - type: web
+    name: playle-api
+    runtime: node
+    region: frankfurt
+    plan: starter
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev && npm run build:shared && npm run build:api
+    preDeployCommand: npm run db:migrate:deploy --workspace=apps/api
+    startCommand: node apps/api/dist/main.js
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # One HTTPS load balancer in front of the service.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: playle-db
+          property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          type: keyvalue
+          name: playle-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: keyvalue
+          name: playle-redis
+          property: port
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      # 64 hex characters: `openssl rand -hex 32`. Never change it once set
+      # (it encrypts stored MFA secrets).
+      - key: MFA_ENCRYPTION_KEY
+        sync: false
+      # The admin app's origin, e.g. https://admin.example.com
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ADMIN_SESSION_SECURE_COOKIES
+        value: "true"
+      - key: PAYMENTS_PROVIDER
+        value: monime
+      - key: MONIME_SPACE_ID
+        sync: false
+      - key: MONIME_API_KEY
+        sync: false
+      - key: MONIME_WEBHOOK_SECRET
+        sync: false
+      - key: MONIME_LIVE_PAYMENTS_ENABLED
+        value: "false"
+      - key: REAL_MONEY_GAMING_ENABLED
+        value: "false"
+      - key: ELIGIBILITY_POLICY_CONFIGURED
+        value: "false"
+
+  - type: web
+    name: playle-admin
+    runtime: node
+    region: frankfurt
+    plan: starter
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev && npm run build:shared && npm run build:admin
+    startCommand: cd apps/admin && npx next start -p $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Read at build time, e.g. https://api.example.com/api/v1
+      - key: NEXT_PUBLIC_API_BASE_URL
+        sync: false
+
+  - type: keyvalue
+    name: playle-redis
+    region: frankfurt
+    plan: starter
+    # Internal connections only.
+    ipAllowList: []
+
+databases:
+  - name: playle-db
+    region: frankfurt
+    databaseName: playle
+    user: playle

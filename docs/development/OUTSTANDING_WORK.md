@@ -777,3 +777,12 @@ in the deployment; deposits are never credited by polling (the paid-amount
 field is unconfirmed, see item 27/MONIME_SETUP action 3); a payout with no
 stored reference still cannot be polled (item 29). **Owner**: payments; log
 alerting is a deployment task.
+
+### 33. Production deployment and Monime Live - prepared, not yet created
+**Status**: `render.yaml` and docs/deployment/PRODUCTION.md describe the
+production setup; completions without a paid amount are confirmed from the
+payment code (ADR-019). **Still open (owner)**: Render account and billing, a
+domain with `api.` and `admin.` subdomains, Live Monime credentials and webhook,
+a log alert on `PAYMENT ALERT`, Monime's written approval, legal documents, and
+the Live activation decision. Monime Test mode does not support payouts, so the
+first payout verification is a small Live one.

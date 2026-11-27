@@ -486,6 +486,35 @@ export class DepositsService {
       return 'ignored';
     }
 
+    if (
+      payload.eventType === 'deposit.completed' &&
+      payload.paidAmountNeedsConfirmation
+    ) {
+      // The event names no paid amount: ask the provider's API. A lookup that
+      // cannot be made throws (500), leaving the event RECEIVED so the
+      // provider's retry recovers it; a definite "not paid" is rejected below.
+      const confirmed = this.provider.confirmDepositPayment
+        ? await this.provider.confirmDepositPayment({
+            depositId: deposit.id,
+            providerReference: payload.providerReference,
+          })
+        : null;
+      if (!confirmed) {
+        // Definitively not shown as paid for this deposit: kept against the
+        // deposit for operators (reported as AMOUNT_MISMATCH), deposit left
+        // PENDING, nothing credited.
+        this.logger.warn(
+          `Rejected completion event ${verification.providerEventId} for deposit ${deposit.id}: the provider did not confirm a completed payment for it. Deposit left PENDING.`,
+        );
+        await finishProviderEvent(this.prisma, providerEvent.id, {
+          status: 'REJECTED',
+          relatedDepositId: deposit.id,
+        });
+        return 'rejected';
+      }
+      verification.parsedPayload = { ...payload, ...confirmed };
+    }
+
     if (payload.eventType === 'deposit.completed') {
       // A provider that reports what was paid must agree with the deposit
       // before anything is claimed or credited: the credit is always the

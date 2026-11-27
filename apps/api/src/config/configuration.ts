@@ -8,6 +8,8 @@ import { PROVIDER_EVENT_STALE_DEFAULT_MS } from '../payments/reconciliation.cons
 export interface AppConfiguration {
   env: string;
   port: number;
+  trustProxyHops: number;
+  swaggerEnabled: boolean;
   corsOrigins: string[];
   database: {
     url: string;
@@ -146,6 +148,19 @@ export interface AppConfiguration {
 export default (): AppConfiguration => ({
   env: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
+  /**
+   * How many reverse proxies sit in front of the API (Express `trust proxy`).
+   * 0 trusts none. Behind one HTTPS load balancer (Render, Fly, Railway...)
+   * set 1, or every client shares the proxy's IP and therefore one rate
+   * limit.
+   */
+  trustProxyHops: parseInt(process.env.TRUST_PROXY_HOPS ?? '0', 10),
+  /** Serve Swagger at /api/docs. Off by default in production. */
+  swaggerEnabled:
+    process.env.SWAGGER_ENABLED === undefined ||
+    process.env.SWAGGER_ENABLED === ''
+      ? process.env.NODE_ENV !== 'production'
+      : process.env.SWAGGER_ENABLED === 'true',
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3001')
     .split(',')
     .map((origin) => origin.trim())

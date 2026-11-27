@@ -415,14 +415,27 @@ describe('MonimeProvider - completed-payment amount (PROVISIONAL, unverified fie
     });
   });
 
-  describe('is not trusted as a completed deposit (parsedPayload is null) when the paid amount is missing or malformed', () => {
-    const cases: [string, Record<string, unknown>][] = [
+  describe('names no paid amount: needs confirmation from the payment code, never credited from the configured amount', () => {
+    it.each([
       ['empty data', {}],
       [
         'only the configured amount, no paid total',
         { amount: sle(4000), progress: { isCompleted: true } },
       ],
       ['no progress at all', { amount: sle(4000) }],
+    ])('%s', (_name, data) => {
+      expect(
+        provider.parseMonimeWebhookPayload(completed(data))?.parsedPayload,
+      ).toEqual({
+        eventType: 'deposit.completed',
+        providerReference: 'pmc-1',
+        paidAmountNeedsConfirmation: true,
+      });
+    });
+  });
+
+  describe('is not trusted as a completed deposit (parsedPayload is null) when a named paid amount is malformed', () => {
+    const cases: [string, Record<string, unknown>][] = [
       [
         'fractional value',
         { amount: sle(4000), progress: { totalPaymentSum: sle(4000.5) } },
@@ -570,7 +583,11 @@ describe('MonimeProvider - completed-payment amount (PROVISIONAL, unverified fie
         }),
       );
 
-      expect(parsed?.parsedPayload).toBeNull();
+      expect(parsed?.parsedPayload).toEqual({
+        eventType: 'deposit.completed',
+        providerReference: 'pmc-1',
+        paidAmountNeedsConfirmation: true,
+      });
     });
 
     it('never treats the configured amount as the paid amount', () => {
@@ -578,7 +595,11 @@ describe('MonimeProvider - completed-payment amount (PROVISIONAL, unverified fie
         completed({ amount: sle(4000), mode: 'one_time', status: 'completed' }),
       );
 
-      expect(parsed?.parsedPayload).toBeNull();
+      expect(parsed?.parsedPayload).toEqual({
+        eventType: 'deposit.completed',
+        providerReference: 'pmc-1',
+        paidAmountNeedsConfirmation: true,
+      });
     });
   });
 
@@ -877,7 +898,7 @@ describe('MonimeProvider - webhook signature verification', () => {
   it('keeps an authenticated event it does not act on as delivered, so it can never move money', () => {
     const body = JSON.stringify({
       apiVersion: 'caph.2025-08-23',
-      event: { id: 'wke-2', name: 'payment_code.completed', timestamp: `${T}` },
+      event: { id: 'wke-2', name: 'payment_code.processed', timestamp: `${T}` },
       object: { id: 'pmc-9xY7r1', type: 'payment_code' },
       data: {
         id: 'pmc-9xY7r1',
@@ -891,7 +912,7 @@ describe('MonimeProvider - webhook signature verification', () => {
     expect(result).toEqual({
       valid: true,
       providerEventId: 'wke-2',
-      eventType: 'payment_code.completed',
+      eventType: 'payment_code.processed',
       parsedPayload: { unmappedMonimeEvent: JSON.parse(body) },
     });
   });
@@ -921,5 +942,74 @@ describe('MonimeProvider - webhook signature verification', () => {
     expect(message).not.toContain('SECRET-SIG-VALUE');
     expect(message).not.toContain('SECOND-SECRET');
     expect(message).not.toContain('totalPaymentSum');
+  });
+});
+
+describe('MonimeProvider - confirming a deposit payment from the payment code', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const provider = () =>
+    new MonimeProvider(
+      fakeConfigService({
+        monimeApiKey: 'mon_test_abc',
+        monimeSpaceId: 'spc-1',
+      }),
+    );
+  const code = (overrides: Record<string, unknown> = {}) =>
+    new Response(
+      JSON.stringify({
+        success: true,
+        result: {
+          id: 'pmc-1',
+          status: 'completed',
+          reference: 'dep-1',
+          amount: { currency: 'SLE', value: 4000 },
+          processedPaymentData: { amount: { currency: 'SLE', value: 4000 } },
+          ...overrides,
+        },
+      }),
+      { status: 200 },
+    );
+  const confirm = () =>
+    provider().confirmDepositPayment({
+      depositId: 'dep-1',
+      providerReference: 'pmc-1',
+    });
+
+  it('returns the processed amount of a completed code that is this deposit', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(code());
+
+    expect(await confirm()).toEqual({ amountMinor: '4000', currency: 'SLE' });
+    expect(fetchSpy.mock.calls[0][0] as string).toBe(
+      'https://api.monime.io/v1/payment-codes/pmc-1',
+    );
+  });
+
+  it.each([
+    ['still pending', { status: 'pending', processedPaymentData: null }],
+    ['completed but naming no paid amount', { processedPaymentData: null }],
+    ['another payment code', { id: 'pmc-2' }],
+    ['another deposit', { reference: 'dep-2' }],
+    [
+      'a malformed paid amount',
+      { processedPaymentData: { amount: { currency: 'SLE', value: '4000' } } },
+    ],
+  ])('returns null for a code %s', async (_name, overrides) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(code(overrides));
+    expect(await confirm()).toBeNull();
+  });
+
+  it('returns null for a code Monime does not know (404)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', { status: 404 }),
+    );
+    expect(await confirm()).toBeNull();
+  });
+
+  it.each([
+    ['an HTTP 500', () => Promise.resolve(new Response('{}', { status: 500 }))],
+    ['a network error', () => Promise.reject(new TypeError('fetch failed'))],
+  ])('throws on %s, so the webhook is retried', async (_name, answer) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(answer);
+    await expect(confirm()).rejects.toThrow();
   });
 });

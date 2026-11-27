@@ -472,6 +472,16 @@ export class MonimeProvider implements PaymentProviderPort {
         // it (or with it malformed) the payload is null, the event is stored
         // as IGNORED and shows up as an ORPHAN_PROVIDER_EVENT - it never
         // completes a deposit.
+        if (!this.hasPaidAmountLocation(data)) {
+          // Monime's documented caph completion sample carries no paid amount:
+          // the deposit service confirms it from the payment code itself
+          // (`confirmDepositPayment`) before anything is credited.
+          return {
+            eventType: 'deposit.completed',
+            providerReference,
+            paidAmountNeedsConfirmation: true,
+          };
+        }
         const paid = this.readPaidAmount(data);
         if (!paid) return null;
         return {
@@ -561,6 +571,68 @@ export class MonimeProvider implements PaymentProviderPort {
         money.currency === first.currency,
     );
     return agree ? first : null;
+  }
+
+  /** Whether the event names a paid amount at all (valid or not). */
+  private hasPaidAmountLocation(
+    data: Record<string, unknown> | undefined,
+  ): boolean {
+    if (!data) return false;
+    const at = (parent: unknown, key: string): unknown =>
+      parent && typeof parent === 'object'
+        ? (parent as Record<string, unknown>)[key]
+        : undefined;
+    return [
+      at(data.progress, 'totalPaymentSum'),
+      at(data.processedPaymentData, 'amount'),
+      at(data.paymentData, 'amount'),
+    ].some((candidate) => candidate !== undefined && candidate !== null);
+  }
+
+  /**
+   * Reads the payment code from Monime's API (authenticated with the API
+   * token) and returns what was paid, only when the code is `completed`, is
+   * the one asked about, belongs to this deposit (our `reference`, when
+   * Monime echoes it - verified on a real Test payment code) and names a paid
+   * amount (`processedPaymentData.amount`, present on the real object).
+   */
+  async confirmDepositPayment(params: {
+    depositId: string;
+    providerReference: string;
+  }): Promise<{ amountMinor: string; currency: string } | null> {
+    const readiness = this.readiness();
+    if (!readiness.ready) {
+      throw new Error(`Monime is not configured: ${readiness.reason}`);
+    }
+    const result = await this.request(
+      'GET',
+      `/v1/payment-codes/${encodeURIComponent(params.providerReference)}`,
+      readiness,
+    );
+    if (result.kind === 'network_error') {
+      throw new Error(`Monime payment-code lookup failed: ${result.message}`);
+    }
+    if (result.kind === 'http_error') {
+      if (result.status === 404) return null;
+      throw new Error(
+        `Monime payment-code lookup failed with HTTP ${result.status}`,
+      );
+    }
+    const code = (result.json?.result ?? null) as Record<
+      string,
+      unknown
+    > | null;
+    if (
+      !code ||
+      code.id !== params.providerReference ||
+      code.status !== 'completed' ||
+      (code.reference !== undefined &&
+        code.reference !== null &&
+        code.reference !== params.depositId)
+    ) {
+      return null;
+    }
+    return this.readPaidAmount(code);
   }
 
   private toPaidMoney(
