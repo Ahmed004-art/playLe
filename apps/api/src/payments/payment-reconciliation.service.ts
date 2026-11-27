@@ -11,6 +11,7 @@ import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
 import {
   INTERRUPTED_PAYOUT_THRESHOLD_MS,
+  NO_PAYOUT_REQUEST_SENT,
   STUCK_PROCESSING_THRESHOLD_MS,
 } from './reconciliation.constants.js';
 
@@ -229,35 +230,90 @@ export class PaymentReconciliationService {
     return [...fromEvents, ...fromOperations];
   }
 
-  /** A COMPLETED withdrawal that claims a provider reference with no matching provider confirmation. */
+  /**
+   * A COMPLETED withdrawal the provider contradicts, or does not confirm,
+   * including one with no stored payout reference (H1):
+   * - contradicted: a payout request that was sent ended FAILED, a status
+   *   check answered FAILED, or a `payout.failed` event was processed for it -
+   *   the user may have been debited for a payout that was never made;
+   * - unconfirmed: it has a payout reference or a sent payout request, but no
+   *   `payout.completed` event and no SUCCEEDED attempt.
+   * A withdrawal completed by hand with no payout request (none, or only one
+   * that was never sent) is neither.
+   */
   private async findWithdrawalCompletedWithoutConfirmation(): Promise<
     DetectedAnomaly[]
   > {
     const completed = await this.prisma.withdrawal.findMany({
-      where: { status: 'COMPLETED', providerReference: { not: null } },
+      where: {
+        status: 'COMPLETED',
+        OR: [
+          { providerReference: { not: null } },
+          { providerOperations: { some: { kind: 'PAYOUT_SUBMIT' } } },
+          { providerEvents: { some: { eventType: 'payout.failed' } } },
+        ],
+      },
       select: {
         id: true,
+        providerReference: true,
         providerEvents: { select: { status: true, eventType: true } },
-        providerOperations: { select: { status: true, kind: true } },
+        providerOperations: {
+          select: { status: true, kind: true, failureReason: true },
+        },
       },
     });
-    return completed
-      .filter(
-        (w) =>
-          !w.providerEvents.some(
-            (e) =>
-              e.status === 'PROCESSED' && e.eventType === 'payout.completed',
-          ) &&
-          !w.providerOperations.some(
-            (o) => o.kind === 'PAYOUT_SUBMIT' && o.status === 'SUCCEEDED',
+
+    const anomalies: DetectedAnomaly[] = [];
+    for (const w of completed) {
+      const sent = w.providerOperations.filter(
+        (o) =>
+          o.kind === 'PAYOUT_SUBMIT' &&
+          !(
+            o.status === 'FAILED' && o.failureReason === NO_PAYOUT_REQUEST_SENT
           ),
-      )
-      .map((w) => ({
-        type: 'WITHDRAWAL_COMPLETED_WITHOUT_PROVIDER_CONFIRMATION' as const,
-        relatedWithdrawalId: w.id,
-        detail:
-          'Withdrawal is COMPLETED with a provider reference but no matching provider confirmation was found — likely an admin manual completion; confirm out-of-band',
-      }));
+      );
+      const contradictions = [
+        ...(sent.some((o) => o.status === 'FAILED')
+          ? ['a payout request ended FAILED']
+          : []),
+        ...(w.providerOperations.some(
+          (o) => o.kind === 'PAYOUT_STATUS_CHECK' && o.status === 'FAILED',
+        )
+          ? ['a provider status check answered FAILED']
+          : []),
+        ...(w.providerEvents.some(
+          (e) => e.status === 'PROCESSED' && e.eventType === 'payout.failed',
+        )
+          ? ['a payout.failed event was received']
+          : []),
+      ];
+      if (contradictions.length > 0) {
+        anomalies.push({
+          type: 'WITHDRAWAL_COMPLETED_WITHOUT_PROVIDER_CONFIRMATION',
+          relatedWithdrawalId: w.id,
+          detail: `Withdrawal is COMPLETED but the provider contradicts it: ${contradictions.join('; ')}. The user may have been debited for a payout that was not made; confirm with the provider.`,
+        });
+        continue;
+      }
+
+      const confirmed =
+        w.providerEvents.some(
+          (e) => e.status === 'PROCESSED' && e.eventType === 'payout.completed',
+        ) ||
+        w.providerOperations.some(
+          (o) => o.kind === 'PAYOUT_SUBMIT' && o.status === 'SUCCEEDED',
+        );
+      if (!confirmed && (w.providerReference || sent.length > 0)) {
+        anomalies.push({
+          type: 'WITHDRAWAL_COMPLETED_WITHOUT_PROVIDER_CONFIRMATION',
+          relatedWithdrawalId: w.id,
+          detail: w.providerReference
+            ? 'Withdrawal is COMPLETED with a provider reference but no matching provider confirmation was found — likely an admin manual completion; confirm out-of-band'
+            : 'Withdrawal is COMPLETED after a payout request was sent, but it has no payout reference and no provider confirmation; confirm with the provider',
+        });
+      }
+    }
+    return anomalies;
   }
 
   private async findDuplicateProviderReferences(): Promise<DetectedAnomaly[]> {

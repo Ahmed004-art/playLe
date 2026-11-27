@@ -127,6 +127,58 @@ describe('WithdrawalsPage', () => {
     );
   });
 
+  it('explains, and offers no completion, when a payout cannot be verified', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRoutedByUrl({
+        '/admin/session/me': ADMIN_USER,
+        '/admin/withdrawals': {
+          items: [{ ...PENDING_WITHDRAWAL, status: 'PROCESSING', payoutCheck: 'UNVERIFIABLE' }],
+          nextCursor: null,
+        },
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <WithdrawalsPage />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText(/cannot be completed or failed here/)).toBeInTheDocument();
+    expect(screen.queryByText('Mark Completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Mark Failed')).not.toBeInTheDocument();
+  });
+
+  it('offers completion with an explanation when the provider will be asked', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRoutedByUrl({
+        '/admin/session/me': ADMIN_USER,
+        '/admin/withdrawals': {
+          items: [
+            {
+              ...PENDING_WITHDRAWAL,
+              status: 'PROCESSING',
+              providerReference: 'pyt-1',
+              payoutCheck: 'CHECK_WITH_PROVIDER',
+            },
+          ],
+          nextCursor: null,
+        },
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <WithdrawalsPage />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText('Mark Completed')).toBeInTheDocument();
+    expect(screen.getByText(/the provider is asked first/)).toBeInTheDocument();
+  });
+
   it('includes the X-CSRF-Token header (matching the admin_csrf_token cookie) on the approve call', async () => {
     document.cookie = 'admin_csrf_token=csrf-xyz789; path=/';
     const fetchMock = mockFetchRoutedByUrl({

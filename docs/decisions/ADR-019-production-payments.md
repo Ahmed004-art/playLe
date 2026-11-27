@@ -90,6 +90,39 @@ created. This amendment replaces that.
   establish the outcome. Whether Monime's `failed` status is final is also not
   documented.
 
+### Admin completion needs provider evidence too (amendment, H1)
+
+The item 29 amendment restricted admin `fail`; admin `complete` still debited
+the hold on the admin's word, even while a payout request was in flight. A
+later provider failure then left a user debited for a payout never made, and
+a manual payment alongside the original request could pay twice.
+
+- **`complete`** is allowed as before when no payout request that could have
+  paid was made (no `PAYOUT_SUBMIT` attempt other than `FAILED` ones). With
+  one, it needs provider evidence: the attempt already recorded `SUCCEEDED`,
+  or a status check for the stored payout reference answering `SUCCEEDED`.
+  An attempt in flight, without a payout reference, or answered anything
+  else is refused (409). It re-checks under the wallet lock, the lock
+  `submitPayout` records its attempt under, so completion and submission
+  cannot both proceed; the confirmed attempt is marked `SUCCEEDED` in the
+  same transaction as the status change and the `WITHDRAWAL` ledger entry.
+- **Audit.** A refused `complete` or `fail` writes an `AdminAuditLog` row
+  (`WITHDRAWAL_FINALIZE_REFUSED`, admin, withdrawal and reason). This adds one
+  enum value (migration `20261127190000_h1_withdrawal_finalize_refused_audit`,
+  additive). Rolling the code back leaves the value unused; Postgres cannot
+  drop an enum value in place, which is harmless.
+- **Reconciliation.** `WITHDRAWAL_COMPLETED_WITHOUT_PROVIDER_CONFIRMATION` now
+  also covers completed withdrawals with no stored payout reference: one the
+  provider contradicts (a sent request ended `FAILED`, a status check answered
+  `FAILED`, or a `payout.failed` event was processed) or one with a sent
+  request and no confirmation. Attempts for which no request was sent
+  (`NO_PAYOUT_REQUEST_SENT`) do not count.
+- **Admin list** returns `payoutCheck` (`NONE`, `CHECK_WITH_PROVIDER`,
+  `UNVERIFIABLE`); the page hides both actions for `UNVERIFIABLE` and explains.
+- **Consequence.** A payout whose response was lost (no reference) can now be
+  neither completed nor failed in-app. Its funds stay held until the provider
+  can be asked about it (item 29, "Still open").
+
 ### Webhook routing without a double-insert race
 A single endpoint (`POST /payments/webhooks/monime`) receives both
 deposit and payout events. The controller calls

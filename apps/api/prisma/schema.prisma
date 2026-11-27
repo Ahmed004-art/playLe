@@ -1210,6 +1210,9 @@ enum AdminAuditAction {
   MFA_CHALLENGE_FAILED
   PASSWORD_RESET_REQUESTED
   PASSWORD_RESET_COMPLETED
+  /// An admin `complete`/`fail` of a withdrawal refused because a payout
+  /// request is in flight or its outcome is not established (H1, item 29).
+  WITHDRAWAL_FINALIZE_REFUSED
 }
 
 /// Append-only audit trail for admin-session and account-security

@@ -6,6 +6,7 @@ import { WalletModule } from '../wallet/wallet.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { PaymentsModule } from '../payments/payments.module.js';
 import { NotificationOutboxModule } from '../notification-outbox/notification-outbox.module.js';
+import { AuditModule } from '../audit/audit.module.js';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { NotificationOutboxModule } from '../notification-outbox/notification-ou
     WalletModule,
     PaymentsModule,
     NotificationOutboxModule,
+    AuditModule,
   ],
   controllers: [WithdrawalsController],
   providers: [WithdrawalsService],

@@ -151,24 +151,37 @@ function WithdrawalsContent() {
                         </button>
                       </>
                     )}
-                    {w.status === 'APPROVED' && (
-                      <>
-                        <button
-                          className="actionButton"
-                          disabled={actioningId === w.id}
-                          onClick={() => runAction(completeWithdrawal, w.id)}
-                        >
-                          Mark Completed
-                        </button>
-                        <button
-                          className="actionButton"
-                          disabled={actioningId === w.id}
-                          onClick={() => runAction(failWithdrawal, w.id)}
-                        >
-                          Mark Failed
-                        </button>
-                      </>
-                    )}
+                    {(w.status === 'APPROVED' || w.status === 'PROCESSING') &&
+                      (w.payoutCheck === 'UNVERIFIABLE' ? (
+                        <span className="statusLine">
+                          Payout in progress or outcome unknown, with no payout reference to check.
+                          It cannot be completed or failed here; the funds stay held. Reconcile with
+                          the provider.
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            className="actionButton"
+                            disabled={actioningId === w.id}
+                            onClick={() => runAction(completeWithdrawal, w.id)}
+                          >
+                            Mark Completed
+                          </button>
+                          <button
+                            className="actionButton"
+                            disabled={actioningId === w.id}
+                            onClick={() => runAction(failWithdrawal, w.id)}
+                          >
+                            Mark Failed
+                          </button>
+                          {w.payoutCheck === 'CHECK_WITH_PROVIDER' && (
+                            <span className="statusLine">
+                              A payout was requested: the provider is asked first, and the action is
+                              refused unless it confirms that outcome.
+                            </span>
+                          )}
+                        </>
+                      ))}
                   </td>
                 </tr>
               ))}

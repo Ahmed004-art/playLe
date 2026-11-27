@@ -52,6 +52,14 @@ export interface AdminWithdrawal {
   failureReason: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * What can be done about the payout of an APPROVED/PROCESSING withdrawal:
+   * NONE - no payout request was made, so it is completed or failed by hand;
+   * CHECK_WITH_PROVIDER - complete/fail ask the provider and proceed only on a
+   * matching answer; UNVERIFIABLE - a request is in flight or has no payout
+   * reference, so neither is possible here. Absent on other statuses.
+   */
+  payoutCheck?: 'NONE' | 'CHECK_WITH_PROVIDER' | 'UNVERIFIABLE' | null;
 }
 
 export interface CursorPage<T> {

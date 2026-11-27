@@ -215,6 +215,7 @@ function build(initial: { held?: bigint } = {}) {
     {} as never,
     provider as never,
     notificationOutbox as never,
+    { record: vi.fn(() => Promise.resolve()) } as never,
   );
   return {
     db,

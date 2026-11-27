@@ -1171,11 +1171,23 @@ describe('Wallet / Deposits / Withdrawals (e2e)', () => {
         .send({ reason: 'Verified identity via support ticket #99' })
         .expect(200);
 
-      await request(app.getHttpServer())
-        .post(`/api/v1/admin/withdrawals/${created.body.id}/complete`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ reason: 'Payout sent manually' })
-        .expect(200);
+      const adminComplete = () =>
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/withdrawals/${created.body.id}/complete`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ reason: 'Payout sent manually' });
+
+      // The provider accepted this payout: the admin's word alone no longer
+      // completes it (H1); the provider must confirm it.
+      await adminComplete().expect(409);
+      const stillHeld = await prisma.wallet.findUnique({ where: { userId } });
+      expect(stillHeld?.heldBalanceMinor).toBe(4000n);
+
+      const check = vi
+        .spyOn(fakeProvider, 'checkPayoutStatus')
+        .mockResolvedValueOnce({ outcome: 'SUCCEEDED' });
+      await adminComplete().expect(200);
+      check.mockRestore();
 
       const wallet = await prisma.wallet.findUnique({ where: { userId } });
       expect(wallet?.availableBalanceMinor).toBe(6000n);
