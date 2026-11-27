@@ -15,6 +15,8 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
 import { PaymentReconciliationService } from '../src/payments/payment-reconciliation.service.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
+import { waitForBackendBlockedBy } from './pg-locks.js';
+import { PayoutUnresolvedException } from '../src/withdrawals/withdrawals.service.js';
 
 /**
  * Phase 6: the real payout lifecycle (`APPROVED` → provider submission →
@@ -383,14 +385,18 @@ describe('Phase 6 payments (e2e)', () => {
       expect(wallet?.availableBalanceMinor).toBe(6000n);
       expect(wallet?.heldBalanceMinor).toBe(4000n);
 
-      // The admin resolves it by hand after reconciling out-of-band —
-      // `complete`/`fail` now accept PROCESSING, not just APPROVED.
-      const resolved = await request(app.getHttpServer())
-        .post(`/api/v1/admin/withdrawals/${id}/complete`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ reason: 'Confirmed with provider support out-of-band' })
-        .expect(200);
-      expect(resolved.body.status).toBe('COMPLETED');
+      // Neither outcome is established, so an admin can neither complete nor
+      // fail it (H1, item 29): the funds stay held.
+      for (const action of ['complete', 'fail']) {
+        await request(app.getHttpServer())
+          .post(`/api/v1/admin/withdrawals/${id}/${action}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ reason: 'Confirmed with provider support out-of-band' })
+          .expect(409);
+      }
+      const after = await prisma.wallet.findUnique({ where: { userId } });
+      expect(after?.availableBalanceMinor).toBe(6000n);
+      expect(after?.heldBalanceMinor).toBe(4000n);
     });
 
     it('when the provider is unavailable, approval leaves the withdrawal APPROVED for the existing manual flow', async () => {
@@ -937,7 +943,7 @@ describe('Phase 6 payments (e2e)', () => {
       }
     }
 
-    it('an admin completion while the payout request is in flight is not overwritten, and the payout event debits nothing more', async () => {
+    it('an admin completion while the payout request is in flight is refused, and the payout event then debits once', async () => {
       const ids = await userWithPendingWithdrawal('payinflight1');
       const reference = `fake_payout_${ids.id}`;
 
@@ -947,10 +953,10 @@ describe('Phase 6 payments (e2e)', () => {
           .complete(ids.adminId, ids.id, 'Paid by hand', reference),
       );
 
-      expect(result.admin.ok).toBe(true);
+      expectConflict(result.admin);
       expect(result.approval.ok).toBe(true);
-      expect(await statusOf(ids.id)).toBe('COMPLETED');
-      expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+      expect(await statusOf(ids.id)).toBe('PROCESSING');
+      expect(await entryTypes(ids.id)).toEqual(['HOLD']);
 
       // The provider's own completion event for that reference then arrives.
       await request(app.getHttpServer())
@@ -1203,6 +1209,367 @@ describe('Phase 6 payments (e2e)', () => {
         await expect(adminFail(ids)).rejects.toBeInstanceOf(ConflictException);
         expect(await submissions(ids.id)).toHaveLength(1);
         await expectStillHeld(ids, 'APPROVED');
+      });
+
+      describe('admin completion (H1)', () => {
+        const service = () => app.get(WithdrawalsService);
+        const adminComplete = (ids: Ids, svc = service()) =>
+          svc.complete(ids.adminId, ids.id, 'Recipient confirmed payment');
+
+        const refusals = (adminId: string) =>
+          prisma.adminAuditLog.findMany({
+            where: { adminId, action: 'WITHDRAWAL_FINALIZE_REFUSED' },
+          });
+
+        const anomalyFor = async (withdrawalId: string) => {
+          const report = await app.get(PaymentReconciliationService).runOnce();
+          return report.anomalies.find(
+            (a) =>
+              a.type === 'WITHDRAWAL_COMPLETED_WITHOUT_PROVIDER_CONFIRMATION' &&
+              a.relatedWithdrawalId === withdrawalId,
+          );
+        };
+
+        const deliver = (
+          ids: Ids,
+          eventType: 'payout.completed' | 'payout.failed',
+        ) =>
+          request(app.getHttpServer())
+            .post('/api/v1/payments/webhooks/monime')
+            .set('x-fake-signature', fakeProvider.signatureHeader())
+            .set('Content-Type', 'application/json')
+            .send(
+              fakeProvider.buildPayoutWebhookBody({
+                eventType,
+                providerReference: `fake_payout_${ids.id}`,
+              }),
+            )
+            .expect(200);
+
+        /** Holds the user's wallet row lock until released. */
+        async function holdWalletLock(userId: string) {
+          const wallet = await prisma.wallet.findUniqueOrThrow({
+            where: { userId },
+          });
+          let release!: () => void;
+          const gate = new Promise<void>((r) => (release = r));
+          let acquired!: () => void;
+          const ready = new Promise<void>((r) => (acquired = r));
+          let pid!: number;
+          const held = prisma.$transaction(
+            async (tx) => {
+              await tx.$queryRaw`SELECT id FROM wallets WHERE id = ${wallet.id} FOR UPDATE`;
+              const [row] = await tx.$queryRaw<
+                { pid: number }[]
+              >`SELECT pg_backend_pid() AS pid`;
+              pid = row.pid;
+              acquired();
+              await gate;
+            },
+            { maxWait: 10_000, timeout: 30_000 },
+          );
+          await ready;
+          return { pid, release, held };
+        }
+
+        /**
+         * Waits until `count` backends wait, directly or behind another waiter,
+         * on the lock `pid` holds. A second waiter for a row lock is reported as
+         * blocked by the first waiter, not by the holder, so the chain is
+         * followed. The first wait proves a direct block on the holder.
+         */
+        async function waitForBlocked(pid: number, count: number) {
+          await waitForBackendBlockedBy(prisma, pid, 15_000);
+          const deadline = Date.now() + 15_000;
+          for (;;) {
+            const [{ n }] = await prisma.$queryRaw<{ n: number }[]>`
+              WITH RECURSIVE chain AS (
+                SELECT pid FROM pg_stat_activity
+                WHERE ${pid}::int = ANY(pg_blocking_pids(pid))
+                UNION
+                SELECT a.pid FROM pg_stat_activity a
+                JOIN chain c ON c.pid = ANY(pg_blocking_pids(a.pid))
+              )
+              SELECT count(*)::int AS n FROM chain`;
+            if (n >= count) return;
+            if (Date.now() > deadline) {
+              throw new Error(`Only ${n} backend(s) waiting on pid ${pid}`);
+            }
+            await new Promise((r) => setTimeout(r, 25));
+          }
+        }
+
+        it('is refused and audited while the payout request is in progress; the provider failure then releases once', async () => {
+          const ids = await userWithPendingWithdrawal('h1inflight');
+          let reached!: () => void;
+          let release!: () => void;
+          const reachedPromise = new Promise<void>((r) => (reached = r));
+          const released = new Promise<void>((r) => (release = r));
+          fakeProvider.payoutScenario = 'failed';
+          const original = fakeProvider.initiatePayout.bind(fakeProvider);
+          const spy = vi
+            .spyOn(fakeProvider, 'initiatePayout')
+            .mockImplementationOnce(async (params) => {
+              reached();
+              await released;
+              return original(params);
+            });
+          try {
+            const approval = settle(run('approve', ids));
+            await reachedPromise;
+
+            await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+              PayoutUnresolvedException,
+            );
+            await expectStillHeld(ids, 'APPROVED');
+            const audit = await refusals(ids.adminId);
+            expect(audit).toHaveLength(1);
+            expect(audit[0].detail).toContain(ids.id);
+
+            release();
+            expect((await approval).ok).toBe(true);
+          } finally {
+            release();
+            spy.mockRestore();
+          }
+          expect(await statusOf(ids.id)).toBe('FAILED');
+          expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+          expect(await walletOf(ids.userId)).toEqual({
+            available: 5000n,
+            held: 5000n,
+          });
+        });
+
+        it('is refused after an ambiguous timeout with no payout id, and the funds stay held', async () => {
+          const ids = await userWithPendingWithdrawal('h1timeout');
+          fakeProvider.payoutScenario = 'network_error';
+          await run('approve', ids);
+
+          expect(
+            (
+              await service().payoutChecksFor([
+                await prisma.withdrawal.findUniqueOrThrow({
+                  where: { id: ids.id },
+                }),
+              ])
+            ).get(ids.id),
+          ).toBe('UNVERIFIABLE');
+          await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+            PayoutUnresolvedException,
+          );
+          await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+            PayoutUnresolvedException,
+          );
+
+          await expectStillHeld(ids);
+          expect(await refusals(ids.adminId)).toHaveLength(2);
+          expect(await submissions(ids.id)).toHaveLength(1);
+        });
+
+        it('a refused completion is followed by a provider failure: released once, never debited', async () => {
+          const ids = await userWithPendingWithdrawal('h1fail');
+          await run('approve', ids);
+          expect(
+            (
+              await service().payoutChecksFor([
+                await prisma.withdrawal.findUniqueOrThrow({
+                  where: { id: ids.id },
+                }),
+              ])
+            ).get(ids.id),
+          ).toBe('CHECK_WITH_PROVIDER');
+
+          // The fake answers PENDING to a status check.
+          await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+            PayoutUnresolvedException,
+          );
+          await deliver(ids, 'payout.failed');
+
+          expect(await statusOf(ids.id)).toBe('FAILED');
+          expect(await entryTypes(ids.id)).toEqual(['HOLD', 'RELEASE']);
+          expect(await walletOf(ids.userId)).toEqual({
+            available: 5000n,
+            held: 5000n,
+          });
+        });
+
+        it('a refused completion is followed by a provider success: debited once, never twice', async () => {
+          const ids = await userWithPendingWithdrawal('h1success');
+          await run('approve', ids);
+
+          await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+            PayoutUnresolvedException,
+          );
+          await deliver(ids, 'payout.completed');
+          await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+            ConflictException,
+          );
+
+          expect(await statusOf(ids.id)).toBe('COMPLETED');
+          expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+          expect(await walletOf(ids.userId)).toEqual({
+            available: 1000n,
+            held: 5000n,
+          });
+          expect(await anomalyFor(ids.id)).toBeUndefined();
+        });
+
+        it('completes once on provider confirmation; a later failure event releases nothing and is reported', async () => {
+          const ids = await userWithPendingWithdrawal('h1confirmed');
+          await run('approve', ids);
+          const spy = vi
+            .spyOn(fakeProvider, 'checkPayoutStatus')
+            .mockResolvedValueOnce({ outcome: 'SUCCEEDED' });
+          try {
+            await adminComplete(ids);
+          } finally {
+            spy.mockRestore();
+          }
+          expect((await submissions(ids.id)).map((o) => o.status)).toEqual([
+            'SUCCEEDED',
+          ]);
+          expect(await anomalyFor(ids.id)).toBeUndefined();
+
+          await deliver(ids, 'payout.failed');
+
+          expect(await statusOf(ids.id)).toBe('COMPLETED');
+          expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+          expect(await walletOf(ids.userId)).toEqual({
+            available: 1000n,
+            held: 5000n,
+          });
+          expect((await anomalyFor(ids.id))?.detail).toMatch(/contradicts/);
+        });
+
+        it('two admins completing at once, both waiting on the wallet lock, debit once', async () => {
+          const ids = await userWithPendingWithdrawal('h1twoadmins');
+          await approvedWithoutAttempt(ids);
+          const lock = await holdWalletLock(ids.userId);
+          let results: Array<{ ok: boolean; error?: unknown }>;
+          try {
+            const pending = [
+              settle(adminComplete(ids)),
+              settle(adminComplete(ids)),
+            ];
+            await waitForBlocked(lock.pid, 2);
+            lock.release();
+            await lock.held;
+            results = await Promise.all(pending);
+          } finally {
+            lock.release();
+          }
+
+          expect(results.filter((r) => r.ok)).toHaveLength(1);
+          expectConflict(results.find((r) => !r.ok)!);
+          expect(await statusOf(ids.id)).toBe('COMPLETED');
+          expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+          expect(await walletOf(ids.userId)).toEqual({
+            available: 1000n,
+            held: 5000n,
+          });
+        });
+
+        it('a completion on one API instance racing a submission on another never both debits and pays', async () => {
+          const ids = await userWithPendingWithdrawal('h1twoapps');
+          await approvedWithoutAttempt(ids);
+          const provider2 = new FakePaymentProvider();
+          const module2 = await Test.createTestingModule({
+            imports: [AppModule],
+          })
+            .overrideProvider(PAYMENT_PROVIDER)
+            .useValue(provider2)
+            .compile();
+          const app2 = module2.createNestApplication({ rawBody: true });
+          await app2.init();
+          const sent = vi.spyOn(provider2, 'initiatePayout');
+          try {
+            const lock = await holdWalletLock(ids.userId);
+            let completion: { ok: boolean; error?: unknown };
+            try {
+              const completing = settle(adminComplete(ids));
+              const submitting = app2
+                .get(WithdrawalsService)
+                .submitPayout(ids.id);
+              await waitForBlocked(lock.pid, 2);
+              lock.release();
+              await lock.held;
+              completion = await completing;
+              await submitting;
+            } finally {
+              lock.release();
+            }
+
+            if (completion.ok) {
+              expect(sent).not.toHaveBeenCalled();
+              expect(await submissions(ids.id)).toHaveLength(0);
+              expect(await statusOf(ids.id)).toBe('COMPLETED');
+              expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+            } else {
+              expect(completion.error).toBeInstanceOf(
+                PayoutUnresolvedException,
+              );
+              expect(sent).toHaveBeenCalledTimes(1);
+              expect(await submissions(ids.id)).toHaveLength(1);
+              await expectStillHeld(ids);
+            }
+          } finally {
+            sent.mockRestore();
+            await app2.close();
+          }
+        });
+
+        it('a manual completion with no payout request still works once, and is not reported', async () => {
+          const ids = await userWithPendingWithdrawal('h1manual');
+          fakeProvider.payoutScenario = 'unavailable';
+          await run('approve', ids);
+          expect(await statusOf(ids.id)).toBe('APPROVED');
+          expect(
+            (
+              await service().payoutChecksFor([
+                await prisma.withdrawal.findUniqueOrThrow({
+                  where: { id: ids.id },
+                }),
+              ])
+            ).get(ids.id),
+          ).toBe('NONE');
+
+          await adminComplete(ids);
+          await expect(adminComplete(ids)).rejects.toBeInstanceOf(
+            ConflictException,
+          );
+
+          expect(await entryTypes(ids.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+          expect(await walletOf(ids.userId)).toEqual({
+            available: 1000n,
+            held: 5000n,
+          });
+          expect(await refusals(ids.adminId)).toHaveLength(0);
+          expect(await anomalyFor(ids.id)).toBeUndefined();
+        });
+
+        it('reconciliation reports a completed withdrawal whose sent payout failed, even with no payout id', async () => {
+          const ids = await userWithPendingWithdrawal('h1legacy');
+          // What the pre-item-29 code could leave: an HTTP error recorded as a
+          // failure, then a completion by hand.
+          await prisma.withdrawal.update({
+            where: { id: ids.id },
+            data: { status: 'COMPLETED', completedAt: new Date() },
+          });
+          await prisma.providerOperation.create({
+            data: {
+              provider: fakeProvider.name,
+              kind: 'PAYOUT_SUBMIT',
+              relatedWithdrawalId: ids.id,
+              providerIdempotencyKey: randomUUID(),
+              status: 'FAILED',
+              failureReason: 'Monime rejected the payout (HTTP 500)',
+            },
+          });
+
+          expect((await anomalyFor(ids.id))?.detail).toMatch(
+            /contradicts.*payout request ended FAILED/,
+          );
+        });
       });
     });
 

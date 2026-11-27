@@ -1,6 +1,14 @@
 import { FINANCIAL_TRANSACTION_OPTIONS } from '../common/prisma-transaction.constants.js';
 
 /**
+ * `failureReason` of a payout attempt for which no request was sent (the
+ * provider was unavailable or unconfigured). Such an attempt cannot have paid
+ * anyone, so a manual completion after it is not a contradiction.
+ */
+export const NO_PAYOUT_REQUEST_SENT =
+  'Provider unavailable — no live call made';
+
+/**
  * How long a payout attempt may stay PENDING on a still-APPROVED withdrawal
  * before it is reported as interrupted. Far above the provider HTTP timeout
  * (10 s by default), so a request still in flight is not reported.

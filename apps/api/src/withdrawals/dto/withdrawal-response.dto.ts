@@ -18,6 +18,19 @@ export class WithdrawalResponseDto {
   @ApiProperty() updatedAt!: Date;
 }
 
+/**
+ * Admin view of a withdrawal: what an admin can do about its payout (see
+ * `PayoutCheck` in withdrawals.service.ts). `null` once the withdrawal is no
+ * longer APPROVED or PROCESSING.
+ */
+export class AdminWithdrawalResponseDto extends WithdrawalResponseDto {
+  @ApiProperty({
+    enum: ['NONE', 'CHECK_WITH_PROVIDER', 'UNVERIFIABLE'],
+    nullable: true,
+  })
+  payoutCheck!: 'NONE' | 'CHECK_WITH_PROVIDER' | 'UNVERIFIABLE' | null;
+}
+
 export function toWithdrawalResponse(
   withdrawal: Withdrawal,
 ): WithdrawalResponseDto {

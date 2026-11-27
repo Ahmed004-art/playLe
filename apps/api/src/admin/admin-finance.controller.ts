@@ -39,6 +39,7 @@ import {
   DepositResponseDto,
 } from '../deposits/dto/deposit-response.dto.js';
 import {
+  AdminWithdrawalResponseDto,
   toWithdrawalResponse,
   WithdrawalResponseDto,
 } from '../withdrawals/dto/withdrawal-response.dto.js';
@@ -146,18 +147,23 @@ export class AdminFinanceController {
   @ApiOperation({
     summary: 'List withdrawals, optionally filtered by userId/status (admin).',
   })
-  @ApiResponse({ status: 200, type: [WithdrawalResponseDto] })
-  async listWithdrawals(
-    @Query() query: AdminWithdrawalsQueryDto,
-  ): Promise<{ items: WithdrawalResponseDto[]; nextCursor: string | null }> {
+  @ApiResponse({ status: 200, type: [AdminWithdrawalResponseDto] })
+  async listWithdrawals(@Query() query: AdminWithdrawalsQueryDto): Promise<{
+    items: AdminWithdrawalResponseDto[];
+    nextCursor: string | null;
+  }> {
     const page = await this.withdrawalsService.listAdmin({
       userId: query.userId,
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
     });
+    const checks = await this.withdrawalsService.payoutChecksFor(page.items);
     return {
-      items: page.items.map(toWithdrawalResponse),
+      items: page.items.map((w) => ({
+        ...toWithdrawalResponse(w),
+        payoutCheck: checks.get(w.id) ?? null,
+      })),
       nextCursor: page.nextCursor,
     };
   }
@@ -201,7 +207,8 @@ export class AdminFinanceController {
   @Post('withdrawals/:id/complete')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Confirm a payout was sent for an approved withdrawal.',
+    summary:
+      'Confirm a payout was sent. If a provider payout request was made, the provider must confirm it completed (409 otherwise; refusals are audited).',
   })
   @ApiResponse({ status: 200, type: WithdrawalResponseDto })
   async complete(

@@ -221,6 +221,8 @@ function build() {
     enqueueStandalone: vi.fn(() => Promise.resolve()),
   };
 
+  const adminAudit = { record: vi.fn(() => Promise.resolve()) };
+
   const service = new WithdrawalsService(
     prisma as never,
     ledgerService as never,
@@ -228,6 +230,7 @@ function build() {
     {} as never,
     provider,
     notificationOutbox as never,
+    adminAudit as never,
   );
 
   /** The next webhook delivery verifies (the real provider rejects every one today). */
@@ -245,7 +248,7 @@ function build() {
     return service.processProviderWebhook('{}', {});
   };
 
-  return { db, service, notificationOutbox, deliver };
+  return { db, service, notificationOutbox, deliver, adminAudit };
 }
 
 type Harness = ReturnType<typeof build>;
@@ -273,6 +276,8 @@ const approve = (h: Harness) =>
   h.service.approve('admin-1', 'wd-1', 'Verified identity');
 const adminFail = (h: Harness) =>
   h.service.fail('admin-1', 'wd-1', 'Payout did not arrive');
+const adminComplete = (h: Harness, admin = 'admin-1') =>
+  h.service.complete(admin, 'wd-1', 'Recipient confirmed payment');
 
 const submissions = (h: Harness) =>
   h.db.operations.filter((o) => o.kind === 'PAYOUT_SUBMIT');
@@ -527,17 +532,16 @@ describe('recovery', () => {
     expectPaidOnce(h);
   });
 
-  it('a payout that succeeded remotely but lost its response can only be completed, once', async () => {
+  it('a payout whose response was lost can be neither completed nor released in-app', async () => {
     const h = build();
-    stubFetch(throws(new TypeError('socket hang up')));
+    const fetchSpy = stubFetch(throws(new TypeError('socket hang up')));
     await approve(h);
 
     await expect(adminFail(h)).rejects.toBeInstanceOf(ConflictException);
-    await h.service.complete('admin-1', 'wd-1', 'Confirmed paid by Monime');
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
 
-    expectPaidOnce(h);
-    await expect(adminFail(h)).rejects.toBeInstanceOf(ConflictException);
-    expectPaidOnce(h);
+    expectHeld(h);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -596,5 +600,196 @@ describe('the original idempotency key is never replaced', () => {
 
     expect(posts(fetchSpy)).toHaveLength(1);
     expect(submissions(h)).toHaveLength(1);
+  });
+});
+
+describe('an administrator cannot complete an unresolved payout (H1)', () => {
+  const refused = (h: Harness) =>
+    expect(h.adminAudit.record).toHaveBeenCalledWith(
+      'WITHDRAWAL_FINALIZE_REFUSED',
+      expect.objectContaining({
+        adminId: 'admin-1',
+        detail: expect.stringContaining('wd-1'),
+      }),
+    );
+
+  it('refuses while the request is in flight, and the provider failure then releases once', async () => {
+    const h = build();
+    let respond!: (r: Response) => void;
+    let sent!: () => void;
+    const wasSent = new Promise<void>((resolve) => (sent = resolve));
+    stubFetch(() => {
+      sent();
+      return new Promise<Response>((resolve) => (respond = resolve));
+    });
+    const approval = approve(h);
+    await wasSent;
+
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
+    expectHeld(h, 'APPROVED');
+    refused(h);
+
+    respond(await payout('failed')());
+    await approval;
+    expectReleasedOnce(h);
+  });
+
+  it('refuses while the request is in flight, and the provider success then debits once', async () => {
+    const h = build();
+    let respond!: (r: Response) => void;
+    let sent!: () => void;
+    const wasSent = new Promise<void>((resolve) => (sent = resolve));
+    stubFetch(() => {
+      sent();
+      return new Promise<Response>((resolve) => (respond = resolve));
+    });
+    const approval = approve(h);
+    await wasSent;
+
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
+
+    respond(await payout('completed')());
+    await approval;
+    expectPaidOnce(h);
+  });
+
+  it('refuses, every time and with an audit record, after an ambiguous timeout', async () => {
+    const h = build();
+    const fetchSpy = stubFetch(
+      throws(new DOMException('timed out', 'TimeoutError')),
+    );
+    await approve(h);
+
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
+
+    expectHeld(h);
+    expect(h.adminAudit.record).toHaveBeenCalledTimes(2);
+    refused(h);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['still pending', payout('pending')],
+    ['unreadable', text(200, 'not json')],
+    ['HTTP 500', json(500, {})],
+    ['a network error', throws(new TypeError('fetch failed'))],
+    ['"completed" for a different payout', payout('completed', 'pyt-other')],
+  ])('refuses when the status check is %s', async (_name, check) => {
+    const h = build();
+    stubFetch(payout('pending'), check);
+    await approve(h);
+
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
+    expectHeld(h);
+    refused(h);
+  });
+
+  it('refuses, and says to fail instead, when the provider reports the payout failed', async () => {
+    const h = build();
+    stubFetch(payout('pending'), payout('failed'));
+    await approve(h);
+
+    await expect(adminComplete(h)).rejects.toThrow(/failed/i);
+    expectHeld(h);
+  });
+
+  it('completes once when the provider confirms the payout, and a late failure event releases nothing', async () => {
+    const h = build();
+    const fetchSpy = stubFetch(payout('pending'), payout('completed'));
+    await approve(h);
+
+    await adminComplete(h);
+
+    expectPaidOnce(h);
+    expect(submissions(h)[0].status).toBe('SUCCEEDED');
+    expect(
+      h.db.operations.filter((o) => o.kind === 'PAYOUT_STATUS_CHECK'),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        requestSnapshot: expect.objectContaining({ adminId: 'admin-1' }),
+      }),
+    ]);
+    expect(posts(fetchSpy)).toHaveLength(1);
+
+    await expect(adminComplete(h)).rejects.toBeInstanceOf(ConflictException);
+    await h.deliver('evt-late', 'payout.failed', 'pyt-1');
+    await h.deliver('evt-late-2', 'payout.completed', 'pyt-1');
+    expectPaidOnce(h);
+  });
+
+  it('completes from a recorded provider success without asking again', async () => {
+    const h = build();
+    const fetchSpy = stubFetch();
+    // The provider answered "completed" but the process stopped before the
+    // withdrawal was finalised.
+    h.db.withdrawal.status = 'PROCESSING';
+    h.db.withdrawal.providerReference = 'pyt-1';
+    h.db.operations.push({
+      id: 'op-1',
+      kind: 'PAYOUT_SUBMIT',
+      status: 'SUCCEEDED',
+      provider: 'MONIME',
+      relatedWithdrawalId: 'wd-1',
+      providerIdempotencyKey: 'original-key',
+    });
+
+    await adminComplete(h);
+
+    expectPaidOnce(h);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('a manual completion with no payout request still works, once', async () => {
+    const h = build();
+    h.db.withdrawal.destinationDetails = { method: 'UNSUPPORTED' } as never;
+    const fetchSpy = stubFetch();
+    await approve(h);
+
+    await adminComplete(h);
+
+    expectPaidOnce(h);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(h.adminAudit.record).not.toHaveBeenCalled();
+  });
+
+  it('two concurrent manual completions debit once', async () => {
+    const h = build();
+    h.db.withdrawal.status = 'APPROVED';
+    stubFetch();
+
+    const results = await Promise.allSettled([
+      adminComplete(h, 'admin-1'),
+      adminComplete(h, 'admin-2'),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expectPaidOnce(h);
+  });
+
+  it('a completion racing a submission never both debits and sends a payout', async () => {
+    const h = build();
+    h.db.withdrawal.status = 'APPROVED';
+    const fetchSpy = stubFetch(payout('pending'));
+
+    const [submitted, completed] = await Promise.allSettled([
+      h.service.submitPayout('wd-1'),
+      adminComplete(h),
+    ]);
+
+    expect(submitted.status).toBe('fulfilled');
+    if (completed.status === 'fulfilled') {
+      expectPaidOnce(h);
+      expect(posts(fetchSpy)).toHaveLength(0);
+      expect(submissions(h)).toHaveLength(0);
+    } else {
+      expect(completed.reason).toBeInstanceOf(ConflictException);
+      expectHeld(h);
+      expect(posts(fetchSpy)).toHaveLength(1);
+    }
   });
 });

@@ -245,6 +245,7 @@ function build() {
     {} as never,
     provider as never,
     notificationOutbox as never,
+    { record: vi.fn(() => Promise.resolve()) } as never,
   );
   return {
     db,
@@ -487,20 +488,20 @@ describe('a payout submission racing a terminal outcome', () => {
   const fail = (h: Harness) => () =>
     h.service.fail('admin-1', 'wd-1', 'could not pay');
 
-  it('an admin completion during the call is not overwritten, and a later payout event debits nothing more', async () => {
+  it('an admin completion during the call is refused, and the payout event then debits once', async () => {
     const h = build();
 
     const result = await adminFinalisesWhileInFlight(h, complete(h));
 
-    expect(result.admin.ok).toBe(true);
+    expectConflict(result.admin);
     expect(result.approval.ok).toBe(true);
-    expect(h.db.withdrawal.status).toBe('COMPLETED');
-    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+    expect(h.db.withdrawal.status).toBe('PROCESSING');
+    expect(h.db.entries).toEqual([]);
     // The provider's own completion event then arrives for the reference.
     await h.service.completeFromProviderEvent('wd-1', 'po-1');
+    expect(h.db.withdrawal.status).toBe('COMPLETED');
     expect(h.db.entries).toEqual(['WITHDRAWAL']);
     expect(h.db.held).toBe(OTHER_HOLD);
-    expect(h.notificationOutbox.enqueueStandalone).not.toHaveBeenCalled();
   });
 
   it('an admin failure during the call is refused, and the provider answering SUCCEEDED debits the hold once', async () => {
@@ -516,15 +517,15 @@ describe('a payout submission racing a terminal outcome', () => {
     expect(h.db.held).toBe(OTHER_HOLD);
   });
 
-  it('an admin completion during the call is not overwritten when the call ends in an unknown outcome, which is still recorded', async () => {
+  it('an admin completion during the call is refused when the call ends in an unknown outcome, which is still recorded', async () => {
     const h = build();
     h.setProviderAnswer('NETWORK_ERROR');
 
     const result = await adminFinalisesWhileInFlight(h, complete(h));
 
-    expect(result.admin.ok).toBe(true);
-    expect(h.db.withdrawal.status).toBe('COMPLETED');
-    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+    expectConflict(result.admin);
+    expect(h.db.withdrawal.status).toBe('PROCESSING');
+    expect(h.db.entries).toEqual([]);
     // The safeguard is intact: the attempt is on record as UNKNOWN, never retried.
     expect(h.db.operations).toEqual([
       expect.objectContaining({ status: 'UNKNOWN' }),
@@ -536,11 +537,14 @@ describe('a payout submission racing a terminal outcome', () => {
     const h = build();
     h.setProviderAnswer('SUCCEEDED');
 
-    await adminFinalisesWhileInFlight(h, complete(h));
+    const result = await adminFinalisesWhileInFlight(h, complete(h));
 
+    // The admin was refused; the provider's own answer completed it, once.
+    expectConflict(result.admin);
     expect(h.db.operations).toEqual([
       expect.objectContaining({ status: 'SUCCEEDED' }),
     ]);
+    expect(h.db.withdrawal.status).toBe('COMPLETED');
     expect(h.db.entries).toEqual(['WITHDRAWAL']);
   });
 });

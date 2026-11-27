@@ -33,6 +33,23 @@ import {
   finishProviderEvent,
   recordProviderEvent,
 } from '../payments/provider-events.js';
+import { NO_PAYOUT_REQUEST_SENT } from '../payments/reconciliation.constants.js';
+import { AdminAuditService } from '../audit/admin-audit.service.js';
+
+/**
+ * An admin `complete`/`fail` refused because the payout's outcome is not
+ * established. Recorded in the admin audit log (see `auditRefusal`).
+ */
+export class PayoutUnresolvedException extends ConflictException {}
+
+/**
+ * What an admin can do about a withdrawal's payout, for the admin list:
+ * `NONE` - no request that could have paid was made (manual completion and
+ * failure work as before); `CHECK_WITH_PROVIDER` - completion or failure asks
+ * the provider and proceeds only on a matching answer; `UNVERIFIABLE` - an
+ * attempt is in flight or has no payout reference, so neither is possible.
+ */
+export type PayoutCheck = 'NONE' | 'CHECK_WITH_PROVIDER' | 'UNVERIFIABLE';
 
 /** The statuses a withdrawal can be finalized (completed or failed) from. */
 const FINALIZABLE: WithdrawalStatus[] = ['APPROVED', 'PROCESSING'];
@@ -51,6 +68,7 @@ export class WithdrawalsService {
     private readonly configService: ConfigService<AppConfiguration, true>,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProviderPort,
     private readonly notificationOutbox: NotificationOutboxService,
+    private readonly adminAudit: AdminAuditService,
   ) {}
 
   async create(
@@ -314,7 +332,7 @@ export class WithdrawalsService {
         where: { id: operation.id },
         data: {
           status: 'FAILED',
-          failureReason: 'Provider unavailable — no live call made',
+          failureReason: NO_PAYOUT_REQUEST_SENT,
           resolvedAt: new Date(),
         },
       });
@@ -450,33 +468,36 @@ export class WithdrawalsService {
   }
 
   /**
-   * Gate on an admin releasing a hold. Returns `null` when no payout can exist,
-   * or the id of the one unresolved attempt the provider has just confirmed as
-   * failed. Otherwise throws: an unknown, pending or completed payout is never
-   * released, and without a payout reference there is nothing to ask about
-   * (no lookup by our metadata or idempotency key is documented). Every status
-   * check is recorded with the admin and reason, whatever it answers. The
-   * provider is called outside any transaction; `fail` re-checks under the
-   * wallet lock.
+   * What the provider says about a withdrawal's one unresolved payout attempt,
+   * or `null` when there is none (no request that could have paid was made).
+   * A recorded `SUCCEEDED` attempt is used as is. Otherwise the provider is
+   * asked about the stored payout reference, and the check is recorded with
+   * the admin and reason whatever it answers. Throws when no check is
+   * possible: an attempt in flight or without a payout reference (no lookup by
+   * our metadata or idempotency key is documented), or more than one attempt.
+   * Called outside any transaction; callers re-check under the wallet lock.
    */
-  private async confirmNoPayoutWillBeMade(
+  private async payoutEvidence(
     withdrawalId: string,
     adminId: string,
     reason: string,
-  ): Promise<string | null> {
+  ): Promise<{ attemptId: string; outcome: string } | null> {
     const unresolved = await this.unresolvedPayouts(this.prisma, withdrawalId);
     if (unresolved.length === 0) return null;
 
+    const [attempt] = unresolved;
+    if (unresolved.length === 1 && attempt.status === 'SUCCEEDED') {
+      return { attemptId: attempt.id, outcome: 'SUCCEEDED' };
+    }
     // Read after the attempts, so a reference stored meanwhile is seen.
     const { providerReference } = await this.findByIdAdmin(withdrawalId);
-    const [attempt] = unresolved;
     if (
       unresolved.length > 1 ||
       !providerReference ||
       attempt.provider !== this.provider.name
     ) {
-      throw new ConflictException(
-        'A payout request for this withdrawal has an unresolved outcome that cannot be checked with the provider. The funds stay held; reconcile with the provider.',
+      throw new PayoutUnresolvedException(
+        'A payout request for this withdrawal is in progress or has an outcome that cannot be checked with the provider. The funds stay held; reconcile with the provider.',
       );
     }
 
@@ -506,18 +527,114 @@ export class WithdrawalsService {
         resolvedAt: new Date(),
       },
     });
+    return { attemptId: attempt.id, outcome: check.outcome };
+  }
 
-    if (check.outcome === 'SUCCEEDED') {
-      throw new ConflictException(
+  /**
+   * Gate on an admin releasing a hold: `null` when no payout can exist, or the
+   * attempt the provider has just confirmed as failed. Anything else throws.
+   */
+  private async confirmNoPayoutWillBeMade(
+    withdrawalId: string,
+    adminId: string,
+    reason: string,
+  ): Promise<string | null> {
+    const evidence = await this.payoutEvidence(withdrawalId, adminId, reason);
+    if (!evidence) return null;
+    if (evidence.outcome === 'SUCCEEDED') {
+      throw new PayoutUnresolvedException(
         'The provider reports this payout completed. The funds cannot be released; complete the withdrawal instead.',
       );
     }
-    if (check.outcome !== 'FAILED') {
-      throw new ConflictException(
+    if (evidence.outcome !== 'FAILED') {
+      throw new PayoutUnresolvedException(
         'The provider has not confirmed that this payout failed. The funds stay held.',
       );
     }
-    return attempt.id;
+    return evidence.attemptId;
+  }
+
+  /**
+   * Gate on an admin completing a withdrawal (H1): `null` when no payout
+   * request that could have paid was made (manual completion), or the attempt
+   * the provider confirms as completed. Anything else throws, so an admin can
+   * neither debit a user whose payout may still fail nor record a payment that
+   * the original request may duplicate.
+   */
+  private async confirmPayoutWasMade(
+    withdrawalId: string,
+    adminId: string,
+    reason: string,
+  ): Promise<string | null> {
+    const evidence = await this.payoutEvidence(withdrawalId, adminId, reason);
+    if (!evidence) return null;
+    if (evidence.outcome === 'FAILED') {
+      throw new PayoutUnresolvedException(
+        'The provider reports this payout failed. The withdrawal cannot be completed; fail it instead.',
+      );
+    }
+    if (evidence.outcome !== 'SUCCEEDED') {
+      throw new PayoutUnresolvedException(
+        'The provider has not confirmed that this payout completed. The funds stay held.',
+      );
+    }
+    return evidence.attemptId;
+  }
+
+  /**
+   * Records a refused admin `complete`/`fail` in the admin audit log. A logging
+   * failure never changes the refusal the admin gets.
+   */
+  private async auditRefusal(
+    error: unknown,
+    action: 'complete' | 'fail',
+    adminId: string,
+    withdrawalId: string,
+    reason: string,
+  ): Promise<void> {
+    if (!(error instanceof PayoutUnresolvedException)) return;
+    try {
+      await this.adminAudit.record('WITHDRAWAL_FINALIZE_REFUSED', {
+        adminId,
+        detail: `${action} of withdrawal ${withdrawalId} refused: ${error.message} Reason given: ${reason}`,
+      });
+    } catch (auditError) {
+      this.logger.error(
+        `Could not audit a refused ${action} of withdrawal ${withdrawalId}: ${String(auditError)}`,
+      );
+    }
+  }
+
+  /** `PayoutCheck` for each finalizable withdrawal in `withdrawals`. */
+  async payoutChecksFor(
+    withdrawals: Pick<Withdrawal, 'id' | 'status' | 'providerReference'>[],
+  ): Promise<Map<string, PayoutCheck>> {
+    const open = withdrawals.filter((w) => FINALIZABLE.includes(w.status));
+    const checks = new Map<string, PayoutCheck>();
+    if (open.length === 0) return checks;
+    const attempts = await this.prisma.providerOperation.findMany({
+      where: {
+        relatedWithdrawalId: { in: open.map((w) => w.id) },
+        kind: 'PAYOUT_SUBMIT',
+        status: { not: 'FAILED' },
+      },
+      select: { relatedWithdrawalId: true, status: true, provider: true },
+    });
+    for (const w of open) {
+      const mine = attempts.filter((a) => a.relatedWithdrawalId === w.id);
+      if (mine.length === 0) {
+        checks.set(w.id, 'NONE');
+      } else if (
+        mine.length === 1 &&
+        (mine[0].status === 'SUCCEEDED' ||
+          (w.providerReference && mine[0].provider === this.provider.name))
+      ) {
+        checks.set(w.id, 'CHECK_WITH_PROVIDER');
+      } else {
+        checks.set(w.id, 'UNVERIFIABLE');
+      }
+    }
+    return checks;
   }
 
   /**
@@ -598,10 +715,46 @@ export class WithdrawalsService {
     reason: string,
     providerReference?: string,
   ): Promise<Withdrawal> {
+    try {
+      return await this.completeGated(adminId, id, reason, providerReference);
+    } catch (error) {
+      await this.auditRefusal(error, 'complete', adminId, id, reason);
+      throw error;
+    }
+  }
+
+  private async completeGated(
+    adminId: string,
+    id: string,
+    reason: string,
+    providerReference?: string,
+  ): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
     this.assertTransition(withdrawal.status, FINALIZABLE);
+    const confirmedAttemptId = await this.confirmPayoutWasMade(
+      withdrawal.id,
+      adminId,
+      reason,
+    );
 
     return this.prisma.$transaction(async (tx) => {
+      // A submission may have started since the check above. It records its
+      // attempt under this same lock, so it is either visible here or has not
+      // begun and will find the withdrawal no longer APPROVED. The confirmed
+      // attempt must also still be unresolved: a provider failure recorded
+      // meanwhile wins.
+      await this.ledgerService.lockWallet(tx, withdrawal.walletId);
+      const unresolved = await this.unresolvedPayouts(tx, withdrawal.id);
+      if (
+        unresolved.some((attempt) => attempt.id !== confirmedAttemptId) ||
+        (confirmedAttemptId &&
+          !unresolved.some((attempt) => attempt.id === confirmedAttemptId))
+      ) {
+        throw new PayoutUnresolvedException(
+          'The payout state for this withdrawal changed while the completion was being checked. The funds stay held.',
+        );
+      }
+
       // The check above ran outside this transaction; a provider event (or a
       // second admin action) may have finalized it since. Only a won claim
       // moves money.
@@ -613,6 +766,12 @@ export class WithdrawalsService {
         reviewReason: reason,
         providerReference,
       });
+      if (confirmedAttemptId) {
+        await tx.providerOperation.update({
+          where: { id: confirmedAttemptId },
+          data: { status: 'SUCCEEDED', resolvedAt: new Date() },
+        });
+      }
 
       await this.ledgerService.applyEntry(tx, withdrawal.walletId, {
         type: 'WITHDRAWAL',
@@ -633,6 +792,19 @@ export class WithdrawalsService {
    * an unresolved payout.
    */
   async fail(adminId: string, id: string, reason: string): Promise<Withdrawal> {
+    try {
+      return await this.failGated(adminId, id, reason);
+    } catch (error) {
+      await this.auditRefusal(error, 'fail', adminId, id, reason);
+      throw error;
+    }
+  }
+
+  private async failGated(
+    adminId: string,
+    id: string,
+    reason: string,
+  ): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
     this.assertTransition(withdrawal.status, FINALIZABLE);
     const confirmedAttemptId = await this.confirmNoPayoutWillBeMade(
@@ -648,7 +820,7 @@ export class WithdrawalsService {
       await this.ledgerService.lockWallet(tx, withdrawal.walletId);
       const unresolved = await this.unresolvedPayouts(tx, withdrawal.id);
       if (unresolved.some((attempt) => attempt.id !== confirmedAttemptId)) {
-        throw new ConflictException(
+        throw new PayoutUnresolvedException(
           'A payout request for this withdrawal has an unresolved outcome. The funds stay held.',
         );
       }

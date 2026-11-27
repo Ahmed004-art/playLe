@@ -759,3 +759,16 @@ failures. Review `PAYOUT_SUBMIT` rows with status `FAILED` whose
 released and the payout may have been made). No database was checked.
 **Severity**: High before any live payout until merged. **Owner**: project
 owner (Monime questions, database check).
+
+### 31. H1 - admin completion of an unresolved payout
+**Status**: Fixed in code on `fix/h1-safe-admin-completion` (ADR-019, "Admin
+completion needs provider evidence too"); CI evidence recorded on its PR.
+**The defect**: `WithdrawalsService.complete` checked only the withdrawal's
+status, so an admin could debit the hold while a payout request was in flight
+or its outcome unknown; a later provider failure left the user debited for a
+payout never made, and nothing in reconciliation reported it when no payout
+reference had been stored.
+**Still open**: a payout with no stored reference cannot be completed or
+failed in-app at all (item 29). Completion trusts a provider `completed`
+status, which, like `failed`, is unverified against a real payout.
+**Severity**: High before any live payout until merged. **Owner**: payments.
