@@ -7,6 +7,15 @@ import { PROVIDER_EVENT_STALE_DEFAULT_MS } from '../payments/reconciliation.cons
  */
 export interface AppConfiguration {
   env: string;
+  /**
+   * Opt-in limit for admin finance mutations (wallet adjustments, withdrawal
+   * approve/reject/complete/fail). Counted per route, so each operation has
+   * its own budget.
+   */
+  adminFinance: {
+    throttleLimit: number;
+    throttleTtlMs: number;
+  };
   port: number;
   trustProxyHops: number;
   swaggerEnabled: boolean;
@@ -148,6 +157,16 @@ export interface AppConfiguration {
 export default (): AppConfiguration => ({
   env: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
+  adminFinance: {
+    throttleLimit: parseInt(
+      process.env.ADMIN_FINANCE_THROTTLE_LIMIT ?? '20',
+      10,
+    ),
+    throttleTtlMs: parseInt(
+      process.env.ADMIN_FINANCE_THROTTLE_TTL_MS ?? '60000',
+      10,
+    ),
+  },
   /**
    * How many reverse proxies sit in front of the API (Express `trust proxy`).
    * 0 trusts none. Behind one HTTPS load balancer (Render, Fly, Railway...)

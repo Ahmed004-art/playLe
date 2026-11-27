@@ -99,6 +99,9 @@ jobs:
       STAKE_COMMIT_TIMEOUT_MS: 5000
       STAKES_THROTTLE_LIMIT: 1000
       STAKES_THROTTLE_TTL_MS: 60000
+      # The e2e suites drive many admin finance actions in well under 60s.
+      ADMIN_FINANCE_THROTTLE_LIMIT: 1000
+      ADMIN_FINANCE_THROTTLE_TTL_MS: 60000
 
     steps:
       - uses: actions/checkout@v4

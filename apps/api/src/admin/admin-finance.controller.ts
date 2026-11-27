@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
@@ -80,6 +81,7 @@ export class AdminFinanceController {
   }
 
   @Post('wallets/:userId/adjustments')
+  @Throttle({ adminFinance: {} })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -169,6 +171,7 @@ export class AdminFinanceController {
   }
 
   @Post('withdrawals/:id/approve')
+  @Throttle({ adminFinance: {} })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Approve a withdrawal awaiting review.' })
   @ApiResponse({ status: 200, type: WithdrawalResponseDto })
@@ -186,6 +189,7 @@ export class AdminFinanceController {
   }
 
   @Post('withdrawals/:id/reject')
+  @Throttle({ adminFinance: {} })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Reject a withdrawal awaiting review; releases the hold.',
@@ -205,6 +209,7 @@ export class AdminFinanceController {
   }
 
   @Post('withdrawals/:id/complete')
+  @Throttle({ adminFinance: {} })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -225,6 +230,7 @@ export class AdminFinanceController {
   }
 
   @Post('withdrawals/:id/fail')
+  @Throttle({ adminFinance: {} })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Mark an approved withdrawal as failed; releases the hold.',

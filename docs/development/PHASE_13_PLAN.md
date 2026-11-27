@@ -52,7 +52,9 @@ relies on the single-flight `SessionRefresher` via `ApiClient`.
 - Admin finance mutations stay on the default limit in this PR.
 - **Follow-up (not in this PR):** stricter, operation-specific throttling for
   admin finance mutations (wallet adjustments, withdrawal approve/reject/
-  complete/fail) and a deliberate policy for webhook bursts.
+  complete/fail) and a deliberate policy for webhook bursts. The admin finance
+  part is done in PR 5 below; the webhook burst policy is still an owner
+  decision.
 - Phase 12 PR 5 (#19) was still open: this branch does not include the mobile
   friends screens or `ApiClient.delete`.
 
@@ -244,3 +246,24 @@ finalisable again and debited or released the hold a second time.
 - `submitPayout` has one caller (`approve`); the comment mentioning a recovery
   sweep describes something that does not exist, so two concurrent submissions
   for one withdrawal are not possible today.
+
+## PR 5 - Admin finance throttling (PR 1 follow-up)
+
+### Change
+- New opt-in named throttler `adminFinance`
+  (`ADMIN_FINANCE_THROTTLE_LIMIT`, default 20; `ADMIN_FINANCE_THROTTLE_TTL_MS`,
+  default 60 s) on the five admin finance mutations: wallet adjustments and
+  withdrawal approve, reject, complete and fail. `@nestjs/throttler` counts per
+  route, so each operation has its own budget (operation-specific); a 429 is
+  returned past it. Every other route, including admin reads and the Monime
+  webhook, is unaffected (the default limit still applies to all routes).
+- CI raises the limit for the e2e suites, like the other named throttlers.
+
+### Verification
+`src/common/throttle-policy.spec.ts`: the five mutations carry the limit
+(failed before the change, 5 of 44), admin reads and the webhook do not, and a
+stand-in controller shows a third call within the window is refused while a
+different operation and an undecorated route still pass.
+
+### Still open
+- The webhook burst policy (PR 1 decisions): an owner decision.

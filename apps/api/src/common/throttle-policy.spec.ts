@@ -9,10 +9,12 @@ import {
 import { APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { AdminSessionController } from '../admin-auth/admin-session.controller.js';
+import { AdminFinanceController } from '../admin/admin-finance.controller.js';
 import { AuthController } from '../auth/auth.controller.js';
 import { ChallengesController } from '../challenges/challenges.controller.js';
 import { DepositsController } from '../deposits/deposits.controller.js';
@@ -69,6 +71,12 @@ describe('named throttler policy per route', () => {
     [DepositsController, 'create', 'payments'],
     [WithdrawalsController, 'create', 'payments'],
     [WithdrawalsController, 'cancel', 'payments'],
+    // Admin finance mutations (Phase 13 PR 1 follow-up).
+    [AdminFinanceController, 'adjustWallet', 'adminFinance'],
+    [AdminFinanceController, 'approve', 'adminFinance'],
+    [AdminFinanceController, 'reject', 'adminFinance'],
+    [AdminFinanceController, 'complete', 'adminFinance'],
+    [AdminFinanceController, 'fail', 'adminFinance'],
   ];
 
   it.each(sensitive)(
@@ -90,12 +98,22 @@ describe('named throttler policy per route', () => {
     [WithdrawalsController, 'findOne'],
     [MfaController, 'status'],
     [WebhooksController, 'handle'],
+    [AdminFinanceController, 'getWallet'],
+    [AdminFinanceController, 'listLedger'],
+    [AdminFinanceController, 'listDeposits'],
+    [AdminFinanceController, 'listWithdrawals'],
   ];
 
   it.each(unlimited)(
     '%o.%s is not subject to any opt-in named limit',
     (controller, handler) => {
-      for (const name of ['auth', 'payments', 'matches', 'stakes']) {
+      for (const name of [
+        'auth',
+        'payments',
+        'matches',
+        'stakes',
+        'adminFinance',
+      ]) {
         expect(limitedBy(controller, handler, name)).toBe(false);
       }
     },
@@ -150,6 +168,71 @@ describe('webhook-style delivery under production-like limits', () => {
   it('accepts a retry burst well past the auth and payments limits', async () => {
     for (let i = 0; i < 25; i++) {
       await request(app.getHttpServer()).post('/hook').expect(201);
+    }
+  });
+});
+
+// Stand-ins with the admin finance routes' shape, mounted with the real
+// opt-in mechanism and a tiny `adminFinance` limit.
+@Controller('finance')
+class FinanceLikeController {
+  @Post('adjust')
+  @Throttle({ adminFinance: {} })
+  adjust(): { ok: true } {
+    return { ok: true };
+  }
+
+  @Post('approve')
+  @Throttle({ adminFinance: {} })
+  approve(): { ok: true } {
+    return { ok: true };
+  }
+
+  @Post('read')
+  read(): { ok: true } {
+    return { ok: true };
+  }
+}
+
+describe('adminFinance limit', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        ThrottlerModule.forRoot({
+          throttlers: [
+            { name: 'default', ttl: 60_000, limit: 100 },
+            {
+              name: 'adminFinance',
+              ttl: 60_000,
+              limit: 2,
+              skipIf: optInThrottleSkipIf('adminFinance'),
+            },
+          ],
+        }),
+      ],
+      controllers: [FinanceLikeController],
+      providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+    }).compile();
+    app = moduleRef.createNestApplication();
+    await app.init();
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('limits each finance operation separately, and leaves other routes alone', async () => {
+    const server = app.getHttpServer();
+    await request(server).post('/finance/adjust').expect(201);
+    await request(server).post('/finance/adjust').expect(201);
+    await request(server).post('/finance/adjust').expect(429);
+    // A different operation has its own budget.
+    await request(server).post('/finance/approve').expect(201);
+    // An undecorated route is not subject to adminFinance at all.
+    for (let i = 0; i < 5; i++) {
+      await request(server).post('/finance/read').expect(201);
     }
   });
 });

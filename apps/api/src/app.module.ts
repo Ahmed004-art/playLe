@@ -98,6 +98,19 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
             limit: configService.get('stakes.throttleLimit', { infer: true }),
             skipIf: optInThrottleSkipIf('stakes'),
           },
+          {
+            // Stricter limit for admin finance mutations (wallet adjustments,
+            // withdrawal approve/reject/complete/fail) - Phase 13 PR 1
+            // follow-up. Opt-in per route; counted per route.
+            name: 'adminFinance',
+            ttl: configService.get('adminFinance.throttleTtlMs', {
+              infer: true,
+            }),
+            limit: configService.get('adminFinance.throttleLimit', {
+              infer: true,
+            }),
+            skipIf: optInThrottleSkipIf('adminFinance'),
+          },
         ],
       }),
     }),

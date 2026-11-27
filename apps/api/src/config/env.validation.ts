@@ -254,6 +254,15 @@ class EnvironmentVariables {
   @Min(1)
   STAKES_THROTTLE_TTL_MS: number = 60000;
 
+  // Admin finance mutations (Phase 13 PR 1 follow-up) - see configuration.ts.
+  @IsInt()
+  @Min(1)
+  ADMIN_FINANCE_THROTTLE_LIMIT: number = 20;
+
+  @IsInt()
+  @Min(1)
+  ADMIN_FINANCE_THROTTLE_TTL_MS: number = 60000;
+
   /**
    * The rolling-window length for STAKE_LIMIT/LOSS_LIMIT/DEPOSIT_LIMIT
    * enforcement (Phase 8) — deliberately a fixed platform parameter, not
