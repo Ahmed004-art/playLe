@@ -30,6 +30,8 @@ describe('Monime webhooks, signed (e2e)', () => {
   let prisma: PrismaService;
   const runId = randomUUID().slice(0, 8);
   const eventIds: string[] = [];
+  /** What Monime's GET /v1/payment-codes/:id answers, per payment code. */
+  const codeLookups = new Map<string, () => Response>();
 
   beforeAll(async () => {
     const payments = {
@@ -68,6 +70,11 @@ describe('Monime webhooks, signed (e2e)', () => {
             { status: 200 },
           ),
         );
+      }
+      const lookup = /\/v1\/payment-codes\/([^/?]+)$/.exec(url);
+      if (lookup && (init?.method ?? 'GET') === 'GET') {
+        const answer = codeLookups.get(decodeURIComponent(lookup[1]));
+        if (answer) return Promise.resolve(answer());
       }
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     });
@@ -262,21 +269,22 @@ describe('Monime webhooks, signed (e2e)', () => {
     expect(await balance(userId)).toEqual({ available: 0n, held: 0n });
   });
 
-  it('keeps a signed completion without a paid amount as delivered, credits nothing, and reports it', async () => {
-    const { userId, deposit } = await pendingDeposit('mwhnopaid');
-    const id = `wke-${randomUUID()}`;
-    eventIds.push(id);
-    // Monime's documented caph payment_code.completed sample, verbatim shape.
-    const body = JSON.stringify({
+  /** Monime's documented caph payment_code.completed sample shape: no paid amount. */
+  function bareCompletion(
+    paymentCode: string,
+    eventId = `wke-${randomUUID()}`,
+  ) {
+    eventIds.push(eventId);
+    return JSON.stringify({
       apiVersion: 'caph.2025-08-23',
       event: {
-        id,
+        id: eventId,
         name: 'payment_code.completed',
         timestamp: `${Math.floor(Date.now() / 1000)}`,
       },
-      object: { id: deposit.providerReference, type: 'payment_code' },
+      object: { id: paymentCode, type: 'payment_code' },
       data: {
-        id: deposit.providerReference,
+        id: paymentCode,
         mode: 'one_time',
         status: 'completed',
         amount: { currency: 'SLE', value: 5000 },
@@ -284,16 +292,116 @@ describe('Monime webhooks, signed (e2e)', () => {
         updateTime: new Date().toISOString(),
       },
     });
+  }
 
-    const res = await deliver(body).expect(200);
+  /** The payment code as Monime's API returns it (shape seen on a real Test code). */
+  const codeObject =
+    (
+      paymentCode: string,
+      depositId: string,
+      status: string,
+      paid: number | null,
+    ) =>
+    () =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          result: {
+            id: paymentCode,
+            mode: 'one_time',
+            status,
+            amount: { currency: 'SLE', value: 5000 },
+            reference: depositId,
+            processedPaymentData:
+              paid === null
+                ? null
+                : { amount: { currency: 'SLE', value: paid } },
+          },
+        }),
+        { status: 200 },
+      );
 
-    expect(res.body.status).toBe('ignored');
+  it('credits a completion with no paid amount once Monime confirms the payment from the code', async () => {
+    const { userId, deposit } = await pendingDeposit('mwhconfirm');
+    const code = deposit.providerReference!;
+    codeLookups.set(code, codeObject(code, deposit.id, 'completed', 5000));
+    const body = bareCompletion(code);
+
+    expect((await deliver(body).expect(200)).body.status).toBe('processed');
+    await deliver(body).expect(200);
+
+    expect(await statusOf(deposit.id)).toBe('COMPLETED');
+    expect(await credits(deposit.id)).toBe(1);
+    expect(await balance(userId)).toEqual({ available: 5000n, held: 0n });
+  });
+
+  it('credits nothing when Monime does not show the code paid for this deposit', async () => {
+    for (const [label, status, paid, reference] of [
+      ['pending', 'pending', null, undefined],
+      ['short', 'completed', 4999, undefined],
+      ['other', 'completed', 5000, 'another-deposit'],
+    ] as const) {
+      const { userId, deposit } = await pendingDeposit(`mwhno${label}`);
+      const code = deposit.providerReference!;
+      codeLookups.set(
+        code,
+        codeObject(code, reference ?? deposit.id, status, paid),
+      );
+
+      const res = await deliver(bareCompletion(code)).expect(200);
+
+      expect(res.body.status).toBe('rejected');
+      expect(await statusOf(deposit.id)).toBe('PENDING');
+      expect(await balance(userId)).toEqual({ available: 0n, held: 0n });
+    }
+  });
+
+  it('when Monime cannot be asked, the delivery fails (retried) and the retry credits once', async () => {
+    const { userId, deposit } = await pendingDeposit('mwhretry');
+    const code = deposit.providerReference!;
+    codeLookups.set(code, () => new Response('{}', { status: 503 }));
+    const body = bareCompletion(code);
+
+    await deliver(body).expect(500);
     expect(await statusOf(deposit.id)).toBe('PENDING');
-    expect(await balance(userId)).toEqual({ available: 0n, held: 0n });
+    const eventId = (JSON.parse(body) as { event: { id: string } }).event.id;
+    expect(
+      (
+        await prisma.providerEvent.findFirstOrThrow({
+          where: { providerEventId: eventId },
+        })
+      ).status,
+    ).toBe('RECEIVED');
+
+    codeLookups.set(code, codeObject(code, deposit.id, 'completed', 5000));
+    // Monime's retry of the same event, newly signed.
+    expect((await deliver(body).expect(200)).body.status).toBe('processed');
+    expect(await credits(deposit.id)).toBe(1);
+    expect(await balance(userId)).toEqual({ available: 5000n, held: 0n });
+  });
+
+  it('keeps an authenticated event it does not act on as delivered and reports it', async () => {
+    const { deposit } = await pendingDeposit('mwhunmapped');
+    const id = `wke-${randomUUID()}`;
+    eventIds.push(id);
+    const body = JSON.stringify({
+      apiVersion: 'caph.2025-08-23',
+      event: {
+        id,
+        name: 'payment_code.processed',
+        timestamp: `${Math.floor(Date.now() / 1000)}`,
+      },
+      object: { id: deposit.providerReference, type: 'payment_code' },
+      data: {
+        processedPaymentData: { amount: { currency: 'SLE', value: 5000 } },
+      },
+    });
+
+    expect((await deliver(body).expect(200)).body.status).toBe('ignored');
+    expect(await statusOf(deposit.id)).toBe('PENDING');
     const stored = await prisma.providerEvent.findFirstOrThrow({
       where: { providerEventId: id },
     });
-    expect(stored.status).toBe('IGNORED');
     expect(stored.payload).toEqual({ unmappedMonimeEvent: JSON.parse(body) });
     const report = await app.get(PaymentReconciliationService).runOnce();
     expect(

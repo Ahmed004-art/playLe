@@ -472,22 +472,70 @@ describe('Monime body -> parser -> deposit service (signature check replaced)', 
     },
   );
 
-  it('never credits on the configured amount alone: a completion with no paid evidence is ignored', async () => {
-    const h = build({}, [1], undefined, monime());
+  describe('a completion naming no paid amount is confirmed from the payment code', () => {
+    const noPaid = () =>
+      body({ amount: money(4000), mode: 'one_time', status: 'completed' });
 
-    const result = await h.service.processProviderWebhook(
-      body({ amount: money(4000), mode: 'one_time', status: 'completed' }),
-      {},
-    );
+    it('credits exactly once when the provider confirms the matching amount', async () => {
+      const provider = monime();
+      const confirm = vi
+        .spyOn(provider, 'confirmDepositPayment')
+        .mockResolvedValue({ amountMinor: '4000', currency: 'SLE' });
+      const h = build({}, [1], undefined, provider);
 
-    // The parser yields no deposit payload, so the event is stored IGNORED.
-    expect(result).toBe('ignored');
-    expectUntouched(h);
-    expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'IGNORED' }),
-      }),
-    );
+      expect(await h.service.processProviderWebhook(noPaid(), {})).toBe(
+        'processed',
+      );
+      expect(confirm).toHaveBeenCalledWith({
+        depositId: expect.any(String),
+        providerReference: 'pmc-1',
+      });
+      expect(h.ledgerService.applyEntry).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects, crediting nothing, when the confirmed amount differs', async () => {
+      const provider = monime();
+      vi.spyOn(provider, 'confirmDepositPayment').mockResolvedValue({
+        amountMinor: '3999',
+        currency: 'SLE',
+      });
+      const h = build({}, [1], undefined, provider);
+
+      expect(await h.service.processProviderWebhook(noPaid(), {})).toBe(
+        'rejected',
+      );
+      expectUntouched(h);
+    });
+
+    it('rejects, crediting nothing, when the provider does not confirm a payment', async () => {
+      const provider = monime();
+      vi.spyOn(provider, 'confirmDepositPayment').mockResolvedValue(null);
+      const h = build({}, [1], undefined, provider);
+
+      expect(await h.service.processProviderWebhook(noPaid(), {})).toBe(
+        'rejected',
+      );
+      expectUntouched(h);
+      expect(h.prisma.providerEvent.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: 'REJECTED' }),
+        }),
+      );
+    });
+
+    it('leaves the event unfinished (retried later) when the provider cannot be asked', async () => {
+      const provider = monime();
+      vi.spyOn(provider, 'confirmDepositPayment').mockRejectedValue(
+        new Error('Monime payment-code lookup failed with HTTP 503'),
+      );
+      const h = build({}, [1], undefined, provider);
+
+      await expect(
+        h.service.processProviderWebhook(noPaid(), {}),
+      ).rejects.toThrow(/503/);
+      expectUntouched(h);
+      expect(h.prisma.providerEvent.updateMany).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps the dedupe: a replayed matching body credits once', async () => {

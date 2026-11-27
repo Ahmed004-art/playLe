@@ -142,6 +142,12 @@ export interface WebhookDepositPayload {
   reason?: string;
   amountMinor?: string;
   currency?: string;
+  /**
+   * A completion that carries no paid amount at all: it is credited only if
+   * `PaymentProviderPort.confirmDepositPayment` establishes the paid amount
+   * from the provider's own API (and that amount matches the deposit).
+   */
+  paidAmountNeedsConfirmation?: true;
 }
 
 /**
@@ -169,6 +175,19 @@ export interface PaymentProviderPort {
   checkDepositStatus(
     params: CheckDepositStatusParams,
   ): Promise<CheckDepositStatusResult>;
+
+  /**
+   * The amount actually paid for a deposit, read from the provider's API, or
+   * `null` when the provider establishes it is not (fully) paid or does not
+   * belong to this deposit. Throws when the provider cannot be asked (network
+   * or server error), so the webhook is retried rather than rejected.
+   * Optional: a provider whose completion events always carry the paid amount
+   * need not implement it.
+   */
+  confirmDepositPayment?(params: {
+    depositId: string;
+    providerReference: string;
+  }): Promise<{ amountMinor: string; currency: string } | null>;
 
   initiatePayout(params: InitiatePayoutParams): Promise<InitiatePayoutResult>;
 

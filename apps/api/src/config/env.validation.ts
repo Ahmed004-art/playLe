@@ -29,6 +29,17 @@ class EnvironmentVariables {
   @IsIn(['development', 'test', 'staging', 'production'])
   NODE_ENV: string = 'development';
 
+  // Reverse proxies in front of the API; see configuration.ts.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(5)
+  TRUST_PROXY_HOPS?: number;
+
+  @IsOptional()
+  @IsIn(['true', 'false', ''])
+  SWAGGER_ENABLED?: string;
+
   @IsInt()
   @Min(1)
   @Max(65535)

@@ -158,6 +158,27 @@ unconfirmed against a real delivery (see MONIME_SETUP.md action 3).
 
 The admin app gains a **Payment problems** page over the existing anomaly API.
 
+### A completion without a paid amount is confirmed from the payment code (amendment)
+
+Monime's documented caph `payment_code.completed` sample carries only the
+code's configured amount. Such an event is now mapped to a completion that
+needs confirmation: `DepositsService` asks `MonimeProvider.confirmDepositPayment`,
+which reads the payment code from Monime's API (authenticated with the API
+token) and returns `processedPaymentData.amount` only when the code is
+`completed`, is the code asked about, and echoes this deposit's id as its
+`reference` (both fields verified on a real Test payment code). That amount must
+then equal the deposit's, as for any completion. Not confirmed: the event is
+REJECTED against the deposit (reported as AMOUNT_MISMATCH), nothing credited.
+Monime unreachable or 5xx: the delivery fails (500), the event stays RECEIVED and
+Monime's retry recovers it. The configured amount is never used as the paid one.
+
+### Production hosting (amendment)
+
+`render.yaml` and docs/deployment/PRODUCTION.md: Render (Frankfurt), managed
+PostgreSQL and Key Value, paid plans, migrations before each deploy, dashboard
+rollback. The API trusts `TRUST_PROXY_HOPS` proxies for client IPs (rate limits,
+audit logs) and serves Swagger outside production only (`SWAGGER_ENABLED`).
+
 ### Webhook routing without a double-insert race
 A single endpoint (`POST /payments/webhooks/monime`) receives both
 deposit and payout events. The controller calls
