@@ -206,12 +206,12 @@ describe('Monime webhooks, signed (e2e)', () => {
   it.each([
     ['a wrong secret', (b: string) => signature(b, undefined, 'z'.repeat(40))],
     [
-      'a timestamp older than five minutes',
-      (b: string) => signature(b, Math.floor(Date.now() / 1000) - 301),
+      'a timestamp over six minutes old',
+      (b: string) => signature(b, Math.floor(Date.now() / 1000) - 400),
     ],
     [
-      'a timestamp more than a minute ahead',
-      (b: string) => signature(b, Math.floor(Date.now() / 1000) + 61),
+      'a timestamp two minutes ahead (exact limits: unit tests)',
+      (b: string) => signature(b, Math.floor(Date.now() / 1000) + 120),
     ],
     ['no v1 signature', () => `t=${Math.floor(Date.now() / 1000)}`],
   ])(

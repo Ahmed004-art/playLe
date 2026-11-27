@@ -65,6 +65,10 @@ export interface AppConfiguration {
      * 60-minute stuck-withdrawal threshold.
      */
     providerEventStaleAfterMs: number;
+    /** How often provider payment statuses are polled (payout/deposit recovery). */
+    recoverySweepIntervalMs: number;
+    /** How often payment reconciliation runs on its own and alerts. */
+    reconciliationIntervalMs: number;
     /**
      * Separate from merely selecting `provider: 'monime'` or having an
      * API key configured — a *live* (non-`mon_test_`) Monime token is
@@ -197,6 +201,14 @@ export default (): AppConfiguration => ({
     providerEventStaleAfterMs: parseInt(
       process.env.PROVIDER_EVENT_STALE_AFTER_MS ??
         String(PROVIDER_EVENT_STALE_DEFAULT_MS),
+      10,
+    ),
+    recoverySweepIntervalMs: parseInt(
+      process.env.PAYMENT_RECOVERY_SWEEP_INTERVAL_MS ?? '300000',
+      10,
+    ),
+    reconciliationIntervalMs: parseInt(
+      process.env.PAYMENT_RECONCILIATION_INTERVAL_MS ?? '900000',
       10,
     ),
     monimeLivePaymentsEnabled:

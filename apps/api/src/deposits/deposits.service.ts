@@ -15,6 +15,7 @@ import { WalletService } from '../wallet/wallet.service.js';
 import {
   PAYMENT_PROVIDER,
   type PaymentProviderPort,
+  type ProviderOperationOutcome,
   type WebhookDepositPayload,
 } from '../payments/ports/payment-provider.port.js';
 import { parseAmountMinor } from '../common/money.js';
@@ -364,6 +365,70 @@ export class DepositsService {
 
   getProvider(): PaymentProviderPort {
     return this.provider;
+  }
+
+  /**
+   * Recovery (status polling) for a PENDING deposit: records what the provider
+   * says and acts only on an expired payment code (no money moved, so it is
+   * marked EXPIRED as an `expired` webhook would). A provider that reports the
+   * code PAID is never credited from here - only a verified completion carrying
+   * the paid amount credits - so it is returned for an alert. Skips a deposit
+   * from another provider or without a provider reference.
+   */
+  async refreshDepositFromProvider(
+    depositId: string,
+  ): Promise<'expired' | 'paid-unconfirmed' | 'unchanged' | 'skipped'> {
+    const deposit = await this.prisma.deposit.findUnique({
+      where: { id: depositId },
+    });
+    if (
+      !deposit ||
+      deposit.status !== 'PENDING' ||
+      !deposit.providerReference ||
+      deposit.provider !== this.provider.name
+    ) {
+      return 'skipped';
+    }
+
+    let outcome: ProviderOperationOutcome;
+    let raw: unknown;
+    let failureReason: string | undefined;
+    try {
+      const check = await this.provider.checkDepositStatus({
+        depositId,
+        providerReference: deposit.providerReference,
+      });
+      outcome = check.outcome;
+      raw = check.raw;
+      failureReason = check.failureReason;
+    } catch (error) {
+      outcome = 'UNKNOWN';
+      failureReason = error instanceof Error ? error.message : 'Unknown error';
+    }
+    await this.prisma.providerOperation.create({
+      data: {
+        provider: this.provider.name,
+        kind: 'DEPOSIT_STATUS_CHECK',
+        relatedDepositId: depositId,
+        providerIdempotencyKey: randomUUID(),
+        status: outcome === 'EXPIRED' ? 'FAILED' : outcome,
+        requestSnapshot: {
+          providerReference: deposit.providerReference,
+          source: 'recovery-sweep',
+        },
+        responseSnapshot: raw ?? undefined,
+        failureReason:
+          outcome === 'EXPIRED' ? 'Payment code expired' : failureReason,
+        resolvedAt: new Date(),
+      },
+    });
+
+    if (outcome === 'EXPIRED') {
+      await this.markExpired(depositId);
+      return 'expired';
+    }
+    if (outcome === 'SUCCEEDED') return 'paid-unconfirmed';
+    return 'unchanged';
   }
 
   async findByProviderReference(

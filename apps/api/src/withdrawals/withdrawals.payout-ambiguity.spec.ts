@@ -793,3 +793,79 @@ describe('an administrator cannot complete an unresolved payout (H1)', () => {
     }
   });
 });
+
+describe('payout recovery polling', () => {
+  const refresh = (h: Harness) => h.service.refreshPayoutFromProvider('wd-1');
+
+  it('a confirmed completion debits the hold once and resolves the attempt', async () => {
+    const h = build();
+    stubFetch(payout('pending'), payout('completed'));
+    await approve(h);
+
+    expect(await refresh(h)).toBe('completed');
+
+    expectPaidOnce(h);
+    expect(submissions(h)[0].status).toBe('SUCCEEDED');
+    expect(
+      h.db.operations.filter((o) => o.kind === 'PAYOUT_STATUS_CHECK'),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        requestSnapshot: {
+          providerReference: 'pyt-1',
+          source: 'recovery-sweep',
+        },
+      }),
+    ]);
+    expect(await refresh(h)).toBe('skipped');
+    expectPaidOnce(h);
+  });
+
+  it('a confirmed failure releases the hold once and resolves the attempt', async () => {
+    const h = build();
+    stubFetch(payout('pending'), payout('failed'));
+    await approve(h);
+
+    expect(await refresh(h)).toBe('failed');
+
+    expectReleasedOnce(h);
+    expect(submissions(h)[0].status).toBe('FAILED');
+  });
+
+  it.each([
+    ['still pending', payout('pending')],
+    ['HTTP 500', json(500, {})],
+    ['a network error', throws(new TypeError('fetch failed'))],
+    ['about another payout', payout('completed', 'pyt-other')],
+  ])('changes nothing when the status check is %s', async (_name, check) => {
+    const h = build();
+    stubFetch(payout('pending'), check);
+    await approve(h);
+
+    expect(await refresh(h)).toBe('unchanged');
+    expectHeld(h);
+  });
+
+  it('skips, without asking, a payout with no payout reference', async () => {
+    const h = build();
+    const fetchSpy = stubFetch(throws(new TypeError('socket hang up')));
+    await approve(h);
+
+    expect(await refresh(h)).toBe('skipped');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expectHeld(h);
+  });
+
+  it('racing a completion webhook, debits once', async () => {
+    const h = build();
+    stubFetch(payout('pending'), payout('completed'));
+    await approve(h);
+
+    await Promise.all([
+      refresh(h),
+      h.deliver('evt-race', 'payout.completed', 'pyt-1'),
+    ]);
+
+    expectPaidOnce(h);
+  });
+});

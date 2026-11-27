@@ -15,6 +15,7 @@ import { WalletModule } from './wallet/wallet.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { DepositsModule } from './deposits/deposits.module.js';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module.js';
+import { PaymentRecoveryModule } from './payments/recovery/payment-recovery.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { GamesModule } from './games/games.module.js';
 import { MatchesModule } from './matches/matches.module.js';
@@ -111,6 +112,7 @@ import { socialThrottleSkipIf } from './common/social-throttle.js';
     PaymentsModule,
     DepositsModule,
     WithdrawalsModule,
+    PaymentRecoveryModule,
     AdminModule,
     GamesModule,
     MatchesModule,

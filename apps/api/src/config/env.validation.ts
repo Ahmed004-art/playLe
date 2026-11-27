@@ -154,6 +154,16 @@ class EnvironmentVariables {
   @Max(PROVIDER_EVENT_STALE_MAX_MS)
   PROVIDER_EVENT_STALE_AFTER_MS: number = PROVIDER_EVENT_STALE_DEFAULT_MS;
 
+  // Payment recovery (status polling) and scheduled reconciliation. At least
+  // ten seconds so a misconfiguration cannot hammer the provider.
+  @IsInt()
+  @Min(10000)
+  PAYMENT_RECOVERY_SWEEP_INTERVAL_MS: number = 300000;
+
+  @IsInt()
+  @Min(10000)
+  PAYMENT_RECONCILIATION_INTERVAL_MS: number = 900000;
+
   @IsInt()
   @Min(1)
   MATCHES_THROTTLE_LIMIT: number = 30;

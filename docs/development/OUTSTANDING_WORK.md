@@ -768,3 +768,12 @@ reference had been stored.
 failed in-app at all (item 29). Completion trusts a provider `completed`
 status, which, like `failed`, is unverified against a real payout.
 **Severity**: High before any live payout until merged. **Owner**: payments.
+
+### 32. Payment recovery: polling, scheduled reconciliation, alerts
+**Status**: Implemented on `feat/payment-recovery` (ADR-019, "Payment
+recovery"). **Still open**: alerts are `PAYMENT ALERT` error log lines only -
+nothing pages a person until a log alert or a real delivery channel is set up
+in the deployment; deposits are never credited by polling (the paid-amount
+field is unconfirmed, see item 27/MONIME_SETUP action 3); a payout with no
+stored reference still cannot be polled (item 29). **Owner**: payments; log
+alerting is a deployment task.

@@ -140,6 +140,24 @@ place. An authenticated event PlayLe does not act on is stored as delivered
 cannot match a deposit or payout. The paid-amount location is still
 unconfirmed against a real delivery (see MONIME_SETUP.md action 3).
 
+### Payment recovery: polling and scheduled reconciliation (amendment)
+
+`PaymentRecoveryService` (inert with the manual provider) runs two timers:
+- every `PAYMENT_RECOVERY_SWEEP_INTERVAL_MS` (default 5 min): asks the
+  provider about PROCESSING payouts waiting over 2 minutes and PENDING deposits
+  waiting over 10 (50 of each per sweep). A payout the provider reports
+  `completed` or `failed` is finalised through the same provider-event claims
+  a webhook uses (the same trust a `payout.failed` webhook gets), marking the
+  attempt in the same transaction; anything else changes nothing. A deposit is
+  only ever marked EXPIRED from a poll; a code the provider reports paid is
+  **never credited from a poll** (no verified paid amount) and raises an alert.
+  Every check is recorded as a status-check `ProviderOperation`.
+- every `PAYMENT_RECONCILIATION_INTERVAL_MS` (default 15 min): runs payment
+  reconciliation and, when it records new anomalies, logs `PAYMENT ALERT`
+  (ERROR). Alerts are log lines: no email/SMS/pager delivery exists yet.
+
+The admin app gains a **Payment problems** page over the existing anomaly API.
+
 ### Webhook routing without a double-insert race
 A single endpoint (`POST /payments/webhooks/monime`) receives both
 deposit and payout events. The controller calls
