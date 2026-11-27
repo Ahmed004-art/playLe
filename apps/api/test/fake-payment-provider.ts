@@ -24,9 +24,8 @@ export type FakePayoutScenario =
  * `overrideProvider`). It's what actually proves the webhook →
  * ProviderEvent → {Deposits,Withdrawals}Service.completeFromProviderEvent
  * → LedgerService.applyEntry path works end-to-end for both deposits and
- * payouts, since neither ManualProvider nor MonimeProvider can ever
- * produce a valid signature (see their fail-closed
- * `verifyWebhookSignature`).
+ * payouts with scriptable provider answers. The real MonimeProvider's signed
+ * deliveries are covered by monime-webhook.e2e-spec.ts.
  */
 export class FakePaymentProvider implements PaymentProviderPort {
   readonly name = 'FAKE';

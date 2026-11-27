@@ -15,10 +15,8 @@ stub. For Phase 6, `docs.monime.io` (current API version
 `caph-2025-08-23`) and the official `monimesl/monime-developer-apis`
 GitHub repository's OpenAPI spec were fetched directly and verified. The
 real integration (Payment Codes for deposits, Payouts for withdrawals,
-status polling) is now implemented. **One fact remains genuinely
-unverifiable** — the exact `Monime-Signature` webhook HMAC canonical
-string — so inbound webhook signature verification still fails closed
-(every delivery rejected) until you complete action 3 below.
+status polling) is now implemented. **Webhook signatures are now verified**
+(2026-11-27) using Monime's documented scheme; see action 3.
 
 ## Owner actions required
 
@@ -57,21 +55,33 @@ MONIME_BASE_URL=https://api.monime.io   # same URL for test and live — the tok
 MONIME_LIVE_PAYMENTS_ENABLED=false  # only "true" once you mean to go live
 ```
 
-### 3. Capture a real webhook delivery to unblock signature verification
+### 3. Create the Test webhook and set its secret
 
-The webhook signature *algorithm* is confirmed (HMAC-SHA256 — see the
-official OpenAPI schema's `verificationMethod.hmac256` field), but the
-exact bytes it signs are not independently verifiable from any source
-reachable during implementation. Use Monime's `monime-cli` tool's
-Webhook Inspector (or any equivalent Monime provides) against a
-Test-mode webhook delivery, or open
-`docs.monime.io/guide/webhook/hmac-verification` in a real browser
-(it renders client-side JS content that automated fetches cannot see)
-and share its exact content. Once the canonical string is known,
-`MonimeProvider.verifyWebhookSignature`
-(`apps/api/src/payments/providers/monime.provider.ts`) is the only file
-that needs to change — the payload-*parsing* logic
-(`parseMonimeWebhookPayload`) is already implemented and unit-tested.
+PlayLe verifies Monime's documented signature: header
+`Monime-Signature: t=<unix seconds>,v1=<base64>`, where the value is
+HMAC-SHA256, keyed with the webhook's secret, over `<t>_<raw body>`
+(underscore), rejected if `t` is over 300 s old or over 60 s ahead. Sources:
+docs.monime.io "Webhooks > HMAC verification" and Monime's own
+`monimesl/MonimeGateway_odoo` (`utils/webhook_validation.py`).
+
+In the Monime dashboard, Test mode, Developer > Webhooks > Create webhook:
+- URL: `https://<public API host>/api/v1/payments/webhooks/monime` (HTTPS,
+  publicly reachable; `localhost` is refused).
+- API release `caph`; verification method **HMAC (HS256)**, not ECDSA.
+- Events: `payment_code.completed`, `payment_code.expired`,
+  `payment_code.processed`, `payout.completed`, `payout.failed`.
+- Keep the generated secret (32-100 characters) and put it in the API's
+  secret settings as `MONIME_WEBHOOK_SECRET`. Never commit it or paste it
+  into chat.
+
+**Still to confirm with the first real Test delivery**: Monime's documented
+caph `payment_code.completed` sample carries only the code's configured
+`data.amount`, not the amount paid. PlayLe credits only on a paid amount
+(`progress.totalPaymentSum`, `processedPaymentData.amount` or
+`paymentData.amount`), so a completion shaped like that sample is stored
+(IGNORED, with its full body) and reported as `ORPHAN_PROVIDER_EVENT`
+instead of being credited. Inspect the stored event, then map the real
+paid-amount field.
 
 ### 4. Confirm Payment Codes vs. Checkout Sessions
 

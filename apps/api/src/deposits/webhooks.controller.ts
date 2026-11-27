@@ -21,13 +21,9 @@ import { WithdrawalsService } from '../withdrawals/withdrawals.service.js';
  * body instead. Excluded from Swagger since it's not a client-facing API
  * surface.
  *
- * The real Monime provider currently always fails this verification (see
- * MonimeProvider — the exact HMAC canonical string is not yet verified
- * against official documentation, see
- * docs/development/PHASE_6_CHECKLIST.md) — this endpoint exists as an
- * implemented, tested boundary (exercised in e2e tests via a fake
- * provider double), not as a claim that live Monime webhooks are being
- * verified yet.
+ * The Monime provider verifies Monime's documented HMAC-SHA256
+ * `Monime-Signature` (see MonimeProvider); without MONIME_WEBHOOK_SECRET it
+ * rejects every delivery.
  *
  * Routing: `verifyWebhookSignature` is called once here purely to peek at
  * the parsed payload's shape and decide which domain service owns this

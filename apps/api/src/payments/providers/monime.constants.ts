@@ -34,12 +34,22 @@ export function webhookApiReleaseFor(version: string): string {
 
 /**
  * The header Monime sends its webhook signature in (lower-cased, as Node
- * delivers header names). Documented on docs.monime.io's standard-headers page
- * as "Monime-Signature - Cryptographic signature with timestamp". Only the NAME
- * is documented: the value format and the signed bytes are not, which is why
- * verification stays fail-closed.
+ * delivers header names), valued `t=<unix seconds>,v1=<base64 signature>`.
+ *
+ * The signature is HMAC-SHA256, keyed with the webhook's own secret (not the
+ * API token), over the bytes `<t>_<raw request body>` - an underscore, not a
+ * period - and base64-encoded. Sources: docs.monime.io, "Webhooks > HMAC
+ * verification" and "Testing locally" (Node/Python/Go examples), and
+ * Monime's own open-source integration monimesl/MonimeGateway_odoo
+ * (utils/webhook_validation.py), which compute it identically.
  */
 export const MONIME_SIGNATURE_HEADER = 'monime-signature';
+
+/** Reject a signature whose `t` is older than this (docs.monime.io: 300 s). */
+export const MONIME_SIGNATURE_MAX_AGE_SECONDS = 300;
+
+/** Reject a signature whose `t` is further ahead than this (docs: 60 s). */
+export const MONIME_SIGNATURE_MAX_FUTURE_SECONDS = 60;
 
 /**
  * A payment code collects exactly one payment. Sent explicitly (it is also the

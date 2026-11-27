@@ -7,6 +7,7 @@ import {
   IsString,
   Max,
   Min,
+  MaxLength,
   MinLength,
   ValidateIf,
   validateSync,
@@ -101,8 +102,21 @@ class EnvironmentVariables {
   @IsString()
   MONIME_API_KEY?: string;
 
+  // The Space webhook's HMAC secret. Monime requires 32 to 100 characters, so a
+  // shorter or longer value is a configuration mistake, caught at start-up.
   @IsOptional()
   @IsString()
+  @ValidateIf(
+    (env: { MONIME_WEBHOOK_SECRET?: string }) =>
+      env.MONIME_WEBHOOK_SECRET !== undefined &&
+      env.MONIME_WEBHOOK_SECRET !== '',
+  )
+  @MinLength(32, {
+    message: 'MONIME_WEBHOOK_SECRET must be 32 to 100 characters',
+  })
+  @MaxLength(100, {
+    message: 'MONIME_WEBHOOK_SECRET must be 32 to 100 characters',
+  })
   MONIME_WEBHOOK_SECRET?: string;
 
   // The `Monime-Version` pinned on every request. Unset or blank (as in
