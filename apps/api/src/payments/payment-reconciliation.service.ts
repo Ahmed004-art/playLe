@@ -9,7 +9,10 @@ import type {
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { CursorPage } from '../common/dto/pagination.dto.js';
 import type { AppConfiguration } from '../config/configuration.js';
-import { STUCK_PROCESSING_THRESHOLD_MS } from './reconciliation.constants.js';
+import {
+  INTERRUPTED_PAYOUT_THRESHOLD_MS,
+  STUCK_PROCESSING_THRESHOLD_MS,
+} from './reconciliation.constants.js';
 
 export interface DetectedAnomaly {
   type: PaymentAnomalyType;
@@ -300,7 +303,21 @@ export class PaymentReconciliationService {
   /** The single most safety-critical check per ADR-019: a payout whose real-world outcome is still unknown. */
   private async findUnknownPayoutOutcomes(): Promise<DetectedAnomaly[]> {
     const unknown = await this.prisma.providerOperation.findMany({
-      where: { kind: 'PAYOUT_SUBMIT', status: 'UNKNOWN' },
+      where: {
+        kind: 'PAYOUT_SUBMIT',
+        OR: [
+          { status: 'UNKNOWN' },
+          // Interrupted between recording the attempt and recording its
+          // answer: just as unknown, and its funds are just as held.
+          {
+            status: 'PENDING',
+            withdrawal: { status: 'APPROVED' },
+            createdAt: {
+              lt: new Date(Date.now() - INTERRUPTED_PAYOUT_THRESHOLD_MS),
+            },
+          },
+        ],
+      },
       select: { relatedWithdrawalId: true, createdAt: true },
     });
     return unknown

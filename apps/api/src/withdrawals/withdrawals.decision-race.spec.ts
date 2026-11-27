@@ -46,7 +46,7 @@ function build() {
     entries: [] as string[],
     openTransactions: 0,
     payouts: [] as Array<{ statusWhenSubmitted: string; openTx: number }>,
-    operations: [] as Array<{ status: string }>,
+    operations: [] as Array<{ kind?: string; status: string }>,
   };
 
   type Undo = Array<() => void>;
@@ -107,6 +107,23 @@ function build() {
     findUniqueOrThrow: vi.fn(() => Promise.resolve({ ...db.withdrawal })),
   });
 
+  const operationWrites = (undo?: Undo) => ({
+    create: vi.fn((args: { data: { kind: string; status: string } }) => {
+      const row = { kind: args.data.kind, status: args.data.status };
+      db.operations.push(row);
+      undo?.push(() => db.operations.splice(db.operations.indexOf(row), 1));
+      return Promise.resolve({ id: 'op-1' });
+    }),
+    // Every attempt that is not FAILED, as the service asks for.
+    findMany: vi.fn(() =>
+      Promise.resolve(
+        db.operations
+          .filter((o) => o.status !== 'FAILED')
+          .map((o) => ({ id: 'op-1', provider: 'FAKE', ...o })),
+      ),
+    ),
+  });
+
   const prismaWrites = withdrawalWrites();
   const prisma = {
     withdrawal: {
@@ -114,10 +131,7 @@ function build() {
       ...prismaWrites,
     },
     providerOperation: {
-      create: vi.fn(() => {
-        db.operations.push({ status: 'PENDING' });
-        return Promise.resolve({ id: 'op-1' });
-      }),
+      ...operationWrites(),
       update: vi.fn((args: { data: { status?: string } }) => {
         Object.assign(db.operations[db.operations.length - 1], args.data);
         return Promise.resolve({});
@@ -125,7 +139,10 @@ function build() {
     },
     $transaction: vi.fn(async (fn: (c: unknown) => Promise<unknown>) => {
       const undo: Undo = [];
-      const tx = { withdrawal: withdrawalWrites(undo) };
+      const tx = {
+        withdrawal: withdrawalWrites(undo),
+        providerOperation: operationWrites(undo),
+      };
       journals.set(tx, undo);
       db.openTransactions += 1;
       try {
@@ -486,16 +503,16 @@ describe('a payout submission racing a terminal outcome', () => {
     expect(h.notificationOutbox.enqueueStandalone).not.toHaveBeenCalled();
   });
 
-  it('an admin failure during the call is not overwritten, and the provider answering SUCCEEDED debits a hold already released', async () => {
+  it('an admin failure during the call is refused, and the provider answering SUCCEEDED debits the hold once', async () => {
     const h = build();
     h.setProviderAnswer('SUCCEEDED');
 
     const result = await adminFinalisesWhileInFlight(h, fail(h));
 
-    expect(result.admin.ok).toBe(true);
-    expect(h.db.withdrawal.status).toBe('FAILED');
-    expect(h.db.entries).toEqual(['RELEASE']);
-    expect(h.db.available).toBe(10_000n);
+    expectConflict(result.admin);
+    expect(h.db.withdrawal.status).toBe('COMPLETED');
+    expect(h.db.entries).toEqual(['WITHDRAWAL']);
+    expect(h.db.available).toBe(6000n);
     expect(h.db.held).toBe(OTHER_HOLD);
   });
 

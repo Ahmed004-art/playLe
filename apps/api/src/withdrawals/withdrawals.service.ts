@@ -8,12 +8,18 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, type Withdrawal, type WithdrawalStatus } from '@prisma/client';
+import {
+  Prisma,
+  type ProviderOperation,
+  type Withdrawal,
+  type WithdrawalStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import {
   PAYMENT_PROVIDER,
+  type CheckPayoutStatusResult,
   type InitiatePayoutResult,
   type PaymentProviderPort,
   type WebhookPayoutPayload,
@@ -243,14 +249,11 @@ export class WithdrawalsService {
 
   /**
    * Submits an approved withdrawal to the payout provider.
-   * `providerIdempotencyKey` is minted once here and persisted on the
-   * `ProviderOperation` row — a retried call (e.g. a later manual
-   * re-trigger after a transient failure) must reuse that same
-   * operation, never mint a second key for the same withdrawal while one
-   * is still unresolved (see ADR-019, "no retry with a new idempotency
-   * key after an unknown outcome"). Only ever called from `approve`, or
-   * directly by an admin/recovery sweep for a withdrawal already in
-   * `APPROVED` with no unresolved `ProviderOperation`.
+   * `providerIdempotencyKey` is persisted on the `ProviderOperation` row
+   * before the request is sent. A withdrawal with an attempt that may have
+   * reached the provider is never submitted again (see ADR-019, "no retry
+   * with a new idempotency key after an unknown outcome", and
+   * `beginPayoutAttempt`). Only called from `approve`.
    */
   async submitPayout(id: string): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
@@ -263,19 +266,13 @@ export class WithdrawalsService {
     }
 
     const providerIdempotencyKey = randomUUID();
-    const operation = await this.prisma.providerOperation.create({
-      data: {
-        provider: this.provider.name,
-        kind: 'PAYOUT_SUBMIT',
-        relatedWithdrawalId: withdrawal.id,
-        providerIdempotencyKey,
-        status: 'PENDING',
-        requestSnapshot: {
-          amountMinor: withdrawal.amountMinor.toString(),
-          currency: withdrawal.currency,
-        },
-      },
-    });
+    const operation = await this.beginPayoutAttempt(
+      withdrawal,
+      providerIdempotencyKey,
+    );
+    if (!operation) {
+      return this.findByIdAdmin(withdrawal.id);
+    }
 
     let result: InitiatePayoutResult;
     try {
@@ -333,9 +330,12 @@ export class WithdrawalsService {
       where: { id: operation.id },
       data: {
         status: operationStatus,
-        responseSnapshot: (result.raw ?? null) as Prisma.InputJsonValue,
+        responseSnapshot: result.raw ?? undefined,
         failureReason: result.failureReason,
-        resolvedAt: operationStatus === 'PENDING' ? null : new Date(),
+        resolvedAt:
+          operationStatus === 'PENDING' || operationStatus === 'UNKNOWN'
+            ? null
+            : new Date(),
       },
     });
 
@@ -352,6 +352,14 @@ export class WithdrawalsService {
       return this.findByIdAdmin(withdrawal.id);
     }
     const processing = await this.findByIdAdmin(withdrawal.id);
+    if (result.outcome === 'UNKNOWN') {
+      // The funds stay held. Nothing is announced: it is not known that a
+      // payout exists. Payment reconciliation reports it to an admin.
+      this.logger.error(
+        `Payout submission for withdrawal ${withdrawal.id} ended in an unknown outcome: ${result.failureReason ?? 'no usable status'}`,
+      );
+      return processing;
+    }
 
     await this.notificationOutbox.enqueueStandalone({
       userId: withdrawal.userId,
@@ -379,9 +387,137 @@ export class WithdrawalsService {
       );
     }
 
-    // PENDING or UNKNOWN: await a webhook delivery or a later
-    // reconciliation/status-check sweep.
+    // PENDING: await a webhook delivery, or an admin resolving it.
     return processing;
+  }
+
+  /**
+   * Records a payout attempt before anything is sent, or returns `null` if one
+   * must not be made. Under the wallet lock - the lock every release of this
+   * hold takes - the withdrawal must still be `APPROVED` with no attempt that
+   * may have reached the provider. So a release and a submission cannot both
+   * proceed, and two submissions cannot send requests under two keys.
+   */
+  private beginPayoutAttempt(
+    withdrawal: Pick<
+      Withdrawal,
+      'id' | 'walletId' | 'amountMinor' | 'currency'
+    >,
+    providerIdempotencyKey: string,
+  ): Promise<ProviderOperation | null> {
+    return this.prisma.$transaction(async (tx) => {
+      await this.ledgerService.lockWallet(tx, withdrawal.walletId);
+      const current = await tx.withdrawal.findUniqueOrThrow({
+        where: { id: withdrawal.id },
+      });
+      if (current.status !== 'APPROVED') return null;
+      if ((await this.unresolvedPayouts(tx, withdrawal.id)).length > 0) {
+        return null;
+      }
+
+      return tx.providerOperation.create({
+        data: {
+          provider: this.provider.name,
+          kind: 'PAYOUT_SUBMIT',
+          relatedWithdrawalId: withdrawal.id,
+          providerIdempotencyKey,
+          status: 'PENDING',
+          requestSnapshot: {
+            amountMinor: withdrawal.amountMinor.toString(),
+            currency: withdrawal.currency,
+          },
+        },
+      });
+    }, FINANCIAL_TRANSACTION_OPTIONS);
+  }
+
+  /**
+   * Payout attempts that may have created a payout. An attempt is `FAILED`
+   * only when no request was sent, or the provider established that it will
+   * not pay.
+   */
+  private unresolvedPayouts(
+    db: Prisma.TransactionClient,
+    withdrawalId: string,
+  ): Promise<ProviderOperation[]> {
+    return db.providerOperation.findMany({
+      where: {
+        relatedWithdrawalId: withdrawalId,
+        kind: 'PAYOUT_SUBMIT',
+        status: { not: 'FAILED' },
+      },
+    });
+  }
+
+  /**
+   * Gate on an admin releasing a hold. Returns `null` when no payout can exist,
+   * or the id of the one unresolved attempt the provider has just confirmed as
+   * failed. Otherwise throws: an unknown, pending or completed payout is never
+   * released, and without a payout reference there is nothing to ask about
+   * (no lookup by our metadata or idempotency key is documented). Every status
+   * check is recorded with the admin and reason, whatever it answers. The
+   * provider is called outside any transaction; `fail` re-checks under the
+   * wallet lock.
+   */
+  private async confirmNoPayoutWillBeMade(
+    withdrawalId: string,
+    adminId: string,
+    reason: string,
+  ): Promise<string | null> {
+    const unresolved = await this.unresolvedPayouts(this.prisma, withdrawalId);
+    if (unresolved.length === 0) return null;
+
+    // Read after the attempts, so a reference stored meanwhile is seen.
+    const { providerReference } = await this.findByIdAdmin(withdrawalId);
+    const [attempt] = unresolved;
+    if (
+      unresolved.length > 1 ||
+      !providerReference ||
+      attempt.provider !== this.provider.name
+    ) {
+      throw new ConflictException(
+        'A payout request for this withdrawal has an unresolved outcome that cannot be checked with the provider. The funds stay held; reconcile with the provider.',
+      );
+    }
+
+    let check: CheckPayoutStatusResult;
+    try {
+      check = await this.provider.checkPayoutStatus({
+        withdrawalId,
+        providerReference,
+      });
+    } catch (error) {
+      check = {
+        outcome: 'UNKNOWN',
+        failureReason: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+    await this.prisma.providerOperation.create({
+      data: {
+        provider: this.provider.name,
+        kind: 'PAYOUT_STATUS_CHECK',
+        relatedWithdrawalId: withdrawalId,
+        // Unique per row; a status check is a read and sends no key.
+        providerIdempotencyKey: randomUUID(),
+        status: check.outcome === 'EXPIRED' ? 'UNKNOWN' : check.outcome,
+        requestSnapshot: { providerReference, adminId, reason },
+        responseSnapshot: check.raw ?? undefined,
+        failureReason: check.failureReason,
+        resolvedAt: new Date(),
+      },
+    });
+
+    if (check.outcome === 'SUCCEEDED') {
+      throw new ConflictException(
+        'The provider reports this payout completed. The funds cannot be released; complete the withdrawal instead.',
+      );
+    }
+    if (check.outcome !== 'FAILED') {
+      throw new ConflictException(
+        'The provider has not confirmed that this payout failed. The funds stay held.',
+      );
+    }
+    return attempt.id;
   }
 
   /**
@@ -490,12 +626,33 @@ export class WithdrawalsService {
     }, FINANCIAL_TRANSACTION_OPTIONS);
   }
 
-  /** Mirrors `complete` — allowed from `APPROVED` or `PROCESSING` (see above). */
+  /**
+   * Releases the hold. Allowed from `APPROVED` or `PROCESSING`, but only when
+   * no payout can exist, or the provider has just confirmed this one failed
+   * (see `confirmNoPayoutWillBeMade`). An admin's reason alone never releases
+   * an unresolved payout.
+   */
   async fail(adminId: string, id: string, reason: string): Promise<Withdrawal> {
     const withdrawal = await this.findByIdAdmin(id);
     this.assertTransition(withdrawal.status, FINALIZABLE);
+    const confirmedAttemptId = await this.confirmNoPayoutWillBeMade(
+      withdrawal.id,
+      adminId,
+      reason,
+    );
 
     return this.prisma.$transaction(async (tx) => {
+      // A submission may have started since the check above. It records its
+      // attempt under this same lock, so it is either visible here or has not
+      // begun and will find the withdrawal no longer APPROVED.
+      await this.ledgerService.lockWallet(tx, withdrawal.walletId);
+      const unresolved = await this.unresolvedPayouts(tx, withdrawal.id);
+      if (unresolved.some((attempt) => attempt.id !== confirmedAttemptId)) {
+        throw new ConflictException(
+          'A payout request for this withdrawal has an unresolved outcome. The funds stay held.',
+        );
+      }
+
       // Same claim as `complete`: never release a hold for a withdrawal that a
       // concurrent provider event or admin action already finalized.
       await this.claimFinalOrThrow(tx, withdrawal, {
@@ -506,6 +663,12 @@ export class WithdrawalsService {
         reviewedAt: new Date(),
         reviewReason: reason,
       });
+      if (confirmedAttemptId) {
+        await tx.providerOperation.update({
+          where: { id: confirmedAttemptId },
+          data: { status: 'FAILED', resolvedAt: new Date() },
+        });
+      }
 
       await this.ledgerService.applyEntry(tx, withdrawal.walletId, {
         type: 'RELEASE',

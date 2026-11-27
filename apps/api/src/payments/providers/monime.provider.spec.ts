@@ -172,7 +172,7 @@ describe('MonimeProvider — readiness / production activation guardrails', () =
     fetchSpy.mockRestore();
   });
 
-  it('maps a rejected payout HTTP response to a definite FAILED outcome, never thrown', async () => {
+  it('maps a payout HTTP error response to an UNKNOWN outcome, never thrown', async () => {
     const provider = new MonimeProvider(
       fakeConfigService({
         monimeApiKey: 'mon_test_abc',
@@ -195,7 +195,7 @@ describe('MonimeProvider — readiness / production activation guardrails', () =
       providerIdempotencyKey: 'key-1',
     });
 
-    expect(result.outcome).toBe('FAILED');
+    expect(result.outcome).toBe('UNKNOWN');
     fetchSpy.mockRestore();
   });
 

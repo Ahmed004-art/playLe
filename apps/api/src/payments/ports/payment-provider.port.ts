@@ -90,6 +90,10 @@ export interface InitiatePayoutResult {
    * `UNAVAILABLE` — no live call was made (provider inert/unconfigured);
    * the existing manual-admin completion flow applies unchanged. Any
    * other value means a real call was attempted.
+   *
+   * `FAILED` releases the user's held funds, so a provider may return it only
+   * when its contract establishes that this request will not pay. An error,
+   * a timeout or an unreadable answer is `UNKNOWN` (or a thrown error).
    */
   outcome: ProviderOperationOutcome | 'UNAVAILABLE';
   failureReason?: string;
