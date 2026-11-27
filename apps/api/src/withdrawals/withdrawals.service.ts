@@ -605,6 +605,87 @@ export class WithdrawalsService {
     }
   }
 
+  /**
+   * Recovery (status polling): asks the provider about a PROCESSING
+   * withdrawal's one unresolved payout attempt and applies a definite answer
+   * through the same provider-event finalisers a webhook uses - a confirmed
+   * completion debits the hold once, a confirmed failure releases it once (the
+   * same trust a `payout.failed` webhook already gets; see ADR-019). Anything
+   * else changes nothing. Every check is recorded. Skips a withdrawal it cannot
+   * ask about (no payout reference, another provider, several attempts).
+   */
+  async refreshPayoutFromProvider(
+    withdrawalId: string,
+  ): Promise<'completed' | 'failed' | 'unchanged' | 'skipped'> {
+    const withdrawal = await this.findByIdAdmin(withdrawalId);
+    const unresolved = await this.unresolvedPayouts(this.prisma, withdrawalId);
+    const [attempt] = unresolved;
+    if (
+      withdrawal.status !== 'PROCESSING' ||
+      !withdrawal.providerReference ||
+      unresolved.length !== 1 ||
+      attempt.provider !== this.provider.name
+    ) {
+      return 'skipped';
+    }
+    if (attempt.status === 'SUCCEEDED') {
+      // The provider already answered "completed"; finalisation was cut short.
+      await this.completeFromProviderEvent(
+        withdrawalId,
+        withdrawal.providerReference,
+        attempt.id,
+      );
+      return 'completed';
+    }
+
+    let check: CheckPayoutStatusResult;
+    try {
+      check = await this.provider.checkPayoutStatus({
+        withdrawalId,
+        providerReference: withdrawal.providerReference,
+      });
+    } catch (error) {
+      check = {
+        outcome: 'UNKNOWN',
+        failureReason: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+    await this.prisma.providerOperation.create({
+      data: {
+        provider: this.provider.name,
+        kind: 'PAYOUT_STATUS_CHECK',
+        relatedWithdrawalId: withdrawalId,
+        providerIdempotencyKey: randomUUID(),
+        status: check.outcome === 'EXPIRED' ? 'UNKNOWN' : check.outcome,
+        requestSnapshot: {
+          providerReference: withdrawal.providerReference,
+          source: 'recovery-sweep',
+        },
+        responseSnapshot: check.raw ?? undefined,
+        failureReason: check.failureReason,
+        resolvedAt: new Date(),
+      },
+    });
+
+    if (check.outcome === 'SUCCEEDED') {
+      await this.completeFromProviderEvent(
+        withdrawalId,
+        withdrawal.providerReference,
+        attempt.id,
+      );
+      return 'completed';
+    }
+    if (check.outcome === 'FAILED') {
+      await this.failFromProviderEvent(
+        withdrawalId,
+        check.failureReason ?? 'The provider reported the payout failed',
+        attempt.id,
+      );
+      return 'failed';
+    }
+    return 'unchanged';
+  }
+
   /** `PayoutCheck` for each finalizable withdrawal in `withdrawals`. */
   async payoutChecksFor(
     withdrawals: Pick<Withdrawal, 'id' | 'status' | 'providerReference'>[],
@@ -868,6 +949,7 @@ export class WithdrawalsService {
   async completeFromProviderEvent(
     withdrawalId: string,
     providerReference: string | undefined,
+    resolvedAttemptId?: string,
   ): Promise<Withdrawal> {
     const existing = await this.prisma.withdrawal.findUnique({
       where: { id: withdrawalId },
@@ -888,6 +970,12 @@ export class WithdrawalsService {
       if (!claimed) {
         // Lost to a concurrent terminal outcome: no ledger entry, no notice.
         return tx.withdrawal.findUniqueOrThrow({ where: { id: existing.id } });
+      }
+      if (resolvedAttemptId) {
+        await tx.providerOperation.update({
+          where: { id: resolvedAttemptId },
+          data: { status: 'SUCCEEDED', resolvedAt: new Date() },
+        });
       }
 
       await this.ledgerService.applyEntry(tx, existing.walletId, {
@@ -916,6 +1004,7 @@ export class WithdrawalsService {
   async failFromProviderEvent(
     withdrawalId: string,
     reason: string,
+    resolvedAttemptId?: string,
   ): Promise<Withdrawal> {
     const existing = await this.prisma.withdrawal.findUnique({
       where: { id: withdrawalId },
@@ -936,6 +1025,12 @@ export class WithdrawalsService {
       if (!claimed) {
         // Lost to a concurrent terminal outcome: no release, no notice.
         return tx.withdrawal.findUniqueOrThrow({ where: { id: existing.id } });
+      }
+      if (resolvedAttemptId) {
+        await tx.providerOperation.update({
+          where: { id: resolvedAttemptId },
+          data: { status: 'FAILED', resolvedAt: new Date() },
+        });
       }
 
       await this.ledgerService.applyEntry(tx, existing.walletId, {

@@ -14,6 +14,7 @@ import { WithdrawalsService } from '../src/withdrawals/withdrawals.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { PAYMENT_PROVIDER } from '../src/payments/ports/payment-provider.port.js';
 import { PaymentReconciliationService } from '../src/payments/payment-reconciliation.service.js';
+import { PaymentRecoveryService } from '../src/payments/recovery/payment-recovery.service.js';
 import { FakePaymentProvider } from './fake-payment-provider.js';
 import { waitForBackendBlockedBy } from './pg-locks.js';
 import { PayoutUnresolvedException } from '../src/withdrawals/withdrawals.service.js';
@@ -1927,6 +1928,148 @@ describe('Phase 6 payments (e2e)', () => {
         .get('/api/v1/admin/payment-reconciliation/run')
         .set('Authorization', `Bearer ${accessToken}`)
         .expect(403);
+    });
+  });
+
+  describe('payment recovery polling', () => {
+    const later = (minutes: number) =>
+      new Date(Date.now() + minutes * 60 * 1000);
+
+    async function processingWithdrawal(label: string) {
+      const { accessToken, userId, adminToken } = await setupFundedUser(
+        label,
+        '10000',
+      );
+      const { id } = await createWithdrawal(accessToken, '4000');
+      await request(app.getHttpServer())
+        .post(`/api/v1/admin/withdrawals/${id}/approve`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ reason: 'Verified identity' })
+        .expect(200);
+      return { id, userId, reference: `fake_payout_${id}` };
+    }
+
+    const ledgerOf = async (withdrawalId: string) =>
+      (
+        await prisma.ledgerEntry.findMany({
+          where: { relatedWithdrawalId: withdrawalId },
+          orderBy: { createdAt: 'asc' },
+        })
+      ).map((e) => e.type);
+
+    /** The provider answers `outcome` for `reference` only; PENDING for anything else. */
+    function payoutAnswer(reference: string, outcome: 'SUCCEEDED' | 'FAILED') {
+      return vi
+        .spyOn(fakeProvider, 'checkPayoutStatus')
+        .mockImplementation((params) =>
+          Promise.resolve({
+            outcome:
+              params.providerReference === reference ? outcome : 'PENDING',
+          }),
+        );
+    }
+
+    it('completes a payout the provider confirms, once, even when swept twice', async () => {
+      const w = await processingWithdrawal('recpaid');
+      const spy = payoutAnswer(w.reference, 'SUCCEEDED');
+      try {
+        const sweeper = app.get(PaymentRecoveryService);
+        await sweeper.sweep(later(3));
+        await sweeper.sweep(later(3));
+      } finally {
+        spy.mockRestore();
+      }
+
+      const row = await prisma.withdrawal.findUniqueOrThrow({
+        where: { id: w.id },
+      });
+      expect(row.status).toBe('COMPLETED');
+      expect(await ledgerOf(w.id)).toEqual(['HOLD', 'WITHDRAWAL']);
+      const wallet = await prisma.wallet.findUniqueOrThrow({
+        where: { userId: w.userId },
+      });
+      expect(wallet.availableBalanceMinor).toBe(6000n);
+      expect(wallet.heldBalanceMinor).toBe(0n);
+    });
+
+    it('releases a payout the provider reports failed, once', async () => {
+      const w = await processingWithdrawal('recfail');
+      const spy = payoutAnswer(w.reference, 'FAILED');
+      try {
+        await app.get(PaymentRecoveryService).sweep(later(3));
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(
+        (await prisma.withdrawal.findUniqueOrThrow({ where: { id: w.id } }))
+          .status,
+      ).toBe('FAILED');
+      expect(await ledgerOf(w.id)).toEqual(['HOLD', 'RELEASE']);
+    });
+
+    it('leaves a pending payout held and does not poll one too recent', async () => {
+      const w = await processingWithdrawal('recpending');
+      const spy = vi.spyOn(fakeProvider, 'checkPayoutStatus');
+      try {
+        await app.get(PaymentRecoveryService).sweep(new Date());
+        expect(
+          spy.mock.calls.some(([p]) => p.providerReference === w.reference),
+        ).toBe(false);
+        await app.get(PaymentRecoveryService).sweep(later(3));
+        expect(
+          spy.mock.calls.some(([p]) => p.providerReference === w.reference),
+        ).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(
+        (await prisma.withdrawal.findUniqueOrThrow({ where: { id: w.id } }))
+          .status,
+      ).toBe('PROCESSING');
+      expect(await ledgerOf(w.id)).toEqual(['HOLD']);
+    });
+
+    it('expires a deposit whose payment code expired, and never credits from a poll', async () => {
+      const { accessToken, userId } = await registerUser('recdep');
+      const expired = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const paid = await request(app.getHttpServer())
+        .post('/api/v1/deposits')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ amountMinor: '5000' })
+        .expect(201);
+      const spy = vi
+        .spyOn(fakeProvider, 'checkDepositStatus')
+        .mockImplementation((params) =>
+          Promise.resolve({
+            outcome:
+              params.depositId === expired.body.id
+                ? 'EXPIRED'
+                : params.depositId === paid.body.id
+                  ? 'SUCCEEDED'
+                  : 'PENDING',
+          }),
+        );
+      try {
+        await app.get(PaymentRecoveryService).sweep(later(11));
+      } finally {
+        spy.mockRestore();
+      }
+
+      const statusOf = async (id: string) =>
+        (await prisma.deposit.findUniqueOrThrow({ where: { id } })).status;
+      expect(await statusOf(expired.body.id)).toBe('EXPIRED');
+      expect(await statusOf(paid.body.id)).toBe('PENDING');
+      expect(
+        await prisma.ledgerEntry.count({ where: { userId, type: 'DEPOSIT' } }),
+      ).toBe(0);
     });
   });
 

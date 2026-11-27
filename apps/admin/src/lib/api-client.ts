@@ -11,6 +11,7 @@ import type {
 import type { AdminMatch, AdminMatchFinancial } from './match-types';
 import type { AdminDispute } from './dispute-types';
 import type { ReconciliationReport } from './reconciliation-types';
+import type { PaymentAnomaly } from './payment-types';
 import type {
   AdminResponsibleGamingRestriction,
   AdminResponsibleGamingUsage,
@@ -221,6 +222,25 @@ export function resolveDispute(
     method: 'POST',
     body: JSON.stringify({ status, resolution }),
   });
+}
+
+// --- Payment problems (payment reconciliation anomalies) ---
+// Resolving records an audited note only; it never moves money.
+
+export function listPaymentAnomalies(status?: string): Promise<CursorPage<PaymentAnomaly>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<CursorPage<PaymentAnomaly>>(`/admin/payment-reconciliation/anomalies${query}`);
+}
+
+export function runPaymentReconciliation(): Promise<unknown> {
+  return request<unknown>('/admin/payment-reconciliation/run');
+}
+
+export function resolvePaymentAnomaly(id: string, resolutionNote: string): Promise<PaymentAnomaly> {
+  return request<PaymentAnomaly>(
+    `/admin/payment-reconciliation/anomalies/${encodeURIComponent(id)}/resolve`,
+    { method: 'POST', body: JSON.stringify({ resolutionNote }) },
+  );
 }
 
 export function runReconciliation(): Promise<ReconciliationReport> {
